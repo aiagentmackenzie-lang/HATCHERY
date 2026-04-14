@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --surface2: #1a1a24;
+  --border: #2a2a3a;
+  --text: #e0e0e0;
+  --text-dim: #6a6a7a;
+  --accent: #ff6b35;
+  --accent-glow: rgba(255, 107, 53, 0.3);
+  --danger: #ff3366;
+  --warning: #ffaa00;
+  --info: #00aaff;
+  --success: #00ff9f;
+}
+
+* { scrollbar-width: thin; scrollbar-color: var(--border) var(--bg); }
+*::-webkit-scrollbar { width: 6px; }
+*::-webkit-scrollbar-track { background: var(--bg); }
+*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+body { background: var(--bg); color: var(--text); }
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.live-pulse { animation: pulse-live 1.2s ease-in-out infinite; }
+
+@keyframes flash-new {
+  0% { background: var(--accent-glow); }
+  100% { background: transparent; }
+}
+.event-flash { animation: flash-new 0.6s ease-out; }
+
+@keyframes glow-border {
+  0%, 100% { box-shadow: 0 0 5px var(--accent-glow); }
+  50% { box-shadow: 0 0 20px var(--accent-glow), 0 0 40px rgba(255, 107, 53, 0.1); }
+}
+.glow-border { animation: glow-border 2s ease-in-out infinite; }

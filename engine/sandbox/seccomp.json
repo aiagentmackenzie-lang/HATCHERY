@@ -1,0 +1,91 @@
+{
+    "defaultAction": "SCMP_ACT_ALLOW",
+    "defaultErrnoRet": 1,
+    "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+    "syscalls": [
+        {
+            "names": ["mount", "umount2", "pivot_root", "chroot"],
+            "action": "SCMP_ACT_ERRNO",
+            "erronoRet": 1,
+            "comment": "Prevent filesystem escape"
+        },
+        {
+            "names": ["ptrace"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent container escape via ptrace"
+        },
+        {
+            "names": ["reboot", "kexec_load", "kexec_file_load"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent system reboot"
+        },
+        {
+            "names": ["keyctl", "add_key", "request_key"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent keyring abuse"
+        },
+        {
+            "names": ["acct"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent process accounting manipulation"
+        },
+        {
+            "names": ["bpf"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent BPF program loading"
+        },
+        {
+            "names": ["clock_adjtime", "clock_settime", "settimeofday", "stime"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent system clock manipulation"
+        },
+        {
+            "names": ["create_module", "delete_module", "finit_module", "init_module"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent kernel module loading"
+        },
+        {
+            "names": ["iopl", "ioperm"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent I/O port access"
+        },
+        {
+            "names": ["swapon", "swapoff"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent swap manipulation"
+        },
+        {
+            "names": ["syslog"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent kernel log access"
+        },
+        {
+            "names": ["vhangup"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent virtual terminal hangup"
+        },
+        {
+            "names": ["perf_event_open"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent performance counter access"
+        },
+        {
+            "names": ["process_vm_readv", "process_vm_writev"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Prevent cross-process memory access"
+        }
+    ]
+}
