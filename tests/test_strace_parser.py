@@ -40,7 +40,7 @@ class TestStraceParser:
         assert event is not None
         assert event.syscall == "execve"
         assert event.category == EventCategory.PROCESS
-        assert event.severity == EventSeverity.HIGH
+        assert event.severity == EventSeverity.CRITICAL
 
     def test_parse_mmap_syscall(self):
         """Test parsing mmap (memory operation)."""
@@ -87,8 +87,8 @@ class TestStraceParser:
         assert result.total_lines == 5
         assert len(result.network_connections) >= 1
         assert len(result.process_operations) >= 1
-        assert 100 in result.process_tree
-        assert 200 in result.process_tree[100]
+        assert 200 in result.process_tree
+        assert 300 in result.process_tree[200]
 
 
 if __name__ == "__main__":

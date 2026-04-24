@@ -39,7 +39,7 @@ FILE_PATH_UNIX = re.compile(
     r"(?:/etc/|/tmp/|/var/|/home/|/usr/|/opt/|/dev/shm/)[^\s\"'<>]*",
 )
 REGISTRY_PATTERN = re.compile(
-    r"HK[ECULM]_[A-Z]+\\[^\s\"'<>]+",
+    r"HK(?:LM|CU|CR|U|CC)\\[^\s\"'<>]+",
     re.IGNORECASE,
 )
 EMAIL_PATTERN = re.compile(
