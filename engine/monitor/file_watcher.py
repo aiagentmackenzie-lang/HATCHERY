@@ -39,6 +39,12 @@ class FileEventSeverity(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
+    @property
+    def level(self) -> int:
+        """Numeric severity level for proper comparison."""
+        levels = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        return levels[self.value]
+
 
 # inotifywait output format: TIMESTAMP PATH EVENT_NAMES
 # e.g., 2026-04-14T12:00:00 /tmp/payload CREATE;ISDIR
@@ -275,7 +281,7 @@ class FileWatcher:
         # Check suspicious path rules
         for pattern, severity, description in SUSPICIOUS_PATH_RULES:
             if pattern.search(path):
-                if severity.value > max_severity.value:
+                if severity.level > max_severity.level:
                     max_severity = severity
                 indicators.append(description)
 
@@ -284,7 +290,7 @@ class FileWatcher:
             filename = path.rsplit("/", 1)[-1] if "/" in path else path
             for pattern, severity, description in SUSPICIOUS_FILENAME_RULES:
                 if pattern.search(filename):
-                    if severity.value > max_severity.value:
+                    if severity.level > max_severity.level:
                         max_severity = severity
                     indicators.append(description)
 

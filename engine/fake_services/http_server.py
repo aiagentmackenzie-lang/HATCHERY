@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -23,39 +24,7 @@ DEFAULT_HTTPS_PORT = 443
 DEFAULT_BIND_ADDRESS = "0.0.0.0"
 
 
-@dataclass  # noqa: F821 — dataclass is used below
-class HTTPRequestLog:
-    """A logged HTTP request."""
-    timestamp: str
-    method: str
-    path: str
-    host: str
-    user_agent: str
-    content_type: str = ""
-    content_length: int = 0
-    body: str = ""
-    client_ip: str = ""
-    response_code: int = 200
-
-    def to_dict(self) -> dict:
-        return {
-            "timestamp": self.timestamp,
-            "method": self.method,
-            "path": self.path,
-            "host": self.host,
-            "user_agent": self.user_agent,
-            "content_type": self.content_type,
-            "content_length": self.content_length,
-            "body": self.body[:1000],  # Cap body size in logs
-            "client_ip": self.client_ip,
-            "response_code": self.response_code,
-        }
-
-
-# Import dataclass properly (avoid the forward reference issue)
-from dataclasses import dataclass as _dc
-
-@_dc
+@dataclass
 class HTTPRequestLog:
     """A logged HTTP request."""
     timestamp: str = ""
@@ -78,7 +47,7 @@ class HTTPRequestLog:
             "user_agent": self.user_agent,
             "content_type": self.content_type,
             "content_length": self.content_length,
-            "body": self.body[:1000],
+            "body": self.body[:1000],  # Cap body size in logs
             "client_ip": self.client_ip,
             "response_code": self.response_code,
         }

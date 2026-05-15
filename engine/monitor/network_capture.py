@@ -18,13 +18,19 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Try to import GHOSTWIRE for C2 detection
-GHOSTWIRE_PATH = Path("/Users/main/Security Apps/GHOSTWIRE")
+# Path is resolved from environment variable or default location
+import os
+
+_GHOSTWIRE_PATH_ENV = os.environ.get("HATCHERY_GHOSTWIRE_PATH", "")
+_GHOSTWIRE_PATH_DEFAULT = Path("/Users/main/Security Apps/GHOSTWIRE")
+GHOSTWIRE_PATH = Path(_GHOSTWIRE_PATH_ENV) if _GHOSTWIRE_PATH_ENV else _GHOSTWIRE_PATH_DEFAULT
 HAS_GHOSTWIRE = False
 
 try:
     import sys
-    if str(GHOSTWIRE_PATH) not in sys.path:
-        sys.path.insert(0, str(GHOSTWIRE_PATH))
+    _gw_path = str(GHOSTWIRE_PATH)
+    if _gw_path not in sys.path:
+        sys.path.insert(0, _gw_path)
     from engine.detection.beacon import BeaconDetector
     from engine.detection.dns_threats import DNSThreatDetector
     HAS_GHOSTWIRE = True

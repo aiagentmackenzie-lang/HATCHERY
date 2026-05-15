@@ -6,6 +6,7 @@ and compile timestamps. Handles malformed/packed binaries gracefully.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -268,7 +269,6 @@ class PEAnalyzer:
 
             # Calculate section MD5
             try:
-                import hashlib
                 section_data = section.get_data()
                 section_md5 = hashlib.md5(section_data).hexdigest()
             except Exception:
