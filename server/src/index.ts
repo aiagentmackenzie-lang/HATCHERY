@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import multipart from '@fastify/multipart';
 import { submitRoutes } from './routes/submit.js';
 import { statusRoutes } from './routes/status.js';
 import { reportRoutes } from './routes/report.js';
@@ -18,6 +19,9 @@ getDb();
 
 // CORS for dashboard
 app.register(cors, { origin: true });
+
+// Multipart file uploads (e.g. PhishHawk attachment detonation)
+app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 
 // REST routes
 app.register(submitRoutes);
