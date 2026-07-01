@@ -147,7 +147,7 @@ cd server && npm install && npm run dev
 
 # Start the dashboard
 cd dashboard && npm install && npm run dev
-# → http://localhost:5174
+# → http://localhost:5173
 ```
 
 ### API Endpoints
@@ -213,8 +213,13 @@ HATCHERY/
 │       └── components/ # Timeline, ProcessTree, NetworkPanel, etc.
 ├── samples/            # Test samples (EICAR + benign PE)
 ├── tests/              # Unit tests + fixtures
+├── engine/sandbox/docker/Dockerfile  # Sandbox container image
+├── engine/sandbox/docker/entrypoint.sh
+├── server/             # Fastify API + WebSocket + SQLite
+├── dashboard/          # React + Vite + Tailwind + D3
+├── samples/            # Test samples (EICAR + benign PE)
+├── tests/              # Unit tests + fixtures
 ├── pyproject.toml      # Python packaging
-├── SPEC.md             # Full architecture spec
 └── README.md           # This file
 ```
 

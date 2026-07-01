@@ -1,0 +1,12 @@
+# HATCHERY sandbox image build
+# The full stack (API + dashboard) currently runs from the host via the quick-start commands.
+# This compose file ensures the sandbox Docker image is built and tagged consistently.
+services:
+  hatchery-sandbox:
+    build:
+      context: ./engine/sandbox/docker
+      dockerfile: Dockerfile
+    image: hatchery-sandbox:latest
+    container_name: hatchery-sandbox-build
+    command: ["/hatchery/entrypoint.sh", "/hatchery/sample/eicar.com"]
+    # Do not run this service directly; it exists to verify the image builds.
