@@ -82,7 +82,7 @@ SECTION_PACKER_MAP: dict[str, tuple[str, str]] = {
     ".advmp": ("VMProtect (advanced)", "MEDIUM"),
     ".mpress1": ("MPRESS", "HIGH"),
     ".mpress2": ("MPRESS", "HIGH"),
-    ".ndata": ("NSIS", "MEDIUM"),
+    ".ndata": ("Installer/NSIS", "MEDIUM"),
     ".rsrc": ("Resource-packed", "LOW"),
     ".pec2": ("PECompact", "HIGH"),
     "pec2": ("PECompact", "HIGH"),
@@ -91,7 +91,6 @@ SECTION_PACKER_MAP: dict[str, tuple[str, str]] = {
     ".enigma2": ("Enigma Protector", "HIGH"),
     "CODE": ("Old Borland Delphi", "LOW"),
     ".text2": ("Multi-section packer", "MEDIUM"),
-    ".ndata": ("Installer/NSIS", "MEDIUM"),
 }
 
 # Known overlay signatures

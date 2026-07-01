@@ -190,7 +190,7 @@ class STIXExporter:
         Returns:
             STIX pattern string, or None if not applicable.
         """
-        patterns: dict[str, str] = {
+        patterns: dict[str, str | None] = {
             "ipv4-addr": f"[ipv4-addr:value = '{value}']",
             "domain-name": f"[domain-name:value = '{value}']",
             "url": f"[url:value = '{value}']",

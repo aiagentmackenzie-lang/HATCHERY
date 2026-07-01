@@ -7,7 +7,6 @@ the host or the internet.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -84,13 +83,14 @@ class NetworkIsolator:
         )
         ipam_config = docker_sdk.types.IPAMConfig(pool_configs=[ipam_pool])
 
-        network = self.client.networks.create(
+        _network = self.client.networks.create(
             self.config.name,
             driver="bridge",
             ipam=ipam_config,
             internal=True,  # No external routing
             labels={"hatchery": "sandbox-network"},
         )
+        _ = _network  # we only need the side effect
 
         logger.info(
             "Created isolated network: %s (subnet=%s, internal=True)",

@@ -2,7 +2,6 @@
 
 import json
 import pytest
-from pathlib import Path
 
 from engine.export.report import ReportGenerator
 
@@ -104,7 +103,7 @@ class TestReportGenerator:
 
     def test_write_report(self, tmp_path):
         """Test writing reports to files."""
-        output_dir = self.gen.write_report(
+        _output_dir = self.gen.write_report(
             output_dir=tmp_path,
             sample_name="test.bin",
             sample_hash={"md5": "x", "sha1": "y", "sha256": "z", "file_size": 100},
@@ -122,7 +121,7 @@ class TestReportGenerator:
     def test_write_report_creates_directory(self, tmp_path):
         """Test that write_report creates the output directory."""
         output_dir = tmp_path / "nested" / "dir"
-        result = self.gen.write_report(
+        _result = self.gen.write_report(
             output_dir=output_dir,
             sample_name="test.bin",
             sample_hash={"md5": "x", "sha1": "y", "sha256": "z", "file_size": 100},

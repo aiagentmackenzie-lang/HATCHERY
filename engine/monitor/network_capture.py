@@ -7,10 +7,9 @@ when the GHOSTWIRE engine is available.
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 # Try to import GHOSTWIRE for C2 detection
 # Path is resolved from environment variable or default location
-import os
 
 _GHOSTWIRE_PATH_ENV = os.environ.get("HATCHERY_GHOSTWIRE_PATH", "")
 _GHOSTWIRE_PATH_DEFAULT = Path("/Users/main/Security Apps/GHOSTWIRE")
@@ -31,8 +29,8 @@ try:
     _gw_path = str(GHOSTWIRE_PATH)
     if _gw_path not in sys.path:
         sys.path.insert(0, _gw_path)
-    from engine.detection.beacon import BeaconDetector
-    from engine.detection.dns_threats import DNSThreatDetector
+    from engine.detection.beacon import BeaconDetector  # noqa: F401
+    from engine.detection.dns_threats import DNSThreatDetector  # noqa: F401
     HAS_GHOSTWIRE = True
     logger.info("GHOSTWIRE integration available")
 except ImportError:
@@ -215,7 +213,7 @@ class NetworkCapture:
                 ["tshark", "-r", str(pcap_path), "-T", "fields", "-e", "frame.number"],
                 capture_output=True, text=True, timeout=30,
             )
-            result.total_packets = len([l for l in count_proc.stdout.splitlines() if l.strip()])
+            result.total_packets = len([line for line in count_proc.stdout.splitlines() if line.strip()])
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -321,7 +319,7 @@ class NetworkCapture:
             Updated NetworkCaptureResult.
         """
         try:
-            from scapy.all import rdpcap, TCP, DNS, IP, Raw
+            from scapy.all import rdpcap, TCP, DNS, IP
 
             packets = rdpcap(str(pcap_path))
             result.total_packets = len(packets)

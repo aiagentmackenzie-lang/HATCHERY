@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-from engine.intake.uploader import SampleUploader, SampleMetadata
+from engine.intake.uploader import SampleUploader
 
 
 class TestSampleUploader:
@@ -125,8 +125,8 @@ class TestSampleUploader:
         file1.write_bytes(data)
         file2.write_bytes(data)
 
-        meta1 = uploader.upload(file1)
-        meta2 = uploader.upload(file2)
+        _meta1 = uploader.upload(file1)
+        _meta2 = uploader.upload(file2)
 
         # Storage paths should be the same (dedup by SHA256)
         stored_files = list(samples_dir.glob("*.sample"))

@@ -7,12 +7,11 @@ All queries are logged for IOC extraction.
 
 from __future__ import annotations
 
-import json
 import logging
 import socket
 import struct
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional

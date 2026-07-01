@@ -1,10 +1,9 @@
 """Tests for HATCHERY fake services (DNS, HTTP, SMTP)."""
 
 import pytest
-from pathlib import Path
 
 from engine.fake_services.dns_server import FakeDNSServer, DNSQueryLog
-from engine.fake_services.http_server import FakeHTTPServer, HTTPRequestLog, FakeHTTPHandler
+from engine.fake_services.http_server import FakeHTTPServer, HTTPRequestLog
 from engine.fake_services.smtp_server import FakeSMTPServer, SMTPSessionLog
 from engine.fake_services.service_manager import (
     FakeServiceManager,

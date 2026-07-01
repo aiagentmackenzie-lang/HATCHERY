@@ -1,7 +1,6 @@
 """Tests for HATCHERY strace parser."""
 
 import pytest
-from pathlib import Path
 from engine.monitor.strace_parser import StraceParser, EventCategory, EventSeverity
 
 

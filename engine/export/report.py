@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -46,19 +45,19 @@ class ReportGenerator:
         """
         now = datetime.now(timezone.utc).isoformat()
         lines: list[str] = [
-            f"# HATCHERY Analysis Report",
-            f"",
+            "# HATCHERY Analysis Report",
+            "",
             f"**Sample:** `{sample_name}`  ",
             f"**Date:** {now}  ",
-            f"**Engine:** HATCHERY v0.1.0  ",
-            f"",
+            "**Engine:** HATCHERY v0.1.0  ",
+            "",
         ]
 
         # Hash section
         lines.append("## File Hashes")
         lines.append("")
-        lines.append(f"| Algorithm | Hash |")
-        lines.append(f"|-----------|------|")
+        lines.append("| Algorithm | Hash |")
+        lines.append("|-----------|------|")
         lines.append(f"| MD5 | `{sample_hash.get('md5', 'N/A')}` |")
         lines.append(f"| SHA1 | `{sample_hash.get('sha1', 'N/A')}` |")
         lines.append(f"| SHA256 | `{sample_hash.get('sha256', 'N/A')}` |")

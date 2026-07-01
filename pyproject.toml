@@ -29,7 +29,23 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    "ruff>=0.15",
+    "mypy>=1.10",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = "engine.fake_services.*"
+disable_error_code = ["attr-defined", "assignment", "var-annotated", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "engine.static.yara_scanner"
+disable_error_code = ["attr-defined"]
 
 [project.scripts]
 hatchery = "engine.cli:cli"

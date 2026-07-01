@@ -1,7 +1,6 @@
 """Tests for HATCHERY string extractor."""
 
 import pytest
-from pathlib import Path
 from engine.intake.strings import StringExtractor
 
 

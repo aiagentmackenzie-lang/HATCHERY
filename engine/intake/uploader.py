@@ -7,9 +7,8 @@ Files are stored in a samples directory with SHA256-based naming to deduplicate.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional

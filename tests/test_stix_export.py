@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from engine.export.stix import STIXExporter, _stix_id, HATCHERY_NAMESPACE
+from engine.export.stix import STIXExporter, _stix_id
 
 
 class TestSTIXExporter:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -35,8 +34,8 @@ HAS_CAPA = _check_capa_available()
 if not HAS_CAPA:
     # Try Python import
     try:
-        import capa
-        HAS_CAPA_PYTHON = True
+        import importlib.util
+        HAS_CAPA_PYTHON = importlib.util.find_spec("capa") is not None
     except ImportError:
         HAS_CAPA_PYTHON = False
     logger.debug("capa CLI not found, Python import: %s", HAS_CAPA_PYTHON)

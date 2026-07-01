@@ -102,7 +102,7 @@ class IOCExtractor:
             IOCReport with deduplicated, categorized IOCs.
         """
         all_iocs: list[IOC] = []
-        seen: set[str] = set()  # type:value for dedup
+        seen: set[str] = set()  # dedup key is type:value
 
         if static_data:
             all_iocs.extend(self._extract_from_static(static_data, seen))

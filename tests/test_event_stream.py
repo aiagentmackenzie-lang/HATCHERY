@@ -208,8 +208,8 @@ class TestEventStream:
 
     def test_timeline_ordering(self):
         """Test that timeline returns events sorted by timestamp."""
-        e1 = self.stream.add_custom_event("a", "b", "low", {}, timestamp="2026-01-01T10:00:00")
-        e2 = self.stream.add_custom_event("c", "d", "low", {}, timestamp="2026-01-01T09:00:00")
+        _e1 = self.stream.add_custom_event("a", "b", "low", {}, timestamp="2026-01-01T10:00:00")
+        _e2 = self.stream.add_custom_event("c", "d", "low", {}, timestamp="2026-01-01T09:00:00")
 
         timeline = self.stream.get_timeline()
         assert len(timeline) == 2

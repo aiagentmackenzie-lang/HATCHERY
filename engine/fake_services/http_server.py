@@ -7,7 +7,6 @@ POST bodies, User-Agents) for IOC extraction.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 

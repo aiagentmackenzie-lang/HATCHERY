@@ -8,18 +8,18 @@ data exfiltration and spam-sending malware.
 from __future__ import annotations
 
 import logging
+import socket
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 try:
-    import aiosmtpd.controller
-    import aiosmtpd.handlers
-    HAS_AIOSMTPD = True
+    import importlib.util
+    HAS_AIOSMTPD = importlib.util.find_spec("aiosmtpd") is not None
 except ImportError:
     HAS_AIOSMTPD = False
     logger.debug("aiosmtpd not available — using socket-based SMTP fallback")
@@ -219,7 +219,6 @@ class FakeSMTPServer:
             conn: TCP connection.
             client_ip: Client IP address.
         """
-        import re
 
         session = SMTPSessionLog(
             timestamp=datetime.now(timezone.utc).isoformat(),

@@ -8,8 +8,6 @@ from engine.monitor.file_watcher import (
     FileEvent,
     FileEventType,
     FileEventSeverity,
-    FileWatchResult,
-    SUSPICIOUS_PATH_RULES,
 )
 
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -24,7 +23,6 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 console = Console()
 
@@ -520,19 +518,19 @@ def static(file: Path) -> None:
             console.print(f"    {domain}")
 
     # YARA
-    console.print(f"\n[bold]YARA Scan[/bold]")
+    console.print("\n[bold]YARA Scan[/bold]")
     yara_scanner = YARAScanner()
     yara_result = yara_scanner.scan(file)
     _print_yara_results(yara_result.to_dict())
 
     # capa
-    console.print(f"\n[bold]capa Analysis[/bold]")
+    console.print("\n[bold]capa Analysis[/bold]")
     capa_scanner = CapaScanner()
     capa_result = capa_scanner.scan(file)
     _print_capa_results(capa_result.to_dict())
 
     # Packer
-    console.print(f"\n[bold]Packer Detection[/bold]")
+    console.print("\n[bold]Packer Detection[/bold]")
     packer_detector = PackerDetector()
     packer_result = packer_detector.detect(file)
     _print_packer_results(packer_result.to_dict())

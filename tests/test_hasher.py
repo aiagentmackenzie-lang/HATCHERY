@@ -1,7 +1,6 @@
 """Tests for HATCHERY multi-hash computation."""
 
 import pytest
-import tempfile
 from pathlib import Path
 
 from engine.intake.hasher import MultiHasher, HashResult

@@ -12,13 +12,12 @@ import json
 import logging
 import queue
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Generator, Optional
+from typing import Generator, Optional
 
-from engine.monitor.strace_parser import StraceEvent, EventCategory, EventSeverity
+from engine.monitor.strace_parser import StraceEvent
 from engine.monitor.file_watcher import FileEvent
 from engine.monitor.network_capture import NetworkConnection, DNSQuery
 

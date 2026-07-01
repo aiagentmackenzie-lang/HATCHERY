@@ -1,7 +1,7 @@
 """Tests for HATCHERY IOC extractor."""
 
 import pytest
-from engine.ioc.extractor import IOCExtractor, IOC
+from engine.ioc.extractor import IOCExtractor
 
 
 class TestIOCExtractor:
