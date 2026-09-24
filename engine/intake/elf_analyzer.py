@@ -214,7 +214,9 @@ class ELFAnalyzer:
 
         for tag in dynamic_section.iter_tags():
             if tag.entry.d_tag == "DT_NEEDED":
-                lib_name = tag.needed
+                # pyelftools >= 0.31 injects .needed/.rpath/.runpath at runtime
+                # via setattr (invisible to type checkers) — read via getattr.
+                lib_name = str(getattr(tag, "needed"))
                 libraries.append(lib_name)
 
         # Flag suspicious libraries
@@ -304,10 +306,10 @@ class ELFAnalyzer:
                 for tag in dynamic_section.iter_tags():
                     if tag.entry.d_tag == "DT_RPATH":
                         props.has_rpath = True
-                        suspicious.append(f"Has RPATH: {tag.rpath}")
+                        suspicious.append(f"Has RPATH: {getattr(tag, 'rpath')}")
                     elif tag.entry.d_tag == "DT_RUNPATH":
                         props.has_runpath = True
-                        suspicious.append(f"Has RUNPATH: {tag.runpath}")
+                        suspicious.append(f"Has RUNPATH: {getattr(tag, 'runpath')}")
 
         # Stripped — no symbol table
         symtab = elf.get_section_by_name(".symtab")
