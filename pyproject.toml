@@ -33,6 +33,11 @@ dev = [
     "mypy>=1.10",
 ]
 
+[tool.ruff.lint]
+# Pin the rule set explicitly (ruff 0.16 changed the default `select` from
+# E4/E7/E9/F to a much broader set, which would fail CI on every push).
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
