@@ -88,6 +88,7 @@ class IOCExtractor:
         file_watch_data: Optional[dict] = None,
         network_data: Optional[dict] = None,
         fake_service_data: Optional[dict] = None,
+        emulation_data: Optional[dict] = None,
     ) -> IOCReport:
         """Extract IOCs from all available analysis data.
 
@@ -114,6 +115,8 @@ class IOCExtractor:
             all_iocs.extend(self._extract_from_network(network_data, seen))
         if fake_service_data:
             all_iocs.extend(self._extract_from_fake_services(fake_service_data, seen))
+        if emulation_data:
+            all_iocs.extend(self._extract_from_emulation(emulation_data, seen))
 
         # Build summary
         summary: dict[str, int] = {}
@@ -319,6 +322,32 @@ class IOCExtractor:
                     context=ioc.get("context", ""),
                 ), seen, results)
 
+        return results
+
+    def _extract_from_emulation(
+        self, data: dict, seen: set[str]
+    ) -> list[IOC]:
+        """Extract IOCs observed only by the emulator.
+
+        The emulation stage has already produced IOC-shaped rows (endpoint,
+        mutex, user agent, persistence, dropped-file hash) from the parsed
+        report; they are merged here like every other source so deduplication
+        and the summary stay in one place. ``source="emulation"`` is preserved.
+        """
+        results: list[IOC] = []
+        for row in data.get("iocs", []) or []:
+            value = str(row.get("value") or "")
+            ioc_type = str(row.get("type") or "")
+            if not value or not ioc_type:
+                continue
+            self._dedup_add(IOC(
+                type=ioc_type,
+                value=value,
+                source=str(row.get("source") or "emulation"),
+                severity=str(row.get("severity") or self.TYPE_SEVERITY.get(ioc_type, "medium")),
+                context=str(row.get("context") or ""),
+                confidence=str(row.get("confidence") or "medium"),
+            ), seen, results)
         return results
 
     def _extract_from_fake_services(

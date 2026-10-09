@@ -27,6 +27,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The Windows PE emulator is a PRE-RELEASE and is deliberately NOT in `dev`, so
+# the pinned python-gate matrix (3.12/3.13/3.14) never installs it. Emulation
+# tests importorskip; one opt-in CI job (`emulation-gate`) installs this extra.
+# Qiling is rejected (GPLv2, heavier deps, ships a Windows rootfs).
+emulation = [
+    "speakeasy-emulator==2.0.0b6",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
@@ -74,6 +81,7 @@ engine = [
     "static/rules/**/*.yar",
     "sandbox/seccomp.json",
     "sandbox/docker/*",
+    "emulate/docker/*",
     "export/attack/*.json",
     "export/ocsf/*.json",
 ]

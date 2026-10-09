@@ -83,7 +83,7 @@ Not aspirational. What is in the code today.
 | Hash (MD5/SHA1/SHA256), string extraction, PE/ELF parsing | ✅ | |
 | YARA-X scanning | ✅ | Rust engine; YARA 4 is in maintenance mode upstream |
 | Rule lint gate (`hatchery rules lint`) | ✅ | naming + required metadata are CI errors, not warnings |
-| capa capability extraction | ✅ | static only (capa 9.x) |
+| capa capability extraction | ✅ | static capa 9.x, plus `capa_dynamic` (below) over emulator memory snapshots |
 | Packer detection | ✅ | UPX, VMProtect, Themida, MPRESS, NSIS, generic |
 | Detonation under syscall tracing | ✅ | Linux ELF; artifact recovery verified end-to-end |
 | **Per-tier monitoring strategy** | ✅ | every bundle names the collector used *and its blind spots*; a downgrade says so |
@@ -103,9 +103,11 @@ Not aspirational. What is in the code today.
 | Result bundle consumed by the API | ✅ | single producer per table |
 | **GHOSTWIRE C2 integration** | ❌ | package-name collision with HATCHERY's own `engine`; opt-in and non-functional |
 | **Fake internet (DNS/HTTP/SMTP)** | ❌ | implemented but never started, and it would bind on the host. Removed from the claims until it is real. |
-| **Windows / macOS dynamic analysis** | ❌ | static only |
+| **Windows PE emulation (config extraction)** | ⚠️ | Mandiant **Speakeasy 2.0.0b6** (MIT, pre-release) in a container at the probed tier; extracts C2 endpoints, user agents, mutexes, registry persistence and dropped files from an emulated run. **Not isolation and not ground truth** — the sample's instructions are interpreted, not executed. See D21 |
+| **`capa_dynamic` (capa over memory snapshots)** | ⚠️ | static capa + YARA over the emulator's captured memory regions (unpacked/decrypted code), labelled separately from static capa. A Speakeasy→CAPE adapter is deliberately not built |
+| **Windows / macOS native dynamic analysis** | ❌ | no Windows guest; Windows PE is emulated, not executed natively |
 | **Delivery-format intake (ZIP/OOXML, tar/gzip/bzip2/xz, HTML/SVG, LNK, ISO9660/IMG, PDF, OLE/CFB, RTF)** | ⚠️ | one bounded intake path; containers are unpacked and their children analysed statically. LNK and ISO9660 are fully parsed; PDF is targeted (embedded files + JavaScript); OLE/CFB compound files are enumerated and their embedded VBA macros **decompressed to source** and `\x01Ole10Native` packages carved out; RTF `\objdata` objects are decoded and an OLE payload is fed straight back to the OLE parser. 7z, RAR and CAB are *detected and reported as unsupported* with a reason — never silently skipped |
-| **Unpacking / config extraction (emulation)** | ❌ | planned; Speakeasy/Qiling for Windows PE config on a Linux host (D9). OLE/CFB legacy Office and RTF embedded-object extraction landed this revision |
+| **Unpacking / config extraction** | ⚠️ | Windows PE config comes from emulation (above, D21). Delivery containers are unpacked statically (D19); 7z, RAR and CAB are detected and reported as unsupported |
 | **AI triage** | ❌ | planned; prompt-contract design is in the roadmap |
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
@@ -123,14 +125,17 @@ Not aspirational. What is in the code today.
 7. **Tier 2 was verified end-to-end on this host.** gVisor needs no KVM and the registration script exists; installing `runsc` and wiring its Sentry trace were verified against a real detonation. Two consequences are documented rather than hidden: gVisor's trace is container-wide, so the engine attributes events to the sample's process subtree and records how many entrypoint/monitor events it excluded; and Docker's `get_archive` cannot see files written inside a gVisor container because the rootfs overlay is in-memory, so the in-guest strace/inotify/dropped artifacts are recovered copy-based through a named Docker volume read back by a short `runc` sidecar — no host bind mount (D5). The Sentry trace remains the syscall collector.
 8. **Delivery-format coverage is partial, and says which part.** A ZIP/OOXML package, a tar/gzip/bzip2/xz archive, an HTML/SVG page, a Windows shell link (LNK), an ISO9660/IMG image, a PDF, a legacy Office OLE/CFB compound file, or an RTF document with an embedded object is unpacked on one bounded path and each extracted child is hashed, classified and run through YARA/strings/packer detection. LNK target/arguments/working-directory/icon fields and ISO9660 (incl. Joliet) directory trees are fully parsed; PDF is targeted at embedded files and JavaScript rather than a full object-graph parse; OLE/CFB streams are enumerated, embedded VBA projects are decompressed with MS-OVBA so the extractor sees the macro *source* rather than opaque compressed bytes, and `\x01Ole10Native` package streams are carved to recover the embedded file; an RTF `\objdata` object is decoded (hex or `\bin`) and, when it is an OLE compound file, recursed into the same OLE parser so its VBA and package payload are recovered too. Extracted children are **not detonated**, and the run states that. Formats that are detected but not extracted in this revision — 7z, RAR, CAB — are listed as unsupported with a reason, so a document is never an empty result. Extraction is bounded (depth, child count, per-entry and total size, compression ratio, symlink/device refusal, path-traversal confinement); hitting a bound is recorded, not hidden.
 
+9. **Emulation is a separate, fail-closed stage — not a boundary and not ground truth.** Windows PE config extraction and `capa_dynamic` run Mandiant Speakeasy 2.0.0b6 (a **pre-release**, MIT) inside a container at the probed tier, with `--network none`, a read-only sample, all capabilities dropped, a non-root user and memory/CPU/PID/wall-clock caps. The sample's x86/x64 instructions are interpreted by a software CPU and its Windows APIs emulated in Python — **it never executes natively**, and emulation does **not** raise or lower the isolation tier (the bundle records both). It is gated on having a boundary: with no container runtime it is unavailable and declared, and the off-by-default `--allow-host-emulation` escape hatch runs it on the bare host and is loudly labelled as unsupported. Where it runs it is fail-closed: APIs the emulator does not implement, emulator detection, and the absent real network are declared blind spots, and a crash, a wall-clock cap, or an empty report is **INCONCLUSIVE**, never clean. `capa_dynamic` is static capa/YARA over the emulator's captured memory snapshots — **not** a Speakeasy→CAPE conversion, which is deliberately not built. Emulation events live in a separate `emulation-events.jsonl` stream, not in the native `events.jsonl`. See D21.
+
 ---
 
 ## CLI
 
 ```
-hatchery doctor                     Host readiness: isolation tiers, image, rules
-hatchery build                      Build the sandbox image
+hatchery doctor                     Host readiness: isolation tiers, image, rules, emulation
+hatchery build [--emulation]        Build the sandbox image (and the emulator image)
 hatchery submit <file>              Static + dynamic analysis
+hatchery emulate <file>             Windows PE emulation (static + emulator, no detonation)
 hatchery static <file>              Static analysis only
 hatchery status <task_id>           Task status
 hatchery report <task_id>           Print a completed report
@@ -139,7 +144,11 @@ hatchery rules lint                 Lint the YARA rules (exits 1 on error)
 hatchery push <run_dir> --target misp|opencti   Push the run's STIX bundle
 ```
 
-Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`.
+Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`.
+
+### Emulation (Windows PE)
+
+`hatchery emulate sample.exe` (or `hatchery submit sample.exe --emulate`) runs Mandiant **Speakeasy 2.0.0b6** inside a container at the probed isolation tier and extracts runtime configuration a statically packed sample never reveals: C2 endpoints, user agents, mutexes, registry persistence and dropped files. It also runs `capa_dynamic` — static capa and YARA over the emulator's captured memory snapshots. The extra is opt-in (`pip install -e ".[emulation]"`) and the image is built with `hatchery build --emulation`. Emulation is **not isolation and not ground truth**: the sample is interpreted, not executed, and a crash, timeout, unimplemented API or empty report is INCONCLUSIVE. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D21.
 
 ### Push to MISP / OpenCTI
 
@@ -181,9 +190,10 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 439 tests
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 439 tests (+ emulation tests when the extra is installed)
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
+HATCHERY_EMULATION_E2E=1 pytest tests/test_emulate_e2e.py -v  # really emulates (needs the emulation image)
 ```
 
 The pinned frameworks are refreshed with one idempotent script, which records the
@@ -216,6 +226,8 @@ sample ──► intake (hash / delivery unpack / PE / ELF / strings)
                                                            └──► API ingest ──► SQLite ──► dashboard
 ```
 
+When emulation is enabled, a Windows PE additionally goes through `engine/emulate/` → Speakeasy in a tier-probed container → `emulation-events.jsonl` (a separate stream) plus a top-level `emulation` section (`config`, `snapshots`, `capa_dynamic`) in `bundle/analysis.json`.
+
 ---
 
 ## Roadmap
@@ -224,7 +236,7 @@ sample ──► intake (hash / delivery unpack / PE / ELF / strings)
 
 **Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; and the gVisor tier-2 boundary made real and wired — a runsc runtime, per-container OCI annotations that enable the Sentry trace, and a parser that turns it into `source="gvisor-sentry"` events and evasion scores. Verified end-to-end on a live gVisor detonation.* ⚠️ *host-side eBPF for tier 3 is designed and declared per run but not wired; `strace` remains the tier-3 fallback and the run says so.*
 
-**Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images, PDF embedded files/JavaScript, legacy Office OLE/CFB compound files and RTF embedded objects are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically — with OLE/CFB embedded VBA macros decompressed to source (MS-OVBA) and `\x01Ole10Native` packages carved out, and an RTF `\objdata` OLE payload recursed into the same OLE parser — while 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. **MISP/OpenCTI push is done as D20**: the CLI transports the run's single STIX 2.1 bundle to MISP's STIX 2.1 import or an OpenCTI TAXII 2.1 push collection, fail-closed and without persisting the token (wire format pinned; live instance untested). Emulation-based Windows config extraction and extraction of the remaining formats are still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts.
+**Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images, PDF embedded files/JavaScript, legacy Office OLE/CFB compound files and RTF embedded objects are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically — with OLE/CFB embedded VBA macros decompressed to source (MS-OVBA) and `\x01Ole10Native` packages carved out, and an RTF `\objdata` OLE payload recursed into the same OLE parser — while 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. **MISP/OpenCTI push is done as D20**: the CLI transports the run's single STIX 2.1 bundle to MISP's STIX 2.1 import or an OpenCTI TAXII 2.1 push collection, fail-closed and without persisting the token (wire format pinned; live instance untested). **Windows PE emulation is done as D21**: Speakeasy 2.0.0b6 runs in a container at the probed tier and extracts runtime configuration (C2 endpoints, user agents, mutexes, registry persistence, dropped files) with `capa_dynamic` over captured memory snapshots — declared, containerized and fail-closed, never sold as isolation. Extraction of the remaining archives (7z, RAR, CAB) is still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts.
 
 **Phase 3 — AI triage, done properly.** Local (Ollama) function-level behavioral reporting with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**. Sample-derived text is treated as hostile input: malware contains strings designed to steer an LLM's verdict.
 

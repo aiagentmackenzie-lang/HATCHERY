@@ -39,6 +39,7 @@ interface AnalysisBundle {
   isolation?: Record<string, unknown> | null;
   static?: Record<string, unknown>;
   sandbox?: Record<string, unknown> | null;
+  emulation?: Record<string, unknown> | null;
   iocs?: Array<Record<string, unknown>>;
   mitre?: Record<string, unknown>;
   evasion?: Record<string, unknown> | null;
@@ -95,6 +96,7 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
   const isolation = (bundle.isolation ?? null) as Record<string, unknown> | null;
   const iocs = (bundle.iocs ?? []) as Array<Record<string, unknown>>;
   const evasion = (bundle.evasion ?? null) as Record<string, unknown> | null;
+  const emulation = (bundle.emulation ?? null) as Record<string, unknown> | null;
 
   const str = (v: unknown): string | null => (v === undefined || v === null ? null : String(v));
   const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
@@ -127,8 +129,8 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
     db.prepare(
       `INSERT INTO static_results
          (task_id, hashes_json, strings_json, pe_json, elf_json, yara_json,
-          capa_json, packer_json, delivery_json, ioc_json, mitre_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          capa_json, packer_json, delivery_json, emulation_json, ioc_json, mitre_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       JSON.stringify({
@@ -144,6 +146,7 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
       JSON.stringify(staticData.capa ?? null),
       JSON.stringify(staticData.packer ?? null),
       staticData.delivery ? JSON.stringify(staticData.delivery) : null,
+      emulation ? JSON.stringify(emulation) : null,
       JSON.stringify(iocs),
       JSON.stringify(mitre),
     );

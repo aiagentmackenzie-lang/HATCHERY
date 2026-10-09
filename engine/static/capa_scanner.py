@@ -115,11 +115,14 @@ class CapaScanner:
         "operating-system": "OS Interaction",
     }
 
-    def scan(self, file_path: Path) -> CapaResult:
+    def scan(self, file_path: Path, format: Optional[str] = None) -> CapaResult:
         """Run capa analysis on a file.
 
         Args:
             file_path: Path to the binary to analyze.
+            format: Optional explicit capa input format (``pe``, ``sc32``, ``sc64``).
+                Required for raw memory regions: capa cannot auto-detect a bare
+                code slice, so the caller states the architecture.
 
         Returns:
             CapaResult with extracted capabilities and ATT&CK mappings.
@@ -141,7 +144,7 @@ class CapaScanner:
         try:
             # Use CLI for reliability
             if HAS_CAPA:
-                raw_output = self._run_capa_cli(file_path)
+                raw_output = self._run_capa_cli(file_path, format=format)
             else:
                 raw_output = self._run_capa_python(file_path)
 
@@ -163,18 +166,23 @@ class CapaScanner:
         )
         return result
 
-    def _run_capa_cli(self, file_path: Path) -> Optional[dict]:
+    def _run_capa_cli(self, file_path: Path, format: Optional[str] = None) -> Optional[dict]:
         """Run capa CLI and return parsed JSON output.
 
         Args:
             file_path: Path to the binary.
+            format: Optional explicit input format passed as ``-f``.
 
         Returns:
             Parsed JSON dict or None on failure.
         """
         try:
+            command = ["capa", "-j"]
+            if format:
+                command += ["-f", format]
+            command.append(str(file_path))
             proc = subprocess.run(
-                ["capa", "-j", str(file_path)],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=120,

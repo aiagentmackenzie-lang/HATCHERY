@@ -284,11 +284,28 @@ def cli(verbose: bool) -> None:
 @click.option("--timeout", default=120, help="Sandbox timeout in seconds")
 @click.option("--output", "-o", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--no-sandbox", is_flag=True, help="Skip sandbox execution (static only)")
-def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -> None:
+@click.option("--emulate", is_flag=True, help="Run Windows PE emulation (needs the emulation image)")
+@click.option("--emulate-timeout", default=60, help="Emulated-run timeout in seconds")
+@click.option("--emulate-raw", is_flag=True, help="Treat the sample as raw shellcode")
+@click.option("--no-emulate-capa", is_flag=True, help="Skip capa over memory snapshots")
+@click.option("--allow-host-emulation", is_flag=True, help="Escape hatch: emulate on the bare host (loudly unsupported)")
+def submit(
+    file: Path,
+    timeout: int,
+    output: Optional[Path],
+    no_sandbox: bool,
+    emulate: bool,
+    emulate_timeout: int,
+    emulate_raw: bool,
+    no_emulate_capa: bool,
+    allow_host_emulation: bool,
+) -> None:
     """Submit a sample for full analysis.
 
-    Runs static analysis (hashes, strings, YARA, capa, packer detection)
-    and optionally detonates in the sandbox container.
+    Runs static analysis (hashes, strings, YARA, capa, packer detection),
+    optionally detonates Linux ELF in the sandbox container, and optionally
+    emulates a Windows PE with Speakeasy. Emulation is a declared, containerized
+    stage — not an isolation boundary.
     """
     task_id = uuid.uuid4().hex[:12]
     console.print(Panel(
@@ -423,6 +440,9 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     evasion_events: list[dict] = []
     inotify_log_path: Optional[Path] = None
     sandbox_error: Optional[str] = None
+    emulation_result_dict: Optional[dict] = None
+    emulation_events: list[dict] = []
+    emulation_error: Optional[str] = None
     if not no_sandbox:
         console.print("\n[bold]▸ Phase 2: Sandbox Execution[/bold]")
         try:
@@ -571,6 +591,79 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
             console.print(f"  [red]Sandbox error: {e}[/red]")
             sandbox_error = str(e)
 
+    # Phase 3: Windows PE emulation (separate, declared, containerized stage).
+    # This is not isolation and it is fail-closed: a crash, timeout or
+    # unimplemented API is INCONCLUSIVE, never a clean verdict (D21).
+    if emulate:
+        console.print("\n[bold]▸ Phase 3: Windows PE Emulation[/bold]")
+        try:
+            from engine.emulate.manager import EmulationContainerConfig, EmulationManager
+
+            emu_manager = EmulationManager(EmulationContainerConfig(
+                emulate_timeout=emulate_timeout,
+                raw=emulate_raw,
+                run_capa=not no_emulate_capa,
+                allow_host_emulation=allow_host_emulation,
+            ))
+            emu_result = emu_manager.execute(file, results_dir / "emulation")
+            emulation_result_dict = emu_result.section
+            emulation_events = emu_result.events
+            section = emulation_result_dict or {}
+            if emu_result.status == "completed" and section.get("available"):
+                if emu_result.ran_on_host:
+                    console.print(
+                        "  [red]⚠ Ran on the BARE HOST via --allow-host-emulation: "
+                        "not containerized, not supported.[/red]"
+                    )
+                console.print(
+                    f"  Emulator: [cyan]{section.get('emulator')} "
+                    f"{section.get('emulator_version')}[/cyan] "
+                    f"(report schema {str(section.get('schema_hash', ''))[:12]})"
+                )
+                console.print(
+                    f"  API calls: [cyan]{section.get('api_calls', 0)}[/cyan]; "
+                    f"events: [cyan]{section.get('events_written', 0)}[/cyan]"
+                )
+                emu_config = section.get("config") or {}
+                endpoints = emu_config.get("network_endpoints") or []
+                if endpoints:
+                    console.print(f"  Endpoints: [red]{len(endpoints)}[/red]")
+                    for endpoint in endpoints[:5]:
+                        console.print(
+                            f"    • [red]{endpoint.get('server')}:{endpoint.get('port')}[/red] "
+                            f"({endpoint.get('protocol')})"
+                        )
+                if emu_config.get("mutexes"):
+                    console.print(
+                        f"  Mutexes: [yellow]{', '.join(emu_config['mutexes'])}[/yellow]"
+                    )
+                snapshots = section.get("snapshots") or {}
+                caps = (section.get("capa_dynamic") or {}).get("capabilities") or []
+                console.print(
+                    f"  capa_dynamic: [cyan]{len(caps)}[/cyan] capability(ies) over "
+                    f"[cyan]{snapshots.get('regions_decoded', 0)}[/cyan] snapshot region(s)"
+                )
+                if section.get("unsupported_apis"):
+                    console.print(
+                        "  [red]INCONCLUSIVE (emulation): unimplemented API(s): "
+                        f"{', '.join(map(str, section['unsupported_apis']))}[/red]"
+                    )
+                    emulation_error = "emulation inconclusive: unimplemented API handler"
+            else:
+                console.print(
+                    f"  [yellow]Emulation {emu_result.status or 'not run'}: "
+                    f"{emu_result.error or 'see limitations'}[/yellow]"
+                )
+                if emu_result.status in ("error", "unavailable"):
+                    emulation_error = emu_result.error
+        except Exception as e:  # noqa: BLE001 - an emulation failure must not kill the run
+            console.print(f"  [red]Emulation error: {e}[/red]")
+            emulation_error = str(e)
+            from engine.emulate.runner import unavailable_section as _unavailable
+
+            emulation_result_dict = _unavailable(str(e))
+            emulation_result_dict["status"] = "error"
+
     # IOC Extraction
     console.print("\n[bold]▸ IOC Extraction[/bold]")
     extractor = IOCExtractor()
@@ -583,7 +676,9 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         "delivery": delivery_dict,
     }
 
-    ioc_report = extractor.extract(static_data=static_data)
+    ioc_report = extractor.extract(
+        static_data=static_data, emulation_data=emulation_result_dict
+    )
     _print_iocs(ioc_report.to_dict())
 
     # MITRE ATT&CK mapping
@@ -643,6 +738,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         events=events,
         evasion=evasion_dict,
         delivery=delivery_dict,
+        emulation=emulation_result_dict,
     )
     bundle = AnalysisBundle(
         task_id=task_id,
@@ -659,9 +755,11 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         iocs=ioc_report.to_dict().get("iocs", []),
         mitre=mitre_result.to_dict(),
         evasion=evasion_dict,
+        emulation=emulation_result_dict,
         events=events,
+        emulation_events=emulation_events,
         limitations=limitations,
-        errors=[sandbox_error] if sandbox_error else [],
+        errors=[e for e in (sandbox_error, emulation_error) if e],
     )
     analysis_path, events_path = write_bundle(results_dir / "bundle", bundle)
     summary = bundle.summary()
@@ -678,6 +776,17 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
             f"  [red]Evasion: score {summary['evasion_score']}/100 "
             f"({summary['evasion_verdict']}) signals={summary['evasion_signals']}[/red]"
         )
+    if summary.get("emulation_available"):
+        console.print(
+            f"  Emulation: [cyan]{summary['emulation_status']}[/cyan] "
+            f"({summary['emulation_api_calls']} API call(s), "
+            f"{summary['emulation_endpoints']} endpoint(s), "
+            f"{summary['capa_dynamic_capabilities']} dynamic capa)"
+        )
+        if summary.get("emulation_inconclusive"):
+            console.print(
+                "  [red]INCONCLUSIVE (emulation): not established, not clean.[/red]"
+            )
     console.print(f"  analysis.json: [cyan]{analysis_path}[/cyan]")
     console.print(f"  events.jsonl:  [cyan]{events_path}[/cyan]")
     if summary["evasion_inconclusive"]:
@@ -702,6 +811,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         evasion=evasion_dict,
         attack_version=mitre_result.attack_version,
         ocsf_schema_version=OCSF_SCHEMA_VERSION,
+        emulation=emulation_result_dict,
     )
     console.print(f"  Markdown: [cyan]{report_dir / 'report.md'}[/cyan]")
 
@@ -786,6 +896,43 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         f"Results: [cyan]{results_dir}[/cyan]",
         title="✅ Analysis Complete",
     ))
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.option("--timeout", default=180, help="Container wall-clock timeout in seconds")
+@click.option("--emulate-timeout", default=60, help="Emulated-run timeout in seconds")
+@click.option("--no-capa", is_flag=True, help="Skip capa over memory snapshots")
+@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output directory")
+@click.option("--allow-host-emulation", is_flag=True, help="Escape hatch: run on the bare host (loudly unsupported)")
+@click.pass_context
+def emulate(
+    ctx: click.Context,
+    file: Path,
+    timeout: int,
+    emulate_timeout: int,
+    no_capa: bool,
+    output: Optional[Path],
+    allow_host_emulation: bool,
+) -> None:
+    """Emulate a Windows PE with Speakeasy (standalone).
+
+    Runs the static pipeline plus the containerized emulation stage, without
+    detonation. Use ``hatchery submit --emulate`` to run both. Emulation is a
+    declared stage, not an isolation boundary, and it is fail-closed.
+    """
+    ctx.invoke(
+        submit,
+        file=file,
+        timeout=timeout,
+        output=output,
+        no_sandbox=True,
+        emulate=True,
+        emulate_timeout=emulate_timeout,
+        emulate_raw=False,
+        no_emulate_capa=no_capa,
+        allow_host_emulation=allow_host_emulation,
+    )
 
 
 @cli.command()
@@ -996,12 +1143,13 @@ def static(file: Path) -> None:
 
 
 @cli.command()
-def build() -> None:
-    """Build the sandbox Docker image."""
-    console.print("[bold]Building HATCHERY sandbox Docker image...[/bold]")
+@click.option("--emulation", is_flag=True, help="Also build the emulation (Speakeasy) image")
+def build(emulation: bool) -> None:
+    """Build the sandbox Docker image (and, with --emulation, the emulator)."""
+    from engine.sandbox.container import ContainerManager
 
+    console.print("[bold]Building HATCHERY sandbox Docker image...[/bold]")
     try:
-        from engine.sandbox.container import ContainerManager
         manager = ContainerManager()
         tag = manager.build_image()
         console.print(f"[green]✓ Built sandbox image: {tag}[/green]")
@@ -1010,6 +1158,18 @@ def build() -> None:
     except Exception as e:
         console.print(f"[red]Build failed: {e}[/red]")
         console.print("[dim]Make sure Docker is running and you have permission[/dim]")
+
+    if emulation:
+        from engine.emulate.manager import EmulationManager
+
+        console.print("\n[bold]Building HATCHERY emulation image...[/bold]")
+        try:
+            emu_tag = EmulationManager().build_image()
+            console.print(f"[green]✓ Built emulation image: {emu_tag}[/green]")
+        except FileNotFoundError as e:
+            console.print(f"[red]Emulation Dockerfile not found: {e}[/red]")
+        except Exception as e:
+            console.print(f"[red]Emulation build failed: {e}[/red]")
 
 
 @cli.command()
@@ -1054,6 +1214,26 @@ def doctor() -> None:
         console.print("[red]Sandbox NOT ready:[/red]")
         for problem in problems:
             console.print(f"  • [red]{problem}[/red]")
+
+    # Emulation is a separate, declared stage — never folded into the sandbox
+    # readiness answer, because it rides on the same boundary but is not one.
+    console.print()
+    try:
+        from engine.emulate.manager import EmulationContainerConfig, EmulationManager
+
+        emu_available, emu_reason = EmulationManager(
+            EmulationContainerConfig()
+        ).emulation_available()
+    except Exception as exc:  # noqa: BLE001
+        emu_available, emu_reason = False, str(exc)
+    if emu_available:
+        console.print(f"Emulation: [green]available[/green] — {emu_reason}")
+        console.print(
+            "[dim]  Not an isolation boundary: the sample's instructions are "
+            "interpreted, not executed.[/dim]"
+        )
+    else:
+        console.print(f"Emulation: [yellow]unavailable ({emu_reason})[/yellow]")
 
     console.print()
     lint = lint_rules()

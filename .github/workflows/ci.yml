@@ -37,6 +37,31 @@ jobs:
       - name: Test with pytest
         run: pytest -q
 
+  # Opt-in and non-required until it has proven stable. It installs the beta
+  # emulator extra (which the pinned python-gate deliberately never installs) and
+  # runs the emulation tests. It does NOT build the emulation image or run the
+  # container E2E — that stays behind HATCHERY_EMULATION_E2E.
+  emulation-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the emulation extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,emulation]"
+
+      - name: Confirm the pinned emulator imported
+        run: python -c "import speakeasy, unicorn; print('speakeasy ok, unicorn', unicorn.__version__)"
+
+      - name: Emulation unit tests
+        run: pytest tests/test_emulate_report.py tests/test_emulate_config.py tests/test_emulate_memory.py tests/test_emulate_runner.py tests/test_emulate_negative.py -q
+
   # Really detonates a sample in a container. This is the job that would have
   # caught every blocker the project shipped with: the sandbox network was never
   # created, artifact paths were wrong, seccomp blocked its own tracer, the exit

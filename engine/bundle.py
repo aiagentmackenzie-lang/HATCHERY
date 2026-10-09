@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = "1.0"
 ANALYSIS_FILENAME = "analysis.json"
 EVENTS_FILENAME = "events.jsonl"
+# Emulated events are a separate stream: a run of an emulator is not a run of
+# the sample, and mixing them into events.jsonl would imply the sample did it
+# natively (D4).
+EMULATION_EVENTS_FILENAME = "emulation-events.jsonl"
 # Interoperable exports written alongside the bundle, by the same engine run.
 EXPORT_FILENAMES: dict[str, str] = {
     "stix": "stix_bundle.json",
@@ -254,6 +258,7 @@ def compute_limitations(
     egress_blocked: bool = True,
     evasion: Optional[dict] = None,
     delivery: Optional[dict] = None,
+    emulation: Optional[dict] = None,
 ) -> list[str]:
     """State plainly what this run does not establish.
 
@@ -300,7 +305,7 @@ def compute_limitations(
 
     if not events:
         limits.append(
-            "This run produced no behavioral events at all. Treat it as "
+            "This run produced no native behavioral events. Treat it as "
             "INCONCLUSIVE, not as evidence of benign behavior."
         )
 
@@ -403,11 +408,104 @@ def compute_limitations(
             limits.append(f"Sandbox reported an error: {sandbox['error']}")
 
     limits.append(f"Guest-profile tells at tier {int(tier)}: {TIER_GUEST_TELLS[tier]}")
-    limits.append(
-        "Dynamic analysis covers Linux ELF behavior only. Windows, macOS, document "
-        "and script samples are analysed statically; see the static section."
-    )
+    if emulation and emulation.get("available"):
+        limits.append(
+            "Dynamic analysis covers Linux ELF behavior natively. Windows PE samples "
+            "are analysed statically and, when emulation is enabled, inside an "
+            "emulator (their instructions are interpreted, not executed)."
+        )
+    else:
+        limits.append(
+            "Dynamic analysis covers Linux ELF behavior only. Windows, macOS, document "
+            "and script samples are analysed statically; see the static section."
+        )
+
+    _emulation_limitations(emulation, limits)
     return limits
+
+
+def _emulation_limitations(emulation: Optional[dict], limits: list[str]) -> None:
+    """State what an emulation stage did and did not establish (D21).
+
+    An empty emulation report on a Windows PE is *not established*, never
+    benign. A crash, a wall-clock timeout, or an unimplemented API handler is
+    INCONCLUSIVE — the D3 rule applied to the emulation collector.
+    """
+    if not emulation:
+        return
+
+    if not emulation.get("available"):
+        reason = emulation.get("reason") or "not run"
+        limits.append(f"Emulation was not run: {reason}")
+        return
+
+    version = emulation.get("emulator_version") or "unknown"
+    schema = str(emulation.get("schema_hash") or "")[:12]
+    limits.append(
+        f"Windows PE emulation used {emulation.get('emulator', 'speakeasy')} "
+        f"{version} (report schema {schema or 'unknown'}). Its instructions were "
+        "interpreted by a software CPU and its Windows APIs emulated in Python; "
+        "the sample did not execute natively. Emulation is not an isolation "
+        "boundary and its results are not ground truth."
+    )
+    limits.append(
+        "Emulation blind spots: APIs the emulator does not implement, emulator "
+        "detection by the sample, and the emulated network (attempts are recorded; "
+        "no real connection is made)."
+    )
+
+    status = str(emulation.get("status") or "")
+    unsupported = emulation.get("unsupported_apis") or []
+    if unsupported:
+        limits.append(
+            "Emulation was INCONCLUSIVE: the sample reached API(s) the emulator does "
+            f"not implement ({', '.join(map(str, unsupported))}) and emulation stopped "
+            "there. Behaviour after that point is unknown."
+        )
+    if status == "timeout":
+        limits.append(
+            "Emulation was stopped at the wall-clock/time cap. Anything the sample "
+            "would have done after that point was not observed."
+        )
+    if status in ("error", "unavailable") and emulation.get("error"):
+        limits.append(f"Emulation reported a problem: {emulation['error']}")
+
+    if status == "completed" and not unsupported:
+        events_written = int(emulation.get("events_written") or 0)
+        api_calls = int(emulation.get("api_calls") or 0)
+        if api_calls == 0:
+            limits.append(
+                "The emulator produced no API calls for this sample. Treat the "
+                "emulation result as NOT ESTABLISHED, never as evidence of benign "
+                "behaviour."
+            )
+        config = emulation.get("config") or {}
+        endpoints = config.get("network_endpoints") or []
+        persistence = config.get("registry_persistence") or []
+        limits.append(
+            f"Emulation observed {api_calls} API call(s) and wrote {events_written} "
+            f"event(s); extracted {len(endpoints)} network endpoint(s), "
+            f"{len(persistence)} persistence key(s)."
+        )
+    snapshots = emulation.get("snapshots") or {}
+    if snapshots:
+        available = int(
+            snapshots.get("regions_available") or snapshots.get("regions_selected") or 0
+        )
+        limits.append(
+            "capa_dynamic is static capa run over the emulator's captured memory "
+            f"snapshots ({int(snapshots.get('regions_decoded') or 0)} decoded of "
+            f"{available} candidate region(s); capa ran on "
+            f"{int(snapshots.get('capa_regions') or 0)}) — "
+            "not a Speakeasy-to-CAPE conversion, which is deliberately not done."
+        )
+        if snapshots.get("truncated"):
+            limits.append(
+                "Memory-snapshot analysis stopped at a configured bound; only part "
+                "of the captured memory was scanned."
+            )
+        for problem in (snapshots.get("errors") or [])[:3]:
+            limits.append(f"Memory-snapshot problem: {problem}")
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +525,9 @@ class AnalysisBundle:
     iocs: list[dict] = field(default_factory=list)
     mitre: dict = field(default_factory=dict)
     evasion: Optional[dict] = None
+    emulation: Optional[dict] = None
     events: list[dict] = field(default_factory=list)
+    emulation_events: list[dict] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     schema_version: str = SCHEMA_VERSION
@@ -446,6 +546,7 @@ class AnalysisBundle:
             "iocs": self.iocs,
             "mitre": self.mitre,
             "evasion": self.evasion,
+            "emulation": self.emulation,
             "limitations": self.limitations,
             "errors": self.errors,
             "exports": dict(EXPORT_FILENAMES),
@@ -466,6 +567,9 @@ class AnalysisBundle:
         yara_count = len((self.static.get("yara") or {}).get("matches") or [])
         capa_count = len((self.static.get("capa") or {}).get("capabilities") or [])
         delivery = self.static.get("delivery") or {}
+        emulation = self.emulation or {}
+        emulation_config = emulation.get("config") or {}
+        emulation_snapshots = emulation.get("snapshots") or {}
         high_iocs = [
             i for i in self.iocs if i.get("severity") in ("high", "critical")
         ]
@@ -489,6 +593,22 @@ class AnalysisBundle:
             "evasion_signals": (self.evasion or {}).get("signals", []),
             "evasive": (self.evasion or {}).get("verdict") in ("evasive", "suspicious"),
             "evasion_inconclusive": bool((self.evasion or {}).get("inconclusive", False)),
+            "emulation_available": bool(emulation.get("available", False)),
+            "emulation_status": emulation.get("status"),
+            "emulation_events": len(self.emulation_events),
+            "emulation_api_calls": int(emulation.get("api_calls") or 0),
+            "emulation_endpoints": len(emulation_config.get("network_endpoints") or []),
+            "emulation_persistence": len(emulation_config.get("registry_persistence") or []),
+            "emulation_regions": int(emulation_snapshots.get("regions_decoded") or 0),
+            "capa_dynamic_capabilities": len(
+                (emulation.get("capa_dynamic") or {}).get("capabilities") or []
+            ),
+            "emulation_inconclusive": bool(emulation.get("available"))
+            and (
+                emulation.get("status") != "completed"
+                or bool(emulation.get("unsupported_apis"))
+                or int(emulation.get("api_calls") or 0) == 0
+            ),
         }
 
 
@@ -510,9 +630,16 @@ def write_bundle(run_dir: Path, bundle: AnalysisBundle) -> tuple[Path, Path]:
         for row in bundle.events:
             handle.write(json.dumps(row, default=str) + "\n")
 
+    # Emulated events are a separate stream (D4). The file always exists when
+    # emulation produced anything, so its absence is meaningful too.
+    emulation_events_path = run_dir / EMULATION_EVENTS_FILENAME
+    with emulation_events_path.open("w", encoding="utf-8") as handle:
+        for row in bundle.emulation_events:
+            handle.write(json.dumps(row, default=str) + "\n")
+
     logger.info(
-        "Wrote bundle for task %s: %d events, %d IOCs",
-        bundle.task_id, len(bundle.events), len(bundle.iocs),
+        "Wrote bundle for task %s: %d events, %d emulated events, %d IOCs",
+        bundle.task_id, len(bundle.events), len(bundle.emulation_events), len(bundle.iocs),
     )
     return analysis_path, events_path
 

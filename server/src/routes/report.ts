@@ -49,6 +49,7 @@ export async function reportRoutes(app: FastifyInstance) {
         capa: safeJsonParse(staticResults.capa_json),
         packer: safeJsonParse(staticResults.packer_json),
         delivery: safeJsonParse(staticResults.delivery_json),
+        emulation: safeJsonParse(staticResults.emulation_json),
         mitre: safeJsonParse(staticResults.mitre_json),
       };
     }
@@ -174,6 +175,34 @@ function generateMarkdown(report: any): string {
         lines.push(`- \`${item.path}\` (${item.format}) — ${item.reason}`);
       }
     }
+    lines.push(``);
+  }
+
+  if (report.static_analysis?.emulation?.available) {
+    const em = report.static_analysis.emulation;
+    lines.push(`## Emulation (Windows PE)`);
+    lines.push(``);
+    lines.push(`**Emulator:** ${em.emulator} ${em.emulator_version} (report schema \`${String(em.schema_hash ?? '').slice(0, 12)}\`)`);
+    lines.push(`**Status:** ${em.status}`);
+    lines.push(`**API calls:** ${em.api_calls ?? 0}`);
+    if (em.unsupported_apis?.length) {
+      lines.push(``);
+      lines.push(`> **INCONCLUSIVE:** unimplemented API(s): ${em.unsupported_apis.join(', ')}`);
+    }
+    const endpoints = em.config?.network_endpoints ?? [];
+    if (endpoints.length) {
+      lines.push(``);
+      lines.push(`### Extracted Configuration`);
+      lines.push(``);
+      lines.push(`| Endpoint | Port | Protocol |`);
+      lines.push(`|---|---:|---|`);
+      for (const endpoint of endpoints) {
+        lines.push(`| \`${endpoint.server}\` | ${endpoint.port} | ${endpoint.protocol} |`);
+      }
+    }
+    const caps = em.capa_dynamic?.capabilities ?? [];
+    lines.push(``);
+    lines.push(`**capa_dynamic:** ${caps.length} capability(ies) over ${em.snapshots?.regions_decoded ?? 0} snapshot region(s)`);
     lines.push(``);
   }
 

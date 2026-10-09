@@ -20,6 +20,19 @@ The OLE/CFB parser (`engine/intake/ole.py`) is bounded in the same spirit: FAT a
 
 The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scanner is a single pass with a depth cap and an object-count cap, embedded objects are size-capped, and `\bin` raw regions are skipped so binary data cannot confuse group tracking — a `\bin` length that overruns the file or is negative raises instead of being silently dropped. A decoded `Package` object is an OLE compound file and is handed to the OLE parser; nothing is executed.
 
+## Emulation (Windows PE)
+
+`engine/emulate/` drives **Mandiant Speakeasy 2.0.0b6** (MIT, a pre-release kept in the optional `.[emulation]` extra, never in `dev` or the pinned python-gate matrix) to extract configuration from a Windows PE. It is a **declared, containerized, fail-closed analysis stage — not an isolation boundary** (D21).
+
+- **What runs where.** Speakeasy interprets the sample's x86/x64 instructions in Unicorn and emulates Windows APIs in Python; the sample's code **never executes natively**. The residual attack surface is the host parser/emulator handling hostile bytes (pefile, Speakeasy's loader, capstone, Unicorn's C) — a superset of HATCHERY's existing host-side parsing surface (YARA-X, the delivery parsers). That is why it is not a library call on the analyst's desktop.
+- **Container stance.** Emulation runs in its own image (`hatchery-emulation:latest`) at the probed isolation tier, with `--network none`, a read-only sample, `no-new-privileges`, **all capabilities dropped**, a non-root user (`uid 1000`), `mem_limit`/`nano_cpus`/`pids_limit` caps and a wall-clock cap. Sample and report move over the Docker API through a **named volume** read by a short `runc` sidecar — never a host bind mount (D5). At tier 2 the gVisor rootfs overlay is in-memory, so `get_archive` on the container itself cannot see the report; the named volume is the working route.
+- **Gated on a boundary.** With no container runtime, emulation is **unavailable and declared**, not run on the host. The off-by-default `--allow-host-emulation` escape hatch exists for a dedicated Linux analysis host and prints a loud warning every time; it bypasses the container and is unsupported.
+- **Fail-closed.** APIs the emulator does not implement (`error.type == "unsupported_api"`), emulator detection and the absent real network are declared blind spots. A crash, a wall-clock/timeout, or an empty report is **INCONCLUSIVE**, never clean. The report records the emulator version and a hash of the parsed report schema.
+- **capa_dynamic.** Static capa and YARA over the emulator's captured memory snapshots, bounded by region/byte caps. It is **not** a synthesized CAPE report; a Speakeasy→CAPE adapter is deliberately not built.
+- **Events.** Emulated events are written to a separate `emulation-events.jsonl`, never merged into the native `events.jsonl` (D4).
+
+The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stays free of the beta. One opt-in CI job (`emulation-gate`) installs the extra and runs them.
+
 ## Threat-intelligence push
 
 `hatchery push` sends the run's STIX bundle to MISP or OpenCTI. The API token is read from `--token` or the environment, is used only to build the request, and is never written to the result object, the log, or the `push-<target>.json` audit file. TLS verification is on by default; `--insecure` exists for self-signed lab instances and warns each time it is used. A push is fail-closed: a non-2xx response or a transport error is reported with the status and exits non-zero.

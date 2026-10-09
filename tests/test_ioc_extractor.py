@@ -130,3 +130,32 @@ def test_iocs_come_from_extracted_delivery_children():
     assert urls[0].source == "delivery"
     assert "payload.js" in urls[0].context
     assert report.get_by_type("yara_match")
+
+
+def test_extract_from_emulation_preserves_source():
+    emulation = {
+        "iocs": [
+            {"type": "domain", "value": "c2.example", "source": "emulation",
+             "severity": "high", "context": "Emulated net_http", "confidence": "medium"},
+            {"type": "mutex", "value": "HatcheryMutex", "source": "emulation",
+             "severity": "medium", "context": "Mutex named during emulation", "confidence": "medium"},
+        ]
+    }
+    report = IOCExtractor().extract(emulation_data=emulation)
+    assert report.get_by_type("domain")[0].source == "emulation"
+    assert report.get_by_type("domain")[0].severity == "high"
+    assert report.get_by_type("mutex")[0].value == "HatcheryMutex"
+    assert report.summary["domain"] == 1
+
+
+def test_emulation_iocs_dedupe_against_static():
+    static = {"strings": {"urls": ["http://c2.example/x"], "ips": [], "domains": ["c2.example"],
+                          "emails": [], "registry_keys": []}}
+    emulation = {"iocs": [
+        {"type": "domain", "value": "c2.example", "source": "emulation", "severity": "high",
+         "context": "", "confidence": "medium"},
+    ]}
+    report = IOCExtractor().extract(static_data=static, emulation_data=emulation)
+    # The static row wins; the emulation row must not duplicate it.
+    assert len(report.get_by_type("domain")) == 1
+    assert report.get_by_type("domain")[0].source == "static"

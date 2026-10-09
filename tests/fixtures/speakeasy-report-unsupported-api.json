@@ -1,0 +1,3500 @@
+{
+ "report_version": "4.0.0",
+ "emulation_total_runtime": 0.04,
+ "timestamp": 1791584431,
+ "arch": "x86",
+ "sha256": "9844ac7227b87479dc181295ae753e8d2eb6139b83b6e16066a8b6dc23a6c5dd",
+ "size": 1024,
+ "filetype": "exe",
+ "image_base": "0x400000",
+ "strings": {
+  "static": {
+   "ansi": [
+    "!This program cannot be run in DOS mode.",
+    "Rich",
+    ".text",
+    "`.rdata",
+    "@.reloc",
+    "oPPj",
+    "Hello World!",
+    ".text$mn",
+    ".idata$5",
+    ".rdata",
+    ".rdata$zzzdbg",
+    ".idata$2",
+    ".idata$3",
+    ".idata$4",
+    ".idata$6",
+    "MessageBoxA",
+    "USER32.dll",
+    "32=2"
+   ],
+   "unicode": []
+  },
+  "in_memory": {
+   "ansi": [],
+   "unicode": []
+  }
+ },
+ "data": {
+  "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 560,
+   "data": "eJzzjZrAwMzAwMACxP//MzDsYIAABwbC4AAQ88nv4mPYwnlWcQejz1nFkIzMYoWCovz0osRcheTEvLz8EoWkVIWi0jyFzDwFF/9ghdz8lFQ9Xl4uFagZJ8+xH+9dnzkFhtefz5jaB2ZnTOkB0lIfc6dC6GwwHZSZnAFSB3NDgCsDgw8jM8P6Kb9iYWIPGJgYuRn5GBRA/mCEiBkwQXAAE8R3AkAShNmgemD0BGaIOhBgYnBoBasCKYTTcApiLlC9Bp4wagDK8wDpAqCZMkSEKdxfTKj2oAO9ktSKEiAtBPWbAgPC3TAAFEvQK0pJLElkYNBihJhpwAgLAwRwACK9otSc/GSIW0FuFoDSaOqcABEASko="
+  },
+  "3565239b43efcbc43f5ce8f3c587fb6291a7b837bed1c2a48f84b84b572450a3": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwOTAEBCQxfBfNADIOgwAMN4FOA=="
+  },
+  "aabbfbf7ade99b35daba37042587624a758e50ececd3d66c955d5adf52f7373a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJwT+PD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwBuFy+A"
+  },
+  "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 12,
+   "data": "eJxjYGBg4AFiYyNbIwACegDh"
+  },
+  "42d96426d2ee99932ebd9c2fcde0c53f29b36dd709700d425a1714681cb0a574": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 153,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwoQuwowtwoAtwIgQASzxRQA=="
+  },
+  "b278920805249fba905e20628d72f0be7abe853c2e86d4e3ec86eac0f19ec892": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 305,
+   "data": "eJxtzTsKwkAUheET3xaCrkCjjb0rGDSKqI0gUwe5PiCImUwwtYW4BRfhIlyC4CJchIVHsNGk+LjMz70MAKy9zp0DxxbgcFa/unxPaU+oAw1qU48GtKAVHehMJ+5d6Eo3etCTXlRzgab7+cVBDnkUUEQJZVSw8QN4iVqG8dbI0I/sLLaSZCSV0TTbXALxo5/T/6QymsZERmL7sTGys2MTBqmgUkXjDchDTfg="
+  },
+  "32ea0388d4a78c0de1b3ff993223999f4d9b703d9614c597988350cc7fd68fe6": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 464,
+   "data": "eJzzjZrAwMzAwMACxP//MzDsYIAABwbCYAMQ88nv4mPYwnlWcQejz1nFkIzMYoWCovz0osRcheTEvLz8EoWkVIWi0jyFzDwFF/9ghdz8lFQ9Xl4uFagZP3WLbu71kemC4VldhV17wHQKmA7KTM4AicPsDHBlYPBhZGSI3efqChN7wMAsyM3IwSCA5LYLjBD8hBHEW8AAokCYDSrPCNMLVQcCTOBgEGCAGASjGVDMHSigV5JaUcIAcQvIvTAaGSgwMCQAACVHNqw="
+  },
+  "6f09b54e25bf2ca55b968f830b6be83e77fa3b3faa2a6411eba8b2ac5913841f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 16,
+   "data": "eJybMAEOjA8c4mAAAEp1B+4="
+  },
+  "237581a137af47fc1fec8b05f252e33d2c262d894c07fedfc1d6468ed88494b2": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 918,
+   "data": "eJxdyDdSQlEAAMAvSXISBAkSJKiAkuQmlJzoXYie9l/DjjvIjA0zu+WGv2O4nh+iKAq/p0scx+E/EkbSSBlpI2M8GlkjZ+SNglE0SkbZqBhVo2bUjSejYTSNZ6NltI0Xo2N0jZ7RN16NgTE0RsbYeDMmxtSYGXPj3fgwPo2FsTRWxpfxbayNjbE1dsbe+DEO97gBiWfsSQ=="
+  },
+  "1d6b7d9d4db3ec983790d063abf84bb0235aef63b0a9577cbb8a07aee4e0a3b9": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 816,
+   "data": "eJxdyLUNAgEAAMDH3d3ddRlKJvqF6Gl/DTp2gISG5K688HML349YEATh6/6Moij8RdxIGEkjZaSNjJE1ckbeKBhFo2SUjYpRNWpG3WgYTaNltI2O0TV6Rt8YGENjZIyNiTE1ZsbcWBhLY2WsjY2xNXbG3jgYR+NknI2Lcf3HF1vqtQg="
+  },
+  "e73c20435de9063be7ddc14367f0c663af7b323f4edd116039a0bab24e016555": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 714,
+   "data": "eJxdyLUNAkAAAMDH3d1d96Fkol+InvbXoGMHSGhI7sqLn1t8PzIhhPi6P1NK8RdZI2fkjYJRNEpG2agYVaNm1I2G0TRaRtvoGF2jZ/SNgTE0RsbYmBhTY2bMjYWxNFbG2tgYW2Nn7I2DcTROxtm4GNd/fAEsy33r"
+  },
+  "d3206ceffcfc871d768f90df3413e24fc006e737785e8356734eb62d2604dbb8": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 663,
+   "data": "eJxdyLcNwkAAAMAnm2hyBpOZiJKJfiF62l+Djh1AokG6Ky9+bvH9KIUQ4uv+TCnFX5SNilE1akbdaBiZ0TRaRtvoGF2jZ+RG3xgYQ2NkjI2JMTVmxtxYGEtjZayNjbE1CmNn7I2DcTROxtm4GNd/fAHQGGJq"
+  },
+  "6437517c33e40a6cb54552e1e828878f8b119641a063ff72c1b3bd88417cb4e8": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 204,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwoQuwowtwoAtwogtwoQtwowvwIAQAMn1sZw=="
+  },
+  "b132dcc3f635b3644bc02b46fd6723cf81c9c24bd9355e6a42bb77d011ed7121": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 387,
+   "data": "eJxtzUsOwUAAxvGv3s+EE3htrDlBRVkRGynLhiES2sZoOEKvYGdl4QbiDBaO4ARuIL5iUdrFL5P5Z74MAMy12o0HDmVA4Zn7qvM+IpdQAIpUpSa1aUgz2pJLezrRhY7cnOlKd3rQk/IVoEQN0mhMZsX7XUEEUcQQRwJJpJBGBlnY0rAX0ExnNVhbEyFlz5o6SyFDkhrSdH/7Xf0NvLddsfnsWoYUfWMlgkUNJt+us1i+k7YLa2pY1PECtH9kyg=="
+  },
+  "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 51,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswIwQAs8EbDQ=="
+  },
+  "74ca079b17c090e8fed7d4b735b22edcca5e3810f8cbb7febe30f0273a4129b4": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 109,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATEvkB+OBAngcSBOpgYUvKKEwsyGVzyigNLU4sq4xEsRwQznAEAmo0Suw=="
+  },
+  "4868574331d12f2b4968c0ecda588741ba7765bcceeb0cfce745c4bddd94fb07": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 765,
+   "data": "eJxdyLcNwkAAAECTc87R5Mw4lEz0C9HTeg06dgCJBumuvPC5hfcjFUVReN2fSZKEX6SNjJE1ckbeKBhFo2SUjYpRNWpG3WgYTaNltI2O0TV6Rt8YGENjZIyNiTE1ZsbciI2FsTRWxtrYGFtjZ+yNg3E0TsbZuBjXf3wBBXiZdQ=="
+  },
+  "8a35adda541d5408c90343b5d69cf6fe03e5af0a371af76a005829c6bdde0512": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 110,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATEfkB+BBAng8SBOpgYElPKChKTsxk8i/1CHFNyM/MQLEcEM5wBAJzNEiA="
+  },
+  "426dc6d7bc294d6f4baab8decaf10a01744aa2b6f8ebaa2fbb8d1aeec29c51b9": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwMSQFBCQxfBfNADIOgwAMjoFfA=="
+  },
+  "154b5b2afbf5075d3e890560172a8ef0bfb3a3302446a368934334f258c9bfb2": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJwT+fD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwByvy+E"
+  },
+  "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 102,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwIQQAzDw2Ig=="
+  },
+  "0db0583b77bbf67911a8bf740496615b3ef83a3e6862ce9e6cedc41c2c75ce15": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 218,
+   "data": "eJxjYGBgSHdVvgikGFIUGBgYgTQbFGsA+Q5AHAHEDAIMDIJArATExkDsAsShQJwLlGsC4hlAvA6I9wDxaZB6oElMDMwMLAysDOEhwY4BnsZGIIZrXmlualFiSWpwanFxZn5eMVZBR6yi4SBRt6LUVN/U3PyiSlSeIyo3nAEAzhozhQ=="
+  },
+  "a5bf746dfdeb1cf24b22c22363f0103e0a8d3305ffc67963a6483953ff0f78d1": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 140,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATEfkB+EhCXg8SBOpgYnIMiA0KMjRiciyoLSoJLijLz0kPynTLzEosqsYk5YhMMZwAAmjcemQ=="
+  },
+  "9b727908bed2f763301ea0e43d723db1bedb48794e3015bb2dc064cf8513ab94": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 125,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATEfkB+LBDngsSBOpgYcouT84tSUxmc84tcKzJLAoryk1OLi9G4jmj8cAYAEg4ZRQ=="
+  },
+  "c296abcf0eb7fa24f5e3b943d9156c527dddc5d5b37723012eff6c0804c796f5": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 234,
+   "data": "eJxjYGBgSHdVvgikGFIUGBgYgTQbFGsA+Q5AHAHEDAIMDIJArATExkDsAsShQJwNlGsC4llAvAmIjwDxdZB6oElMDMwMLAysDKVFObn5eQyhQT4u+eV5OfmJKSH5zonJGalumTmpOIQdcYiHo4pjmoBFM0QfAGeSOTE="
+  },
+  "7185222294e416c211ee57c070f4a1c201aab810061708e41449b049d3d5804a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwBQQFhCQxfBfNADIOgwANpIGBA=="
+  },
+  "a192349457c0c646049acd9cad2622b3c3a57ca4bc72735e3f0ec3763e8cf6c2": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJyT+PD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwB3Zy+I"
+  },
+  "1b17bce1768f6d5f99777280b39d747793a68ba54a87271e14fdb902655db206": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwBRQFhCQxfBfNADIOgwAOFIGRA=="
+  },
+  "f3e3e7493755c19be1771ae67de4b72bce31adaeb1935ff4a089a5ba5c051bb4": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJyT+fD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwB8Dy+M"
+  },
+  "8190522685ac262bdd4f828266afbcd4a021ce0618fc33b5d8dce23d3e52379f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 459,
+   "data": "eJxdyLcNgEAQAMHHex5v6yKkomuInPTaIKMHkEiQdsKRZ5P7cIwxcu2nqsoXLsNj+IyAETIiRsxIGCkjY+SMglEyLKNi1IyG0TI6Rs8YGCNjYsyMhbH+8QIRrPSx"
+  },
+  "52223a90d62e604e8fb098803b85eb0f774b965d751a64e803f8cef5e78c3a5c": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 760,
+   "data": "eJxt0LtLw1AYBfBT3++2vh+LVgTnFpxcrm2VgKAQS1xDvZbQmEBMa9t/wOLsoP0HfOwi6CpOLoK4uQlu7k56AiK9icOPyznhfpcvAFDKLz7zwMoCEOM592t5HjglsEcCSFKKMpSjAu3TETXpnK7pnp7ojT7pmxJJjqE0ZWmHJFXpmM7oiu5ole9pZJCkKjWpRRd0Qw/0Qu/0RfEUsEQZytMulalBJ9SiS7qlR3qlj1SwdQwd6EQXutGDXvShHwMYxBCGMYI4105iFGMYxwQmMYVpzGAWri0zaWTdrCdNX25UrD0lCCUZf0lzDn3TKcpIISJNcElzLN8ybashlSCUlK+FYvizOkmXxYpn+fV/S/Fvqw4Iki79bc+t1dds0ylLP9qIaBXcKzhW+0rtUYSygS1btv0AJQk1GtB9z3JK6557kN3UtVw4i3Bh4AfwxsiR"
+  },
+  "a04e54226a8e33c751c6a91cb08fa9a1f2af25ef87a99d649317f628532fdfca": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwBRQGhCQxfBfNADIOgwAOEQGQg=="
+  },
+  "cc96fbb71c8411b601a161e593640d6eee120922aa38ccaf23b30ffed23f26fa": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJxT+PD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCAty+Q"
+  },
+  "8385f28934494746da931562b559b5854d992cf2381dfbc7edfe2a943448e8fb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwBQQGhCQxfBfNADIOgwANoQGAg=="
+  },
+  "65f8f1aa9f4e01eef3f9d3f0cbc24caa50ef191a02a0f77deb2818bc8e2b5939": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJxT+fD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCFXy+U"
+  },
+  "b5e562901330c4128732407d7cd2e3690933a4c2a10107ad2ac6088f4af59eec": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 375,
+   "data": "eJxtzU0OwUAcBfBX318LbqBsbGx0ZTmihIVYaGrbpDPSiFaq4gquYGfLEbiCjQs4hQN4FYsGi1/+83+ZNwMAC7N558CxDmiclY8W9zntCVWgRg0yqE8WKdrRng50piud2LnQjR70pLLOPrWpSyZZpPT4dw0ppJFBFjnkUUARJZQxMWdiOjI6mMhIrL3eVikZDkIpfwLxk9hxMpTROPD8ka+CcOVEXuD/T8X/+P2GtZGhcN3EUSTO7yv2chM5rMfV7118BzZedqddWQ=="
+  },
+  "95f560e4dbbdf3cf4b5105feccdf1341ce366e9981943e29bf0d5cd09df5d409": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 186,
+   "data": "eJxjYGBgSHdVvgikGFIUGBgYgTQbFGsA+Q5AHAHEDAIMDIJArATExkDsAsShQJwNlCsD4iYg7gPiOUC8GqQeaBITAzMDCwMrQ1FBclGJCUNoaWaKc1FqYkkqEtMRiR0OZofkB5cUZealO6Ly0LjhDADfpCc+"
+  },
+  "4eed171c1527e7200e2591593f3dfd650baa1a86e05a433958134b2d7e2765dd": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwGSQHBCQxfBfNADIOgwANUgF3g=="
+  },
+  "bb6c9092a194daf26dbc62d3a42554a9312d4eb33e61c31cb9f76244c5c0331a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJzT+PD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCKBy+Y"
+  },
+  "469d6616c2645f0e025797d924bf2c7d68ca83d02c4320987af0162aa1cedecb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwGRQHBCQxfBfNADIOgwANigF/g=="
+  },
+  "c43195bd8f190cfdb5fcbfa55928f9207d13dad0cf07b95610d597c066c95b01": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJzT+fD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCOry+c"
+  },
+  "615dae6611a6dab66bff77ef3bb201ad2aaf5cb9588d504c56a7860c31a45ecf": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 233,
+   "data": "eJxjYGBgSHdVvgikGFIUGBgYgTQbFGsA+Q5AHAHEDAIMDIJArATExkDsAsShQJwLlGsA4ilAvBKI9wPxVZB6oElMDMwMLAysDMn5ucklOcZGDJ55mSXO+bm5+XnO+XklRfk5xViEHLGIuVZgFcSuNByLaDgDAKpqO3I="
+  },
+  "c828b7948e35d09fd546cc5ba385028af0b9cd36448fba74f05d1ee091b1d536": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 199,
+   "data": "eJxjYGBgSHdVvgikGFIUGBgYgTQbFGsA+Q5AHAHEDAIMDIJArATExkDsAsShQJwDlKsG4m4gng3EK4F4B0g90CQmBmYGFgZWhuLU5NIiYyMG17zkosqCEt/U4uLE9FQ0riMaP5zBPbUktDi1yC8xN9W1ApXniMoNZwAAQYMsmg=="
+  },
+  "69eec6f1edc42f0688c6328dcc61c5cab4c4822fbc203e7c4ab4f53106cd2e3f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwFQQHxCQxfBfNADIOgwAORAGVg=="
+  },
+  "c33e0275b228ae198f870e6dea02df574dd10274633c1350f118521c408ec953": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJwz+PD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCTVy+g"
+  },
+  "14397714ca32646771a2be75e67252a9ad9225a219df74722c97d767ff39a864": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 289,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwoQuwowtwoAtwogtwoQtwowvwoAvwogvwoQvwowsIoAsIIgQAvOqZvA=="
+  },
+  "8bad2f0d5039e4d351580d484518586ffb2528ec2eaf23ca5d89e1db97b7206a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 454,
+   "data": "eJxtzj1Lw1AUxvGnvra+NV07WV06SiriJARsseBWNG4SNJbg5QZiRFycndwd+gXEwVX6FbroKo6uTp3Vf0FCGx1+XM5zuOccSeo211949LoqFXgrv+rUBk+QQ4Y1NLCLA5zhCre4xwP6GOAdn/iGw8A35nxgiC84NamKOlzsYA9HOMcN7tDDI55roysLmtK0ZjSrOc2rqJIWtKglLWtFZc6MTRhcpg1XcXIa2cAcb6hzfeEZE5900iSy3azh5hr7oc16m6NeKwnD3J8tHQZJFNi0baM0S7dzk7y/k/+J/FzkT+70Jkt/fLM3Xvj6AdGfcXY="
+  },
+  "403a8b5ef8543290668aa38ac8fbc261516018f584b57c939a02506a68e72dd4": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 255,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwoQuwowtwoAtwogtwoQtwowvwoAvwogvwoQvwIwQAg8qHlw=="
+  },
+  "dd6e133742601a6a6cc6dd9bfa40f8c9714a45417bdb6c1e0d758cb878ea9ad9": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 543,
+   "data": "eJx90D1KA1EUxfGT+P2tGxATGzsLV/BMRMTCgEhqNS/JQOIbXh7q7EBwBVZaW9sJdhYBGxdgI9i6Bv8DmWrGKX5c5hzu5TGS1DvY/mTobUuqMNcmdvju4AlalzZQxx6aOEMXN7jDA57xig984Rfv7H+nN2rSJnZhcAqLW9zjES8Y4wfVevqqiqqa0rRmNKs5zWtBi1rSsla0qotLn8RB+410NAZuZM2g53wU+sOWd9dRx/rS0pS27UnbtKPgXXJsk1xgckm2dGgDd2LrQ5JPTD7K9o6GsfOBQ63zyBdlpijMtk9ie/XfLyjsTFnZ1h+0rJtx"
+  },
+  "e06e29431595cbe8de54db78751362a738745aee4fe2d0eb810cdc47922a733a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 400,
+   "data": "eJxjYGBgSHdVvgikGBYoMDAwAmkeKNYA8iOAuAOIGQQYGASBWAmIjYHYBYhDgTgNiMuBuAOIZwLxKiDeDcTLgXq2A/EJIL4JxK+A+A8Q8ykyMMgBsT4QOwBxFBCXKoJsZ2RgYmBmYGFgZWBjYGfgYOBk4GLgZshLLqosKGHwcwZRLqk5qSWp3qmV6HxHdIFwqIBbUWqqf1JWanIJhoAjhghMk2duQX5RCcIaON8RXQCmw78gNS+4JL8oMT01oCi/LDMltQi3jCNuqXAGAG1Mapw="
+  },
+  "74a2eece263c6fcb050946dfb7da2e03326aeb88aeb3cc7b8bce449ed454dbb9": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 132,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATE/kB+AhAXgcSBOpgY8lJLSksyc4oZ/FJLHAsynUrT0lKL3IpSUzEEHDFEwhkAyCAbWA=="
+  },
+  "865b76484c8b0cdff763a17546043411ba86ae8a81e6946903e5541c68f7bed0": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 145,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATEvkB+MhBXgcSBOpgYyrOLk3MyGfxSS9xTS7zyM/M889Lyi3ITSzLz87CLOmIXDmcAAG9aITY="
+  },
+  "c661bb229a018187dd225eb7d69145b657169ed6688edd53acfd95479671f79b": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 129,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATE/kB+PBAXgMSBOpgYMgsycgoSCzIZ3FNLHFMSC0pSi4o989Ly0fmO6ALhDAB2sBp9"
+  },
+  "05d48c70bc74b5a136a4a45b8a61105c9b97b2d65ba76c505f28ab1be1a49d8e": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 136,
+   "data": "eJzr/h/a/WYHIwMDQ/fT2MNnzpzpBgswoQswowuwoAuwoguwoQuwowtwIAQAMd1INQ=="
+  },
+  "e13e9557b2ea1867d4390fd5a68422b19e9289f42de4ad94f95db893928179bb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 286,
+   "data": "eJx1zD0KwkAQBeAX41+pN/CnsRQ9QUBFO8FIyrBsJiYQDWwWtLP2HNbewSsIHsJj+AJilRQfw7x5DAAcluMXBy4DwOHs/ky4rykh9IA+jWhOC9pTTGe6snOjOz3oSW/6kDssvztowEUTLbTRQRHrMC+Qmyg9qSycYhdrX8yRm5VAWZ2I8RMjKvp3ZmVnU6zSTLYmt6KtRBWRV5EF9e+9+lOAL2coSTg="
+  },
+  "f04e8c3aaf8d6fad200ce4693634246912e4491bebb7861f7ea9008e0e99a92f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 268,
+   "data": "eJxjYGBgSHdVvgikGJoUGBgYgTQnFGsA+T5AXADEDAIMDIJArATExkDsAsShQJwGxOVA3AHCQHUzgHglEO8C4hNAfB2InwHxJyD+DzIHaAMTAzMDCwMrAxsDOwMHQ3lmXm4uQ0lmbqpTanpmXkBqUWZ+CjrfEV0gHCzgmpeCpB7Oc0TlQtS6p5aEAClktiMyJ5wBAF/OQTU="
+  },
+  "d64d77bd2c3c1bf9971abaf661bc588e1c1fea8396207236a5e5d4dbc5ce193d": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 125,
+   "data": "eJxjYGBgSHdVvgikGNwUGBgYgTQzFGsA+SZA7ADEDAIMDIJArATE4UB+MhAXgMSBOpgYkpKLKgtKCooyczNLMstSixkCivKTU4uLA4ry0pHZjsiccAYAM/sZ1A=="
+  },
+  "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 16,
+   "data": "eJxjYEAFAAAQAAE="
+  },
+  "a221f8fe17b012941a84ff1c9e5823ca4f1f6157df61ba8c21af0e13dc693879": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 336,
+   "data": "eJyVjU0KgnAQxX/WPcJltAiziHAVVF6gRRs3opZCFmQfeifP0zk6Qi8o8B8t8jFvmHnvDeNb4IsqA9YDOmJX7DOgXpn+lBlzaS4Tyi/vH/Swuf+4W+ARsCHjQMyRG4X2gko8k5Az1s9AbsKOoXopIvdKRKqLV+6j28pXhJyUHRmb2+IX78xaaogjZSl3q/nCXloTTzFKKNI="
+  },
+  "5a084609d78baf6d729c3f780d449427edb7980b21c1173e981f5aed18851eef": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 18,
+   "data": "eJzLYtiRwMSQHxCQxfBfNADIOgwAMvAFlg=="
+  },
+  "50827eb073451faed12bcda4df678bb5085034a005461d9410e4bd8e8faaf0fb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 298,
+   "data": "eJwz+fD2HwMS8EjNyclXCM8vyklRhImtn/IrFkTzAvESIO5hgmAQMADSQkBaryS1okQlNw8kFgAUEwCJZaYkliSqmILEEoBiOiCxIpAYRP8SOF+lqqoqJSkdZB4zA4MIQq8RSK8LqpgxSCwCKMaBEDMB2wEUk0KImcHUwUAeM8Rt2EACVF0Zk29qcXFieqpTfoUjQ2iwa5CxkV5KTg4DAwCX/y+k"
+  },
+  "3a1e8161abf6afbc07e27abfcabdd1617863e4f3a88264e05c48cbe1a0e9439c": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJxViLEKQFAYhb8n0H0ET2CgJBmUuq9gMV7JgIFCFqPxjkaP6kzKqe//zn9OC/6AS75lLz8ylGBECCkZhfYAg7N8qchpqOkZcUyszPpndrHQMpAQaxnVOyLdTfzzAhXUEjw="
+  },
+  "04e6c3797543f54125872b0fe61e878814ff7e9ced6c31cb426e5789b3ed3cba": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwlijsOQFAURE9olCqxChE6hUgkLEGjQ0KB4onPLizIcizEYJLJuXdmKIECHNERXdEVISO0Mk4bUt2XMg+f++t+5STUVAxMtMxsGP2GQ17oGImJvmSlodfizQM1u/zrAQbIEfU="
+  },
+  "94c5f4d9e143d5e3543f6c1be52db8726d56a11d01aa5dd664242c9ca2c8e821": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJxrcGdgaHBjYOgA0h1AegKQngCkgaAGhFcC2VYMNgw2QHEhBhGGFHcGOHAGysQwhDNkMuQxpDDkM5QzFAP5xQyVQFzCkMqQy2DMYAQUyQPyUhhygFAPSiMAAEImE5c="
+  },
+  "9dc8ef0888d1df2ce6ae13f2542a6ae831e5c033f01650174d6a8a237e2151f2": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwliz0OQEAQhb9SSScOoaBTCQU30ChtIf4SKxF3UzqKg3i73mTyzbx5Qws0EIiBGIqhKJ2uowdKKm55MQnvf/OqKejpGFkZ2PRgtVsu9YFhISeTM2nelTHM3kmVnlVOHzT/Elk="
+  },
+  "3ff0417da9dd180f20bd18454266c688056e9e6d8d8f3247cffd536235f4c90b": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 144,
+   "data": "eJxdiz0Kg0AQhT+Sa0iOIEE7SafEvYGNjeIW4s+CBoKdpeWWlh7VV1n4huGbeW/GG1hz2MVNPEQvSu79wPknZHz5yA940RgupSSUFLSMNDj+zNpnFvUPy0BMJKfTPOnG0lNTKbWE+uhVd525ShWx"
+  },
+  "0355397e2543843c2dde9841ad8f866b9de630b1eec0e6ad0678fc61d2124f42": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwT8GRgYPBgYJAA0hxAWgFICwBpBoYDFSDcF8LAYMNgx3AGKCbCIMbwBSwHAc4MVgwxDOEMmQx5DCkM+QzlDMVAfjFDJRCXMKQy5DIYMxgBRUDiRgzxYJ4eUGUOEMIAAOM7Eyo="
+  },
+  "927d3b47f85e3cf8a0d5167355bf9ff40fb1c0c75e7d720cfd867b2c07a6db62": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ijsOQFAURM8qxCoUqBQi0ZDoNUoKiU9BImITr3ylpdiNbZhHYm4mJ/dkTAmmACta8RRPEa7D9Y4hJaOS9/BZS/7kJDTU9Ey0zGws+hd2daVjJCKU2d6FaycfaDvovjw0XxbB"
+  },
+  "2aaa82c1f84d99d685f417b5f53275915b012d7f30141b8b39398966157a08da": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwT8GJgEPBkYJAA0hJAWgFIKwBpBoYF1SB834SBwY7BgeEMUEyMQYLhC1gOApwZrBhiGMIZMhnyGFIY8hnKGYqB/GKGSiAuYUhlyGUwZjACipSDVWQAxUoYChj0gGpzgBACAA4+FI8="
+  },
+  "bd746a171edb8b61ed08722018855eea8279421b8b8fa796124095f44d1394b6": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9irsJgEAQRF8ZYhEGmhmJFynmJiaCBoI/OPHThaHhlWJpziXOMvuY2b1LuAt4xEd0ohOl0/s1kJFTqQ8I2Up+GVIaagZmOhYOrLLlkjd6JhJiNa2uu/aqT99EyqPG6wOSeRUP"
+  },
+  "9b8fdf7021aedf9ab33b602a7c96d8ce083a01fbe54156bbd7913fae553fe1c5": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwT8GZgEPBiYJAA0hJAWgFIKwBpICgE4WZDBgYrBhuGM0AxIQYRhi8QOTBwBsrEMIQzZDLkMaQw5DOUMxQD+cUMlUBcwpDKkMtgzGAEFCkA8hOBZCaDHlBdDhAiAABZJhHj"
+  },
+  "b1eaebc5f9cc957dc49b684064573dd7fa5517d1ab67268fcd9457ca5454f662": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ijsOQFAURM8ixDIUdCIanafXKCQoJD6JR8QulEpbsiNDwtxMTs7k7gb2FA7xEE/xFOFan1YlRMRk2h1cZsOfhJCCnJaBmpEVK7ds6kxDT4CvZZE3TK95+ux0X24VjxWx"
+  },
+  "60e373068b7a728b46caa0f91ad26defb7f4894b60fa51313b6c1206c62d3fec": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwT8GFgEPBmYJAA0hJAWgFIKwBpBoaH5SAcaMbAYMVgw3AGKCbEIMLwBSwHAc5AmRiGcIZMhjyGFIZ8hnKGYiC/mKESiEsYUhlyGYwZjIAi6UDZTDBbD8jKAUIEAAD0xRMI"
+  },
+  "2d7492d1c11c52d1241a93895dbf5b1fb5f2e3be2a6a4b22ac7d67bc6be9d509": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ijsOQFAURM8iRGERCjoRjdLrNQoJColPwguxC+UrbdEOjIK5mZzMyT0NnAU40YmXeIlw72+DGlIyjLyHjzX8yUmoKOmZaJnZWbVXDtXSMRITyYzaGw2LbKjPQfflAR+RFis="
+  },
+  "329b57a945baaacd0f3293cbe52ba7c9b4a587121fb70427c8607fa034aba7f3": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw1ik0KQGAYhJ8jWEiWTiCxk2xsWdvYKBbKX30Kd3QZ5QAGmbfpaWZeqwArB1d0RU/0RDi3x0MACSmHOhuH690+ZcRUlHSMNEysGGXDLi+0DESEahrthppZn75Sr/t1Ax92FDY="
+  },
+  "fdd913c672c2b60342a333b7efbb165f452f161a7f80cef13f91cb1f94309322": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9is0KQFAUhL+nkKewwMpCytZd29goQvkrSp6CpeV9VIMyp+lr5sxp4MzgEi/RilaUmsdHCDEJmXoHl9XwKyWiIKdjpGJiY1Fe2OWVmoEA/21aen1LZm09bXvdpxt69BTb"
+  },
+  "19d39c647330259600c104b6d59307d64cb7e80e5ae18633dcab56badf4cdc9f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwliTEKg1AAQ98R/iR//CcQaTcHEZx1dXEpVmipfgXF4h09jIMHMGpCeCQxBZgcrGhFJzoRts8ZH0FCyqotwLJf362MmIqSL543PX9G9ZFFmWjoePLQ8tI7M4g1P0K1Vr51ABtIFIA="
+  },
+  "b31914a1c9fea16e6295a955202c867aa738da4012a3ac226c36f92da107d5d8": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9iM0KQFAUBifeQZ5CYmchZYutjdWNUP6Kkre4S0uP6itlTqfpG1uBLeGWb/mRH1mY0MFYF1IyCnUPn6PiJyehoWZkoWXlZNfeufQHHTMxkUqLoWdQmdgItCfdxwt4pxS5"
+  },
+  "754437e6cf24b40b71bf0485ef45d705602e3f3ce4aa9e4a28918ff2dfa4b322": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwT8GdgEPBjYJAA0hJAWgFIKwBpIMgE4ec9DAx2DA4MZ4BiYgwSDF8gcmDgzGDFEMMQDlSYx5DCkM9QzlAM5BczVAJxCUMqQy6DMYMRWCQDyMsBQhBfD6gWxIYAAK3DEyI="
+  },
+  "d6339b7ac1b5480d5d5b780e68bb1a48e17493cc0d861accaf41d997644c2f2c": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJxjKGBgmODHwMABpGcAaQEgvQBIA0EyCN8yYGBwYHBi8PFnYJBgkGIo8WeAA2cGK4YYhnCGTIY8hhSGfIZyhmIgv5ihEohLGFIZchmMGYzAKkIYghkcGQIYPMEiekDVOUAIAgDr2BMq"
+  },
+  "45968a035df93481f6c5dd13bfecc2c34ce1e5967ea2721ec18160d4e0b5f462": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJxrKGBgEPBnYOgA0hJAegKQVgDSQBABwj0GDAx2DA4MNkBxMQYJhpQCBjhwZrBiiGEIZ8hkyGNIYchnKGcoBvKLGSqBuIQhlSGXwZjBCCjizBDEEMkQwBAC5usB1eYAIQQAANPfEp0="
+  },
+  "6d282bf0e3d4a88b60bd53ab8b49d3d1b1dcad44326bc14d15817301112ae7f8": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwlijsOQFAURE/5SpVYhQidQiSWoNDoUEg8vycRhZ1ZjoUYzM3kZGYuCzCDEY3oiZ4ola/PCDJyLnU+Afe/fSpIqanoGWmZ2HHKjkPe6LAkxGqscqN9VdcR6nfQ/XoAlxcTMQ=="
+  },
+  "bbba9ff2ba400892acf2bf175be1e206c2fa0db387153490a09dda4b748acbd8": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ij0OQFAAg79DiGOIsIlYXMAgsRifQYLnN2IzvtE5nUINtGm+tOk5wTmCE514iZcIRfnmDiElI9Xu4WMmfuUk1FS0DBgsO4v6wqGsNPTERFo2Zjo1q1+gZyd/egAJpRXp"
+  },
+  "8ae6108f5dd1229b9c3ea6091f97f3d7c6c92c979aa738de205fba96d9efc278": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwliksKQAAURU9MDA1lERIzI7EBIyZmKMonn5JdWJDlWIiL+3qd3nmXBZjBEi3RFm0Rstw3svw0ISbhknNwub/fn5SIkoKOkZqJnVX3yqHdaBgICWQWNSpamfoznthr3jzimBPl"
+  },
+  "542f923b0d0a66acfe4fcdb840b1bc64ca810504e8f9898378e4fe0a1431cf1a": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ik0KQFAAhL+4g5xCYidJuYCdjSUL5ScPT3aWlu/IppSZpq+Z5jZwr/CIj+hEJ0JtY6+2zoeCklx7QEhn+FWR0dIwMNOxcLKpb1zKTs9ESqLlUO8xyowl0neUP70OxBZT"
+  },
+  "393e6921123c78369d4619c99216f8676670e614429da5dd159f69a2e85a9e23": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJxFijEOQEAURF+55UacQ7E60bmATqOkkCybWIm4m+M4hNIshfn5eX9mPhFYwYhGtKIVoR3T3g4qak5lGTnX231q1PR0TCwMBHaifOTQbozMlDglAS+X7kJ/XvPrAQGQEyk="
+  },
+  "ce1db31f3584762c4db2a3b43d75b07bb48d4e3d334db5dd3f85140ee5be2c35": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9iU0KQFAAhL+4g5xCYidJuYCdjSVJ+cvzkp2l5TuyKWWm6WtmbgP3Do/4iE50ItQ29mrrfCgoybUHhHSGXxUZLQ0jCx0rJ0bdcCkHPTMpiZZB78jGhNUTqU3ypxcPYhZJ"
+  },
+  "2ad5af58d26230581f20d3f37078ee491aa23dbf0a446eef9dc52c36e9cef22f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwljE8KQHAUhL/YWFrKISR2VuICNrKxUSyUf4XkFg7kOA5i/Mxr+nrzpscGrOCIjuiKrghFGVpFedmQknEr8/B5zO1XTkJNRc9Ey8yhR7V8yhsdIzGRSTrtOwuN3BOoPWg+vfJ8FIo="
+  },
+  "3cbecd10d72a1a731436b1ada78f25f84353e1ff0521558df7fbedc2389b63ab": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9iisKgFAQRc8yxEUIahODHwwWMTywGDUIfsJ7IDaj0SV7NXiHO4c5zOngtHCJl3iLtwiZebuH2hSk8h4+g+NPSUJPx8TKwMaO1W05VMfIQkwk01BhyGmpPxPoe9a8eQDOURUI"
+  },
+  "02d7fadac8a98fd34157f4cf4ab9d587a971a7361a7a41fedf4a7262068f97cb": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw1ijsOQAAQBadUKsQxRFCJaNyAQqNDIfGLT8TVxHEcxEO8zctkZ5cVWMAQDdEUTRHc7OnhQkTMKWdhc723LwkhBTkNPRUDG7P2mV1dqOnw8WRSRkomuQBHn63mzw3UiRM3"
+  },
+  "3240c0bde8c27cb61d8ac86541f26fb16baf87ec730600c06c20499b3ac4a8c1": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ijsOQFAQRU/YhFiEvNCJQliERueTiF+BiO6Vyrdkl8KdzJzMzbEH2B1u8Rad6EQwjfFM43zIKcjUB4S0B39KUmoqBhZaVk42/RuXdqdjJiFWM33G+N1eXiR70rx5APSzFl8="
+  },
+  "f1c63cd916b992fd1f8fdf5d6bec81e60f306bd449eaffcbcc22bb9b802f54d1": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 144,
+   "data": "eJxVizEKg1AQBQdtLC1TiSeQj3ZpRbG3sLFMQMEo+DXiLTyQx8lBfJrKtyzDzmP9LzDDQ/TEUPRFMNY4xm4u5BTscgEhv6v7J+VJTUVLz4uBBavbsmon3nxIiGUyGkqZgVFs1HSaSD8n7zkAbW4VwA=="
+  },
+  "27ee5b0ddd3d08ee8c293b37fb00a410884b4fd96cbabdb234f930bf957833d0": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ij0OQGAQRN8xxCFE6FRCq9BpJAoUEj+FD9EplUql67mFoTCb2Zed2WOGbYJT3MVLPERIi9e3CyERiXILGzPzKyYgJ6Ohp2JgYdQ9ssqGmg4fT0mprtM2tF/i6LvVvHoARqUW0A=="
+  },
+  "4315b9eb19a0fd22897362c3fbb22261c8769da88e5de23e836575220e185644": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwlik0KQGAYhJ8jWOlbOoHEzkLKIWwUhYXyU35zQhvHcQDjM2/T08w7zgHODkY0oid6IlTl5yuAhJRbnYvhsb9fGTEFOR0jDRMHi/LCKa+0DESEtmmp2Zht9rXtdb9eS1IUnA=="
+  },
+  "51881ecfae3139b56be633ab142faac819927e519c8cae08acdedcd9d5fe7cb4": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9irEKQGAYRU+8gjyGxCZZjOwWZWFQfhT58xb/aPSoroH79XU6t+ssuAMu8RJv8RZh7WJv7ZwPOQW1+oCQ3fKnJKOlYWSmZ8GyyTdO/c6AISVRU8mMdq9FWk66Lw9IOhXl"
+  },
+  "d3f82a498c0520a0dc91d7ce7475dd8ad71afabc4c6e1c89bf76eae7ef538332": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwlijEOQEAURN8RlKLaE0jQqYRDaCQioZBgCwSd06kcxwHMMj+Tl5k/3g7eBr7oi0Y0Ipy18xVBRs7tNgQ83+9XQUpFSc9Ei2VjVp455IWOkYRYjWVQaljVuibUetA5vW3xFVQ="
+  },
+  "632904dd9687f0d51be55ef72b9c95bae6da16590e662a389984e69356273d1e": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9iisKgFAURM8ixOoODNpELFa7RRD8BMEf+kDdxYvGt1THoHMZDnO49gR7wC3eohOdKFu/DSJIySjkPXzMyZ+chIqSgZmOhYNde+dSDT0TMZFMQ8smu8qG+hx1Xx5FvxZl"
+  },
+  "3b2a27d9df4a496a2b1fab478b4e8e0d47520a2d26d9452319a2e5acc1052552": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw1iksKQAAURc8SDCRDK1CYSSYWYaIMMFB+obALS7Agy7EAF7mv2+md94wNjBVs0RYd0RHhyJ/uHkTEnHImFtd7+5IQkpFS01HSszBpn9jUmYqWAF+mo2CUHWRdfTaaPzdyPxUH"
+  },
+  "33d617dc7a32230fedfa012291a59ac7c86614c1a6d1bead51800343e513e043": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ijEOQEAURN8xxCFE6FRCq9dINBSbLAorbO8ASuUewRGNxvxM3v8z//JwHXCLtxjEIMLTfz5TKKlolEfEOM+vmoKOFsPMwMLOqnvFy46RiZxMyazdsckGqy7Rt9V8egGU/RgE"
+  },
+  "ea9f6b5821c078603f7c3d8fe52b258a6f5c61bfae1a122549a6e4199bca88ef": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw1ir0NQGAYhJ8RFCJfaQIROhGNITQSBQrxV5AIW9jIAMYxgEPcm8uTu/esDawVjGhEV3RFOIrHuw8xCac6G4fr/X1KicjJaBioGFmYlCdWeaamJyRQs9CqKem09LTsdL9ujY4VPA=="
+  },
+  "a4ddcf7759e5ba4cb3ece03079de9e8d6b6a770f2db090563a97c7bc881f362d": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJw9ik0KQFAURs8yZBESMyMxNTdRUpRX/ooSMzt4Q8O3JEvymfhu557u17Un2ANu+Zad7GR46o8rhJSMQr2Hz3byJyehosQw0TKzs+peOcRGx0hMpMaw0DNoN8IQ6HvQfHkBrcEYKA=="
+  },
+  "18d64e0f66e85889fea4c30916d1cd5d13e9ba0e3b43ffbd31b7076d61598c4f": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJwTqGZgEKhiYJAA0hJAWgFIKwBpBoYH8SAsZ8jAYMNgx3AGKCbCIMbwBSwHAc4MVgwxDOEMmQx5DCkM+QzlDMVAfjFDJRCXMKQy5DIYMxiBRdIYkhnigSqKGfSAKnOAEAYAfVcVAg=="
+  },
+  "7984a5b9cf36e67d8422beb41e4c293e12ddaa0f4f936d308252031c48d4c749": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 128,
+   "data": "eJybUM3AMKGKgWEGkJ4BpBcA6QVAmoHhQzwI8xgyMFgx2DD4AMWFGEQYSqoZ4MAZKBPDEM6QyZDHkMKQz1DOUAzkFzNUAnEJQypDLoMxgxFQpBysIhcI9YDqcoAQAQCMpBa1"
+  },
+  "6f60bccbc0678634d436bba607794d73fc6bd88212ae037a66a7a9077f7d0ace": {
+   "compression": "zlib",
+   "encoding": "base64",
+   "size": 144,
+   "data": "eJwlizEKwlAQRF9pmdIypVgEiZ2tkDqkSWMhGosPGkO+GES8ocfJAXyJswwzO7NLAckbFupSTdRUFceJnw2UVHzNVqwZ/92MPTsO1ARaGu4MRPfISz64cGNLbnLiTG/amXa6YBP0gadXkczvqzPhBytPF4s="
+  }
+ },
+ "entry_points": [
+  {
+   "ep_type": "module_entry",
+   "start_addr": "0x401000",
+   "ep_args": [
+    "0x4000",
+    "0x4010",
+    "0x4020",
+    "0x4030"
+   ],
+   "tid": 1076,
+   "apihash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "ret_val": "0x0",
+   "error": {
+    "type": "unsupported_api",
+    "pc": "0xfeedf00c",
+    "instr": "add byte ptr [eax], al",
+    "address": "0xfeedf00c",
+    "regs": {
+     "esp": "0x012fffe4",
+     "ebp": "0x01300000",
+     "eip": "0xfeedf00c",
+     "esi": "0x00000000",
+     "edi": "0x00000000",
+     "eax": "0x00000000",
+     "ebx": "0x00000000",
+     "ecx": "0x00000000",
+     "edx": "0x00000000"
+    },
+    "stack": [
+     "sp+0x00: 0x00401006 -> emu.module.neg.0x400000",
+     "sp+0x04: 0xfeedf000",
+     "sp+0x08: 0x00004000 -> emu.module_arg_0.0x4000",
+     "sp+0x0c: 0x00004010 -> emu.module_arg_1.0x4010",
+     "sp+0x10: 0x00004020 -> emu.module_arg_2.0x4020",
+     "sp+0x14: 0x00004030 -> emu.module_arg_3.0x4030",
+     "sp+0x18: 0xfeedf000",
+     "sp+0x1c: <unmapped @ 0x1300000>"
+    ],
+    "nearby_regions": [
+     {
+      "tag": "emu.struct.KUSER_SHARED_DATA.0xffdf0000",
+      "base": "0xffdf0000",
+      "size": "0x1000",
+      "prot": "rwx"
+     },
+     {
+      "tag": "emu.struct.EPROCESS.0xe0000000",
+      "base": "0xe0000000",
+      "size": "0x1000",
+      "prot": "---"
+     }
+    ],
+    "thread_id": 1076,
+    "process_id": 1056,
+    "context_summary": "unsupported_api at 0xfeedf00c; from pc=0xfeedf00c; nearest: emu.struct.KUSER_SHARED_DATA.0xffdf0000 [0xffdf0000-0xffdf0fff]",
+    "api_name": "kernel32.ThisApiDoesNotExistBySpeakeasy"
+   },
+   "memory": {
+    "layout": [
+     {
+      "tag": "emu.module.svchost.exe.headers.0x400000",
+      "address": "0x400000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.svchost.exe..text.0x400230",
+      "address": "0x400230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "3565239b43efcbc43f5ce8f3c587fb6291a7b837bed1c2a48f84b84b572450a3"
+     },
+     {
+      "tag": "emu.module.svchost.exe..rdata.0x400250",
+      "address": "0x400250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "aabbfbf7ade99b35daba37042587624a758e50ececd3d66c955d5adf52f7373a"
+     },
+     {
+      "tag": "emu.module.svchost.exe..reloc.0x400380",
+      "address": "0x400380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.stack.0x1200000",
+      "address": "0x1200000",
+      "size": "0x100000",
+      "prot": "rw-",
+      "is_free": false
+     },
+     {
+      "tag": "emu.gdt.0x1000",
+      "address": "0x1000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "a2886301186aa104ac02de7140e104628db0343ae08e4064f571b89fc30905cb"
+     },
+     {
+      "tag": "emu.segment.gdt.0x2000",
+      "address": "0x2000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+     },
+     {
+      "tag": "emu.segment.fs.0x3000",
+      "address": "0x3000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "53f314fa4187f76fd2fa444512d1b180d01248898967898373564cee794aa986"
+     },
+     {
+      "tag": "emu.struct.KUSER_SHARED_DATA.0xffdf0000",
+      "address": "0xffdf0000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+     },
+     {
+      "tag": "emu.struct.KUSER_SHARED_DATA.0x7ffe0000",
+      "address": "0x7ffe0000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "d98d3fd215915a3bdaacc127022e2bbd19849f54cfa153311cb3bdb7d40665c1"
+     },
+     {
+      "tag": "emu.module.ntoskrnl.exe.headers.0x803d0000",
+      "address": "0x803d0000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "9b5fc23e1c4fde30ca59b8d8a9d55870c6924bd5d986e6169eef51d2e93eeb2c"
+     },
+     {
+      "tag": "emu.module.ntoskrnl.exe..text.0x803d1000",
+      "address": "0x803d1000",
+      "size": "0xc05",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "66226ca59943cce02d0c84289c1c0bf97db3f061d918f4036176887eba84298a"
+     },
+     {
+      "tag": "emu.module.ntoskrnl.exe..edata.0x803d2000",
+      "address": "0x803d2000",
+      "size": "0x142c",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "7e2530fafd3c8af897d4851687296c929edca9dadd6facffa13c458993894560"
+     },
+     {
+      "tag": "emu.module.hal.dll.headers.0xc1000000",
+      "address": "0xc1000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "69a83043970c7198d9c32b314000ddf0051bd858e0fcab993c335153cf8c3779"
+     },
+     {
+      "tag": "emu.module.hal.dll..text.0xc1001000",
+      "address": "0xc1001000",
+      "size": "0x99",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "42d96426d2ee99932ebd9c2fcde0c53f29b36dd709700d425a1714681cb0a574"
+     },
+     {
+      "tag": "emu.module.hal.dll..edata.0xc1002000",
+      "address": "0xc1002000",
+      "size": "0x131",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "b278920805249fba905e20628d72f0be7abe853c2e86d4e3ec86eac0f19ec892"
+     },
+     {
+      "tag": "emu.module.ntfs.sys.headers.0xc2000000",
+      "address": "0xc2000000",
+      "size": "0x1d0",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "32ea0388d4a78c0de1b3ff993223999f4d9b703d9614c597988350cc7fd68fe6"
+     },
+     {
+      "tag": "emu.module.ntfs.sys..text.0xc20001d0",
+      "address": "0xc20001d0",
+      "size": "0x10",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6f09b54e25bf2ca55b968f830b6be83e77fa3b3faa2a6411eba8b2ac5913841f"
+     },
+     {
+      "tag": "emu.module.netio.sys.headers.0xd4000000",
+      "address": "0xd4000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "b9ec886542d7e715b356b937d624ae02d1382b857c1eb544a29fd257b8f9c81a"
+     },
+     {
+      "tag": "emu.module.netio.sys..text.0xd4001000",
+      "address": "0xd4001000",
+      "size": "0x396",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "237581a137af47fc1fec8b05f252e33d2c262d894c07fedfc1d6468ed88494b2"
+     },
+     {
+      "tag": "emu.module.netio.sys..edata.0xd4002000",
+      "address": "0xd4002000",
+      "size": "0x745",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "a02944cb12c58c52bd44dead2112e5dc7286a1f1d2c0a12d5cde799c5e4381a0"
+     },
+     {
+      "tag": "emu.module.volmgr.sys.headers.0xc6000000",
+      "address": "0xc6000000",
+      "size": "0x1d0",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "32ea0388d4a78c0de1b3ff993223999f4d9b703d9614c597988350cc7fd68fe6"
+     },
+     {
+      "tag": "emu.module.volmgr.sys..text.0xc60001d0",
+      "address": "0xc60001d0",
+      "size": "0x10",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6f09b54e25bf2ca55b968f830b6be83e77fa3b3faa2a6411eba8b2ac5913841f"
+     },
+     {
+      "tag": "emu.module.disk.sys.headers.0xc3000000",
+      "address": "0xc3000000",
+      "size": "0x1d0",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "32ea0388d4a78c0de1b3ff993223999f4d9b703d9614c597988350cc7fd68fe6"
+     },
+     {
+      "tag": "emu.module.disk.sys..text.0xc30001d0",
+      "address": "0xc30001d0",
+      "size": "0x10",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6f09b54e25bf2ca55b968f830b6be83e77fa3b3faa2a6411eba8b2ac5913841f"
+     },
+     {
+      "tag": "emu.module.tcpip.sys.headers.0xc4000000",
+      "address": "0xc4000000",
+      "size": "0x1d0",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "32ea0388d4a78c0de1b3ff993223999f4d9b703d9614c597988350cc7fd68fe6"
+     },
+     {
+      "tag": "emu.module.tcpip.sys..text.0xc40001d0",
+      "address": "0xc40001d0",
+      "size": "0x10",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6f09b54e25bf2ca55b968f830b6be83e77fa3b3faa2a6411eba8b2ac5913841f"
+     },
+     {
+      "tag": "emu.module.ndis.sys.headers.0xc7000000",
+      "address": "0xc7000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ccd62083918926b390fd4579db6b49e2362a70daa9f5402e60e080d2c962955c"
+     },
+     {
+      "tag": "emu.module.ndis.sys..text.0xc7001000",
+      "address": "0xc7001000",
+      "size": "0x330",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "1d6b7d9d4db3ec983790d063abf84bb0235aef63b0a9577cbb8a07aee4e0a3b9"
+     },
+     {
+      "tag": "emu.module.ndis.sys..edata.0xc7002000",
+      "address": "0xc7002000",
+      "size": "0x6aa",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "b6574af051e9a0102bf49d6025ab7df0d962fc26f3407d2074668ffdeb0ed156"
+     },
+     {
+      "tag": "emu.module.main.0x402000",
+      "address": "0x402000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+     },
+     {
+      "tag": "emu.module.ntdll.dll.headers.0x7c000000",
+      "address": "0x7c000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "38165235f3473c3867102a9aa72acad1182f1700ea88c835e8f61ed6029c25cc"
+     },
+     {
+      "tag": "emu.module.ntdll.dll..text.0x7c001000",
+      "address": "0x7c001000",
+      "size": "0xd6a",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "12f4342e15030716d80695fd7ff8a5cb7002b7663ce5de73323b44f96288f056"
+     },
+     {
+      "tag": "emu.module.ntdll.dll..edata.0x7c002000",
+      "address": "0x7c002000",
+      "size": "0x16a9",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "4865659994331ccc476052d5ea337f255e4eb29a654981ca9862df525f8d75dd"
+     },
+     {
+      "tag": "emu.module.kernel32.dll.headers.0x77000000",
+      "address": "0x77000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "7d099dfc8c924d3d5eb2ebeb6ccdd9725d62f10edc8be341dab353d13752f1a9"
+     },
+     {
+      "tag": "emu.module.kernel32.dll..text.0x77001000",
+      "address": "0x77001000",
+      "size": "0x3e5b",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6c321fecafe535e214d8b441e1c7932a32be19af523ad21174199e74acfa111e"
+     },
+     {
+      "tag": "emu.module.kernel32.dll..edata.0x77005000",
+      "address": "0x77005000",
+      "size": "0x6411",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "3dda1ee0a5e9ef7bc89731b93993ac48dadaf9177c99db5b2919f532e5304e27"
+     },
+     {
+      "tag": "emu.module.ws2_32.dll.headers.0x78c00000",
+      "address": "0x78c00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "5912a7efd963c3d8f4dcc83833042126f9264bfcdb8a0fe42cdf918e5dcaa4e3"
+     },
+     {
+      "tag": "emu.module.ws2_32.dll..text.0x78c01000",
+      "address": "0x78c01000",
+      "size": "0x1089",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "546bec1db63ca35b51b44e6cc5d5944ac4427d89b4a6fa2ac753cdab645719f7"
+     },
+     {
+      "tag": "emu.module.ws2_32.dll..edata.0x78c03000",
+      "address": "0x78c03000",
+      "size": "0x148e",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "75792451ad02c46dcee0a9c25fd415ca3033996c50e203a103cbf73e4e3a722b"
+     },
+     {
+      "tag": "emu.module.wininet.dll.headers.0x7bc00000",
+      "address": "0x7bc00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "5e372a3f720a14177462fe47f67a82dd8d7b19c42fd33134b4ccaa4ba42433db"
+     },
+     {
+      "tag": "emu.module.wininet.dll..text.0x7bc01000",
+      "address": "0x7bc01000",
+      "size": "0x2ca",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "e73c20435de9063be7ddc14367f0c663af7b323f4edd116039a0bab24e016555"
+     },
+     {
+      "tag": "emu.module.wininet.dll..edata.0x7bc02000",
+      "address": "0x7bc02000",
+      "size": "0x4e7",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "75472c60fc0eee4253d0174ba18cf2422f019600c86ab34bce30cba20b3d6d63"
+     },
+     {
+      "tag": "emu.module.winhttp.dll.headers.0x7ba00000",
+      "address": "0x7ba00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "d03648eaaa001e1a38f675713b97faac8f21bb2657be4cacd9b402cfefb32d2b"
+     },
+     {
+      "tag": "emu.module.winhttp.dll..text.0x7ba01000",
+      "address": "0x7ba01000",
+      "size": "0x297",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "d3206ceffcfc871d768f90df3413e24fc006e737785e8356734eb62d2604dbb8"
+     },
+     {
+      "tag": "emu.module.winhttp.dll..edata.0x7ba02000",
+      "address": "0x7ba02000",
+      "size": "0x4df",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "1b0e29837a8a380cbe06fa269061882cc520568c73df3c68446f52d32cecf9b2"
+     },
+     {
+      "tag": "emu.module.advapi32.dll.headers.0x78000000",
+      "address": "0x78000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "077c0895567a5b90cdc73ab7839b80ec06c91cdd0b457af8cbaf0878a88a1bfb"
+     },
+     {
+      "tag": "emu.module.advapi32.dll..text.0x78001000",
+      "address": "0x78001000",
+      "size": "0xbf4",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "0a82fbed3a4e5f61a251b86e1238911c386b9a187094ad8e241e0acd64bc9bef"
+     },
+     {
+      "tag": "emu.module.advapi32.dll..edata.0x78002000",
+      "address": "0x78002000",
+      "size": "0x13c0",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "db68665f9ee9baefe9a42c30567f73d6473f6a0a938fc104feb6c7378b28c885"
+     },
+     {
+      "tag": "emu.module.psapi.dll.headers.0x71000000",
+      "address": "0x71000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "3557a9d64631c102e5a9625fceb33db5c45a2507fdb8e81f9fae274f82ee4549"
+     },
+     {
+      "tag": "emu.module.psapi.dll..text.0x71001000",
+      "address": "0x71001000",
+      "size": "0xcc",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6437517c33e40a6cb54552e1e828878f8b119641a063ff72c1b3bd88417cb4e8"
+     },
+     {
+      "tag": "emu.module.psapi.dll..edata.0x71002000",
+      "address": "0x71002000",
+      "size": "0x183",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "b132dcc3f635b3644bc02b46fd6723cf81c9c24bd9355e6a42bb77d011ed7121"
+     },
+     {
+      "tag": "emu.module.user32.dll.headers.0x77d10000",
+      "address": "0x77d10000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "dcdbee6bc7b5b73e971b6d33f8735126fff37e3d4159b25a7d03894dcde56e0d"
+     },
+     {
+      "tag": "emu.module.user32.dll..text.0x77d11000",
+      "address": "0x77d11000",
+      "size": "0x14eb",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "595f4c7c6e4c56b9e30e14b2d1bf894499b83da4557b2c4aac70c95bb5b71072"
+     },
+     {
+      "tag": "emu.module.user32.dll..edata.0x77d13000",
+      "address": "0x77d13000",
+      "size": "0x2063",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "7c716e0b5ee7a229298bd66768446f9b57996e9b3fe2c5370fab7ce55ef5b700"
+     },
+     {
+      "tag": "emu.module.gdi32.dll.headers.0x77e10000",
+      "address": "0x77e10000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "38c1e5d930517b29a73454a32f5119b1ccd4012a00951eb3cf1e8f4ed882e04c"
+     },
+     {
+      "tag": "emu.module.gdi32.dll..text.0x77e11000",
+      "address": "0x77e11000",
+      "size": "0x462",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c8ed60061bee6f6bc70c3ea6584af3a19d9914a163d911ceb4583e8dc0ce5d5a"
+     },
+     {
+      "tag": "emu.module.gdi32.dll..edata.0x77e12000",
+      "address": "0x77e12000",
+      "size": "0x651",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "1f385fa3f52f8fce46a577a5031fd357108049dbdfff643dc907b70c2de3d4f2"
+     },
+     {
+      "tag": "emu.module.msvcrt.dll.headers.0x77f10000",
+      "address": "0x77f10000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "84391afcffa8bc999742568103412472ab34bdbfbd896a67ee0cba5cf5e56aa8"
+     },
+     {
+      "tag": "emu.module.msvcrt.dll..text.0x77f11000",
+      "address": "0x77f11000",
+      "size": "0x18c5",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "02b2bc9bb252f778a12ff6c83cb54151c63f545530864458cd14bbeb7a182229"
+     },
+     {
+      "tag": "emu.module.msvcrt.dll..edata.0x77f13000",
+      "address": "0x77f13000",
+      "size": "0x201a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "7066fc90de1bd987cb0c770d242a85cc618accc2523168e5fff0371fea3c965c"
+     },
+     {
+      "tag": "emu.module.dnsapi.dll.headers.0x78f10000",
+      "address": "0x78f10000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "6b8d1f1452b1277ce26f4ba1de7435186d3a27f1060d2eac39d6aa14fb8cb9c2"
+     },
+     {
+      "tag": "emu.module.dnsapi.dll..text.0x78f11000",
+      "address": "0x78f11000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.dnsapi.dll..edata.0x78f12000",
+      "address": "0x78f12000",
+      "size": "0x6d",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "74ca079b17c090e8fed7d4b735b22edcca5e3810f8cbb7febe30f0273a4129b4"
+     },
+     {
+      "tag": "emu.module.shlwapi.dll.headers.0x67000000",
+      "address": "0x67000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "019c15b81e6f0dd299d168535def6e5fd3dc90c792dd963f568bb1606e3e7cf5"
+     },
+     {
+      "tag": "emu.module.shlwapi.dll..text.0x67001000",
+      "address": "0x67001000",
+      "size": "0x2fd",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "4868574331d12f2b4968c0ecda588741ba7765bcceeb0cfce745c4bddd94fb07"
+     },
+     {
+      "tag": "emu.module.shlwapi.dll..edata.0x67002000",
+      "address": "0x67002000",
+      "size": "0x48f",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea50f4e365492d1bdb36c149a8e2625971345e2602cbfddbf4df0854e06708b7"
+     },
+     {
+      "tag": "emu.module.advpack.dll.headers.0x68f00000",
+      "address": "0x68f00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "f43b800312cfd8050c001add1db764371a8fa70b7d7ee3dc541dca0eda626e9f"
+     },
+     {
+      "tag": "emu.module.advpack.dll..text.0x68f01000",
+      "address": "0x68f01000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.advpack.dll..edata.0x68f02000",
+      "address": "0x68f02000",
+      "size": "0x6e",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "8a35adda541d5408c90343b5d69cf6fe03e5af0a371af76a005829c6bdde0512"
+     },
+     {
+      "tag": "emu.module.dbghelp.dll.headers.0x62000000",
+      "address": "0x62000000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.dbghelp.dll..text.0x62000230",
+      "address": "0x62000230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "426dc6d7bc294d6f4baab8decaf10a01744aa2b6f8ebaa2fbb8d1aeec29c51b9"
+     },
+     {
+      "tag": "emu.module.dbghelp.dll..rdata.0x62000250",
+      "address": "0x62000250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "154b5b2afbf5075d3e890560172a8ef0bfb3a3302446a368934334f258c9bfb2"
+     },
+     {
+      "tag": "emu.module.dbghelp.dll..reloc.0x62000380",
+      "address": "0x62000380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.shell32.dll.headers.0x69000000",
+      "address": "0x69000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "03835a579e7c7be4d066524a1de1d47371959f516373bd3fca03e0f3c832bd83"
+     },
+     {
+      "tag": "emu.module.shell32.dll..text.0x69001000",
+      "address": "0x69001000",
+      "size": "0x2ef3",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "d1242be448099ff1fda037ffc0db4575524a92c8243078487ae92ce8ea52a5fe"
+     },
+     {
+      "tag": "emu.module.shell32.dll..edata.0x69004000",
+      "address": "0x69004000",
+      "size": "0x3ce7",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "37ce2e939d3e5f8131f446e23664b7ce6a417a0930c17293b51f3224fad15bb6"
+     },
+     {
+      "tag": "emu.module.WTSAPI32.dll.headers.0x63000000",
+      "address": "0x63000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "34fa0801e0302a394ce1c3f1b2686845c62f9674e2122251be64da6c7952de59"
+     },
+     {
+      "tag": "emu.module.WTSAPI32.dll..text.0x63001000",
+      "address": "0x63001000",
+      "size": "0x66",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1"
+     },
+     {
+      "tag": "emu.module.WTSAPI32.dll..edata.0x63002000",
+      "address": "0x63002000",
+      "size": "0xda",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "0db0583b77bbf67911a8bf740496615b3ef83a3e6862ce9e6cedc41c2c75ce15"
+     },
+     {
+      "tag": "emu.module.CRYPT32.dll.headers.0x58000000",
+      "address": "0x58000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "91a4f9923460e6e0b88dded6da2dfcaa4e4a8e698ba687b61cb5345978826c5d"
+     },
+     {
+      "tag": "emu.module.CRYPT32.dll..text.0x58001000",
+      "address": "0x58001000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.CRYPT32.dll..edata.0x58002000",
+      "address": "0x58002000",
+      "size": "0x8c",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "a5bf746dfdeb1cf24b22c22363f0103e0a8d3305ffc67963a6483953ff0f78d1"
+     },
+     {
+      "tag": "emu.module.mscoree.dll.headers.0x53000000",
+      "address": "0x53000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "2cb1c4e7e09bd992b3cc900ad1ef8766f767c2814db3cbc1793daa1a00e90f71"
+     },
+     {
+      "tag": "emu.module.mscoree.dll..text.0x53001000",
+      "address": "0x53001000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.mscoree.dll..edata.0x53002000",
+      "address": "0x53002000",
+      "size": "0x7d",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "9b727908bed2f763301ea0e43d723db1bedb48794e3015bb2dc064cf8513ab94"
+     },
+     {
+      "tag": "emu.module.urlmon.dll.headers.0x54500000",
+      "address": "0x54500000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "6110486e379dad68ebb64ad54875367f26024b82ee3e98583ce1a72d70b32836"
+     },
+     {
+      "tag": "emu.module.urlmon.dll..text.0x54501000",
+      "address": "0x54501000",
+      "size": "0x66",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1"
+     },
+     {
+      "tag": "emu.module.urlmon.dll..edata.0x54502000",
+      "address": "0x54502000",
+      "size": "0xea",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c296abcf0eb7fa24f5e3b943d9156c527dddc5d5b37723012eff6c0804c796f5"
+     },
+     {
+      "tag": "emu.module.riched32.dll.headers.0x56500000",
+      "address": "0x56500000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.riched32.dll..text.0x56500230",
+      "address": "0x56500230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "7185222294e416c211ee57c070f4a1c201aab810061708e41449b049d3d5804a"
+     },
+     {
+      "tag": "emu.module.riched32.dll..rdata.0x56500250",
+      "address": "0x56500250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "a192349457c0c646049acd9cad2622b3c3a57ca4bc72735e3f0ec3763e8cf6c2"
+     },
+     {
+      "tag": "emu.module.riched32.dll..reloc.0x56500380",
+      "address": "0x56500380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.userenv.dll.headers.0x76500000",
+      "address": "0x76500000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.userenv.dll..text.0x76500230",
+      "address": "0x76500230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "1b17bce1768f6d5f99777280b39d747793a68ba54a87271e14fdb902655db206"
+     },
+     {
+      "tag": "emu.module.userenv.dll..rdata.0x76500250",
+      "address": "0x76500250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "f3e3e7493755c19be1771ae67de4b72bce31adaeb1935ff4a089a5ba5c051bb4"
+     },
+     {
+      "tag": "emu.module.userenv.dll..reloc.0x76500380",
+      "address": "0x76500380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.ole32.dll.headers.0x65500000",
+      "address": "0x65500000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "5dce96eaf701e1fc56468b7e41634c82d9861cc8f090ccfd756a1fbba2dddb81"
+     },
+     {
+      "tag": "emu.module.ole32.dll..text.0x65501000",
+      "address": "0x65501000",
+      "size": "0x1cb",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "8190522685ac262bdd4f828266afbcd4a021ce0618fc33b5d8dce23d3e52379f"
+     },
+     {
+      "tag": "emu.module.ole32.dll..edata.0x65502000",
+      "address": "0x65502000",
+      "size": "0x2f8",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "52223a90d62e604e8fb098803b85eb0f774b965d751a64e803f8cef5e78c3a5c"
+     },
+     {
+      "tag": "emu.module.gdiplus.dll.headers.0x75500000",
+      "address": "0x75500000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.gdiplus.dll..text.0x75500230",
+      "address": "0x75500230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "a04e54226a8e33c751c6a91cb08fa9a1f2af25ef87a99d649317f628532fdfca"
+     },
+     {
+      "tag": "emu.module.gdiplus.dll..rdata.0x75500250",
+      "address": "0x75500250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "cc96fbb71c8411b601a161e593640d6eee120922aa38ccaf23b30ffed23f26fa"
+     },
+     {
+      "tag": "emu.module.gdiplus.dll..reloc.0x75500380",
+      "address": "0x75500380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.setupapi.dll.headers.0x55500000",
+      "address": "0x55500000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.setupapi.dll..text.0x55500230",
+      "address": "0x55500230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "8385f28934494746da931562b559b5854d992cf2381dfbc7edfe2a943448e8fb"
+     },
+     {
+      "tag": "emu.module.setupapi.dll..rdata.0x55500250",
+      "address": "0x55500250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "65f8f1aa9f4e01eef3f9d3f0cbc24caa50ef191a02a0f77deb2818bc8e2b5939"
+     },
+     {
+      "tag": "emu.module.setupapi.dll..reloc.0x55500380",
+      "address": "0x55500380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.NETAPI32.dll.headers.0x54400000",
+      "address": "0x54400000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "7a5919fa6b6ed32d60bf32df19805474469e11698d26a0f6ca218f98287a326c"
+     },
+     {
+      "tag": "emu.module.NETAPI32.dll..text.0x54401000",
+      "address": "0x54401000",
+      "size": "0xcc",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6437517c33e40a6cb54552e1e828878f8b119641a063ff72c1b3bd88417cb4e8"
+     },
+     {
+      "tag": "emu.module.NETAPI32.dll..edata.0x54402000",
+      "address": "0x54402000",
+      "size": "0x177",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "b5e562901330c4128732407d7cd2e3690933a4c2a10107ad2ac6088f4af59eec"
+     },
+     {
+      "tag": "emu.module.Rpcrt4.dll.headers.0x53300000",
+      "address": "0x53300000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "256a05e70a5733c95a1bdcfc8d4c85b6a6e0fb85dc7e1895111c191f8b882986"
+     },
+     {
+      "tag": "emu.module.Rpcrt4.dll..text.0x53301000",
+      "address": "0x53301000",
+      "size": "0x66",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1"
+     },
+     {
+      "tag": "emu.module.Rpcrt4.dll..edata.0x53302000",
+      "address": "0x53302000",
+      "size": "0xba",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "95f560e4dbbdf3cf4b5105feccdf1341ce366e9981943e29bf0d5cd09df5d409"
+     },
+     {
+      "tag": "emu.module.linkinfo.dll.headers.0x63300000",
+      "address": "0x63300000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.linkinfo.dll..text.0x63300230",
+      "address": "0x63300230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "4eed171c1527e7200e2591593f3dfd650baa1a86e05a433958134b2d7e2765dd"
+     },
+     {
+      "tag": "emu.module.linkinfo.dll..rdata.0x63300250",
+      "address": "0x63300250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "bb6c9092a194daf26dbc62d3a42554a9312d4eb33e61c31cb9f76244c5c0331a"
+     },
+     {
+      "tag": "emu.module.linkinfo.dll..reloc.0x63300380",
+      "address": "0x63300380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.EhStorShell.dll.headers.0x73300000",
+      "address": "0x73300000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.EhStorShell.dll..text.0x73300230",
+      "address": "0x73300230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "469d6616c2645f0e025797d924bf2c7d68ca83d02c4320987af0162aa1cedecb"
+     },
+     {
+      "tag": "emu.module.EhStorShell.dll..rdata.0x73300250",
+      "address": "0x73300250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c43195bd8f190cfdb5fcbfa55928f9207d13dad0cf07b95610d597c066c95b01"
+     },
+     {
+      "tag": "emu.module.EhStorShell.dll..reloc.0x73300380",
+      "address": "0x73300380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.comctl32.dll.headers.0x5f500000",
+      "address": "0x5f500000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "fc1508db22f6a3af13c4b9c2d37d43fb4e6917d7f02726d8bd88d25a5e8ddaad"
+     },
+     {
+      "tag": "emu.module.comctl32.dll..text.0x5f501000",
+      "address": "0x5f501000",
+      "size": "0x66",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1"
+     },
+     {
+      "tag": "emu.module.comctl32.dll..edata.0x5f502000",
+      "address": "0x5f502000",
+      "size": "0xe9",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "615dae6611a6dab66bff77ef3bb201ad2aaf5cb9588d504c56a7860c31a45ecf"
+     },
+     {
+      "tag": "emu.module.secur32.dll.headers.0x5f600000",
+      "address": "0x5f600000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "fd95ec9dbc76037fabac7cdb7d0a641455c06aeba7c921cdff331d152f98904d"
+     },
+     {
+      "tag": "emu.module.secur32.dll..text.0x5f601000",
+      "address": "0x5f601000",
+      "size": "0x66",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "c315624e506c50969ff660e3ff7dd10067d47fe9f7fef9dfd7ad44f2db5e28f1"
+     },
+     {
+      "tag": "emu.module.secur32.dll..edata.0x5f602000",
+      "address": "0x5f602000",
+      "size": "0xc7",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c828b7948e35d09fd546cc5ba385028af0b9cd36448fba74f05d1ee091b1d536"
+     },
+     {
+      "tag": "emu.module.KtmW32.dll.headers.0x5f700000",
+      "address": "0x5f700000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.KtmW32.dll..text.0x5f700230",
+      "address": "0x5f700230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "69eec6f1edc42f0688c6328dcc61c5cab4c4822fbc203e7c4ab4f53106cd2e3f"
+     },
+     {
+      "tag": "emu.module.KtmW32.dll..rdata.0x5f700250",
+      "address": "0x5f700250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c33e0275b228ae198f870e6dea02df574dd10274633c1350f118521c408ec953"
+     },
+     {
+      "tag": "emu.module.KtmW32.dll..reloc.0x5f700380",
+      "address": "0x5f700380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.module.oleaut32.dll.headers.0x5f800000",
+      "address": "0x5f800000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c907327af32ca638858753f295ddcf62c2cf9da8bbd359765c614b5f777b6c62"
+     },
+     {
+      "tag": "emu.module.oleaut32.dll..text.0x5f801000",
+      "address": "0x5f801000",
+      "size": "0x121",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "14397714ca32646771a2be75e67252a9ad9225a219df74722c97d767ff39a864"
+     },
+     {
+      "tag": "emu.module.oleaut32.dll..edata.0x5f802000",
+      "address": "0x5f802000",
+      "size": "0x1c6",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "8bad2f0d5039e4d351580d484518586ffb2528ec2eaf23ca5d89e1db97b7206a"
+     },
+     {
+      "tag": "emu.module.bcrypt.dll.headers.0x5f900000",
+      "address": "0x5f900000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "2e4d80766f8a8a93d75dacd5310f5b392c491c3d26b9c11e51c96eb2a9424b7c"
+     },
+     {
+      "tag": "emu.module.bcrypt.dll..text.0x5f901000",
+      "address": "0x5f901000",
+      "size": "0xff",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "403a8b5ef8543290668aa38ac8fbc261516018f584b57c939a02506a68e72dd4"
+     },
+     {
+      "tag": "emu.module.bcrypt.dll..edata.0x5f902000",
+      "address": "0x5f902000",
+      "size": "0x21f",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "dd6e133742601a6a6cc6dd9bfa40f8c9714a45417bdb6c1e0d758cb878ea9ad9"
+     },
+     {
+      "tag": "emu.module.ncrypt.dll.headers.0x5fa00000",
+      "address": "0x5fa00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "f8477483d55f0102206b506bc6bdd4ed5b597491efb469e5c1edb1d4025ed7cf"
+     },
+     {
+      "tag": "emu.module.ncrypt.dll..text.0x5fa01000",
+      "address": "0x5fa01000",
+      "size": "0xcc",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "6437517c33e40a6cb54552e1e828878f8b119641a063ff72c1b3bd88417cb4e8"
+     },
+     {
+      "tag": "emu.module.ncrypt.dll..edata.0x5fa02000",
+      "address": "0x5fa02000",
+      "size": "0x190",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "e06e29431595cbe8de54db78751362a738745aee4fe2d0eb810cdc47922a733a"
+     },
+     {
+      "tag": "emu.module.netutils.dll.headers.0x5fb00000",
+      "address": "0x5fb00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "a621dcef02340ab6b461c1087b7f379593f1d52e504fd38e3faabee85e118920"
+     },
+     {
+      "tag": "emu.module.netutils.dll..text.0x5fb01000",
+      "address": "0x5fb01000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.netutils.dll..edata.0x5fb02000",
+      "address": "0x5fb02000",
+      "size": "0x84",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "74a2eece263c6fcb050946dfb7da2e03326aeb88aeb3cc7b8bce449ed454dbb9"
+     },
+     {
+      "tag": "emu.module.wkscli.dll.headers.0x5fc00000",
+      "address": "0x5fc00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "1b646805351ef84af2c2ad1063aa2bbc72cec8f0b4477691bd03cdc205a80e4a"
+     },
+     {
+      "tag": "emu.module.wkscli.dll..text.0x5fc01000",
+      "address": "0x5fc01000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.wkscli.dll..edata.0x5fc02000",
+      "address": "0x5fc02000",
+      "size": "0x91",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "865b76484c8b0cdff763a17546043411ba86ae8a81e6946903e5541c68f7bed0"
+     },
+     {
+      "tag": "emu.module.iphlpapi.dll.headers.0x5fd00000",
+      "address": "0x5fd00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "727187199aaeef28bc6dff019b3d647cac84510f64e94828fa0eb13165d4d81e"
+     },
+     {
+      "tag": "emu.module.iphlpapi.dll..text.0x5fd01000",
+      "address": "0x5fd01000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.iphlpapi.dll..edata.0x5fd02000",
+      "address": "0x5fd02000",
+      "size": "0x81",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "c661bb229a018187dd225eb7d69145b657169ed6688edd53acfd95479671f79b"
+     },
+     {
+      "tag": "emu.module.sfc_os.dll.headers.0x5fe00000",
+      "address": "0x5fe00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "929edf77a56a148ebedc45c5dbca4c2a8c85548b2661ceb232aaf825a9c6319b"
+     },
+     {
+      "tag": "emu.module.sfc_os.dll..text.0x5fe01000",
+      "address": "0x5fe01000",
+      "size": "0x88",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "05d48c70bc74b5a136a4a45b8a61105c9b97b2d65ba76c505f28ab1be1a49d8e"
+     },
+     {
+      "tag": "emu.module.sfc_os.dll..edata.0x5fe02000",
+      "address": "0x5fe02000",
+      "size": "0x11e",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "e13e9557b2ea1867d4390fd5a68422b19e9289f42de4ad94f95db893928179bb"
+     },
+     {
+      "tag": "emu.module.winmm.dll.headers.0x5ff00000",
+      "address": "0x5ff00000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "f81d99eee78256c3f7b1cb291e66da18e4ef1a3e0d843525e4686e1c7eed2ddc"
+     },
+     {
+      "tag": "emu.module.winmm.dll..text.0x5ff01000",
+      "address": "0x5ff01000",
+      "size": "0x99",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "42d96426d2ee99932ebd9c2fcde0c53f29b36dd709700d425a1714681cb0a574"
+     },
+     {
+      "tag": "emu.module.winmm.dll..edata.0x5ff02000",
+      "address": "0x5ff02000",
+      "size": "0x10c",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "f04e8c3aaf8d6fad200ce4693634246912e4491bebb7861f7ea9008e0e99a92f"
+     },
+     {
+      "tag": "emu.module.bcryptprimitives.dll.headers.0x60000000",
+      "address": "0x60000000",
+      "size": "0x1000",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "6a0d4a0c3b6f1ee14fb8ff587422abe3bfd8d92c88c980299fa8322668e53a5b"
+     },
+     {
+      "tag": "emu.module.bcryptprimitives.dll..text.0x60001000",
+      "address": "0x60001000",
+      "size": "0x33",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "81036dc619c1ecfa5de7551ba0ae9a4cae6f29373f076173555d3159b786ac2f"
+     },
+     {
+      "tag": "emu.module.bcryptprimitives.dll..edata.0x60002000",
+      "address": "0x60002000",
+      "size": "0x7d",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "d64d77bd2c3c1bf9971abaf661bc588e1c1fea8396207236a5e5d4dbc5ce193d"
+     },
+     {
+      "tag": "emu.module_arg_0.0x4000",
+      "address": "0x4000",
+      "size": "0x10",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+     },
+     {
+      "tag": "emu.module_arg_1.0x4010",
+      "address": "0x4010",
+      "size": "0x10",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+     },
+     {
+      "tag": "emu.module_arg_2.0x4020",
+      "address": "0x4020",
+      "size": "0x10",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+     },
+     {
+      "tag": "emu.module_arg_3.0x4030",
+      "address": "0x4030",
+      "size": "0x10",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+     },
+     {
+      "tag": "emu.struct.EPROCESS.0xe0000000",
+      "address": "0xe0000000",
+      "size": "0x1000",
+      "prot": "???",
+      "is_free": false,
+      "data_ref": "081c9fcc7dd465e773e544f13e8a25cd91e313a3d239e5f923a58471c0f72a40"
+     },
+     {
+      "tag": "emu.struct.PEB.0x4040",
+      "address": "0x4040",
+      "size": "0x470",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "28f63f29213bc50cef9628111e682b5c5e0af35dbafdce5598b3b17a90e83064"
+     },
+     {
+      "tag": "emu.struct.EPROCESS.ProcessParameters.0x44b0",
+      "address": "0x44b0",
+      "size": "0x150",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "a221f8fe17b012941a84ff1c9e5823ca4f1f6157df61ba8c21af0e13dc693879"
+     },
+     {
+      "tag": "emu.struct.ETHREAD.0x5000",
+      "address": "0x5000",
+      "size": "0x1000",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "f47a8ec3e9aff2318d896942282ad4fe37d6391c82914f54a5da8a37de1300c6"
+     },
+     {
+      "tag": "emu.module.kernelbase.dll.headers.0x6f000000",
+      "address": "0x6f000000",
+      "size": "0x230",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "98052eb62a279c6b1f7c7c717ced6446b2d708c4a9fa40221944cd99df8cd47c"
+     },
+     {
+      "tag": "emu.module.kernelbase.dll..text.0x6f000230",
+      "address": "0x6f000230",
+      "size": "0x12",
+      "prot": "r-x",
+      "is_free": false,
+      "data_ref": "5a084609d78baf6d729c3f780d449427edb7980b21c1173e981f5aed18851eef"
+     },
+     {
+      "tag": "emu.module.kernelbase.dll..rdata.0x6f000250",
+      "address": "0x6f000250",
+      "size": "0x12a",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "50827eb073451faed12bcda4df678bb5085034a005461d9410e4bd8e8faaf0fb"
+     },
+     {
+      "tag": "emu.module.kernelbase.dll..reloc.0x6f000380",
+      "address": "0x6f000380",
+      "size": "0xc",
+      "prot": "r--",
+      "is_free": false,
+      "data_ref": "ea4262ce165fbf0b1e8fab234d82062d65e933b4b3be74a8a992080949199495"
+     },
+     {
+      "tag": "emu.struct.PEB_LDR_DATA.0x6000",
+      "address": "0x6000",
+      "size": "0x1000",
+      "prot": "???",
+      "is_free": false,
+      "data_ref": "92e6214164723f209a5fd2430777c847b035a9fd3c05c72d9b9cf67b989ceba0"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4600",
+      "address": "0x4600",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "3a1e8161abf6afbc07e27abfcabdd1617863e4f3a88264e05c48cbe1a0e9439c"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4680",
+      "address": "0x4680",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "04e6c3797543f54125872b0fe61e878814ff7e9ced6c31cb426e5789b3ed3cba"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4700",
+      "address": "0x4700",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "94c5f4d9e143d5e3543f6c1be52db8726d56a11d01aa5dd664242c9ca2c8e821"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4780",
+      "address": "0x4780",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "9dc8ef0888d1df2ce6ae13f2542a6ae831e5c033f01650174d6a8a237e2151f2"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4800",
+      "address": "0x4800",
+      "size": "0x90",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "3ff0417da9dd180f20bd18454266c688056e9e6d8d8f3247cffd536235f4c90b"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4890",
+      "address": "0x4890",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "0355397e2543843c2dde9841ad8f866b9de630b1eec0e6ad0678fc61d2124f42"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4910",
+      "address": "0x4910",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "927d3b47f85e3cf8a0d5167355bf9ff40fb1c0c75e7d720cfd867b2c07a6db62"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4990",
+      "address": "0x4990",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "2aaa82c1f84d99d685f417b5f53275915b012d7f30141b8b39398966157a08da"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4a10",
+      "address": "0x4a10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "bd746a171edb8b61ed08722018855eea8279421b8b8fa796124095f44d1394b6"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4a90",
+      "address": "0x4a90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "9b8fdf7021aedf9ab33b602a7c96d8ce083a01fbe54156bbd7913fae553fe1c5"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4b10",
+      "address": "0x4b10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "b1eaebc5f9cc957dc49b684064573dd7fa5517d1ab67268fcd9457ca5454f662"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4b90",
+      "address": "0x4b90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "60e373068b7a728b46caa0f91ad26defb7f4894b60fa51313b6c1206c62d3fec"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4c10",
+      "address": "0x4c10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "2d7492d1c11c52d1241a93895dbf5b1fb5f2e3be2a6a4b22ac7d67bc6be9d509"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4c90",
+      "address": "0x4c90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "329b57a945baaacd0f3293cbe52ba7c9b4a587121fb70427c8607fa034aba7f3"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4d10",
+      "address": "0x4d10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "fdd913c672c2b60342a333b7efbb165f452f161a7f80cef13f91cb1f94309322"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4d90",
+      "address": "0x4d90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "19d39c647330259600c104b6d59307d64cb7e80e5ae18633dcab56badf4cdc9f"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4e10",
+      "address": "0x4e10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "b31914a1c9fea16e6295a955202c867aa738da4012a3ac226c36f92da107d5d8"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4e90",
+      "address": "0x4e90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "754437e6cf24b40b71bf0485ef45d705602e3f3ce4aa9e4a28918ff2dfa4b322"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x4f10",
+      "address": "0x4f10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "d6339b7ac1b5480d5d5b780e68bb1a48e17493cc0d861accaf41d997644c2f2c"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7000",
+      "address": "0x7000",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "45968a035df93481f6c5dd13bfecc2c34ce1e5967ea2721ec18160d4e0b5f462"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7080",
+      "address": "0x7080",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "6d282bf0e3d4a88b60bd53ab8b49d3d1b1dcad44326bc14d15817301112ae7f8"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7100",
+      "address": "0x7100",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "bbba9ff2ba400892acf2bf175be1e206c2fa0db387153490a09dda4b748acbd8"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7180",
+      "address": "0x7180",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "8ae6108f5dd1229b9c3ea6091f97f3d7c6c92c979aa738de205fba96d9efc278"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7200",
+      "address": "0x7200",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "542f923b0d0a66acfe4fcdb840b1bc64ca810504e8f9898378e4fe0a1431cf1a"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7280",
+      "address": "0x7280",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "393e6921123c78369d4619c99216f8676670e614429da5dd159f69a2e85a9e23"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7300",
+      "address": "0x7300",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "ce1db31f3584762c4db2a3b43d75b07bb48d4e3d334db5dd3f85140ee5be2c35"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7380",
+      "address": "0x7380",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "2ad5af58d26230581f20d3f37078ee491aa23dbf0a446eef9dc52c36e9cef22f"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7400",
+      "address": "0x7400",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "3cbecd10d72a1a731436b1ada78f25f84353e1ff0521558df7fbedc2389b63ab"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7480",
+      "address": "0x7480",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "02d7fadac8a98fd34157f4cf4ab9d587a971a7361a7a41fedf4a7262068f97cb"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7500",
+      "address": "0x7500",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "3240c0bde8c27cb61d8ac86541f26fb16baf87ec730600c06c20499b3ac4a8c1"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7580",
+      "address": "0x7580",
+      "size": "0x90",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "f1c63cd916b992fd1f8fdf5d6bec81e60f306bd449eaffcbcc22bb9b802f54d1"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7610",
+      "address": "0x7610",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "27ee5b0ddd3d08ee8c293b37fb00a410884b4fd96cbabdb234f930bf957833d0"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7690",
+      "address": "0x7690",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "4315b9eb19a0fd22897362c3fbb22261c8769da88e5de23e836575220e185644"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7710",
+      "address": "0x7710",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "51881ecfae3139b56be633ab142faac819927e519c8cae08acdedcd9d5fe7cb4"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7790",
+      "address": "0x7790",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "d3f82a498c0520a0dc91d7ce7475dd8ad71afabc4c6e1c89bf76eae7ef538332"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7810",
+      "address": "0x7810",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "632904dd9687f0d51be55ef72b9c95bae6da16590e662a389984e69356273d1e"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7890",
+      "address": "0x7890",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "3b2a27d9df4a496a2b1fab478b4e8e0d47520a2d26d9452319a2e5acc1052552"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7910",
+      "address": "0x7910",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "33d617dc7a32230fedfa012291a59ac7c86614c1a6d1bead51800343e513e043"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7990",
+      "address": "0x7990",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "ea9f6b5821c078603f7c3d8fe52b258a6f5c61bfae1a122549a6e4199bca88ef"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7a10",
+      "address": "0x7a10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "a4ddcf7759e5ba4cb3ece03079de9e8d6b6a770f2db090563a97c7bc881f362d"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7a90",
+      "address": "0x7a90",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "18d64e0f66e85889fea4c30916d1cd5d13e9ba0e3b43ffbd31b7076d61598c4f"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7b10",
+      "address": "0x7b10",
+      "size": "0x80",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "7984a5b9cf36e67d8422beb41e4c293e12ddaa0f4f936d308252031c48d4c749"
+     },
+     {
+      "tag": "emu.struct.LDR_DATA_TABLE_ENTRY.0x7b90",
+      "address": "0x7b90",
+      "size": "0x90",
+      "prot": "rwx",
+      "is_free": false,
+      "data_ref": "6f60bccbc0678634d436bba607794d73fc6bd88212ae037a66a7a9077f7d0ace"
+     }
+    ],
+    "modules": [
+     {
+      "name": "neg.exe",
+      "path": "C:\\Windows\\system32\\neg.exe",
+      "base": "0x400000",
+      "size": "0x2000",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x401000",
+        "size": "0x80",
+        "prot": "r-x"
+       }
+      ]
+     },
+     {
+      "name": "ntoskrnl.exe",
+      "path": "C:\\Windows\\system32\\ntoskrnl.exe",
+      "base": "0x803d0000",
+      "size": "0x442c",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x803d1000",
+        "size": "0xc05",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x803d2000",
+        "size": "0x142c",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "hal.dll",
+      "path": "C:\\Windows\\system32\\hal.dll",
+      "base": "0xc1000000",
+      "size": "0x3131",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc1001000",
+        "size": "0x99",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0xc1002000",
+        "size": "0x131",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "ntfs.sys",
+      "path": "C:\\Windows\\system32\\drivers\\ntfs.sys",
+      "base": "0xc2000000",
+      "size": "0x1e0",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc20001d0",
+        "size": "0x10",
+        "prot": "r-x"
+       }
+      ]
+     },
+     {
+      "name": "netio.sys",
+      "path": "C:\\Windows\\system32\\drivers\\netio.sys",
+      "base": "0xd4000000",
+      "size": "0x3745",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xd4001000",
+        "size": "0x396",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0xd4002000",
+        "size": "0x745",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "volmgr.sys",
+      "path": "C:\\Windows\\system32\\drivers\\volmgr.sys",
+      "base": "0xc6000000",
+      "size": "0x1e0",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc60001d0",
+        "size": "0x10",
+        "prot": "r-x"
+       }
+      ]
+     },
+     {
+      "name": "disk.sys",
+      "path": "C:\\Windows\\system32\\drivers\\disk.sys",
+      "base": "0xc3000000",
+      "size": "0x1e0",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc30001d0",
+        "size": "0x10",
+        "prot": "r-x"
+       }
+      ]
+     },
+     {
+      "name": "tcpip.sys",
+      "path": "C:\\Windows\\system32\\drivers\\tcpip.sys",
+      "base": "0xc4000000",
+      "size": "0x1e0",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc40001d0",
+        "size": "0x10",
+        "prot": "r-x"
+       }
+      ]
+     },
+     {
+      "name": "ndis.sys",
+      "path": "C:\\Windows\\system32\\drivers\\ndis.sys",
+      "base": "0xc7000000",
+      "size": "0x36aa",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0xc7001000",
+        "size": "0x330",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0xc7002000",
+        "size": "0x6aa",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "svchost.exe",
+      "path": "C:\\Windows\\system32\\svchost.exe",
+      "base": "0x400000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x400230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x400250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x400380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "ntdll.dll",
+      "path": "C:\\Windows\\system32\\ntdll.dll",
+      "base": "0x7c000000",
+      "size": "0x46a9",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x7c001000",
+        "size": "0xd6a",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x7c002000",
+        "size": "0x16a9",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "kernel32.dll",
+      "path": "C:\\Windows\\system32\\kernel32.dll",
+      "base": "0x77000000",
+      "size": "0xc411",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x77001000",
+        "size": "0x3e5b",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x77005000",
+        "size": "0x6411",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "ws2_32.dll",
+      "path": "C:\\Windows\\system32\\ws2_32.dll",
+      "base": "0x78c00000",
+      "size": "0x548e",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x78c01000",
+        "size": "0x1089",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x78c03000",
+        "size": "0x148e",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "wininet.dll",
+      "path": "C:\\Windows\\system32\\wininet.dll",
+      "base": "0x7bc00000",
+      "size": "0x34e7",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x7bc01000",
+        "size": "0x2ca",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x7bc02000",
+        "size": "0x4e7",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "winhttp.dll",
+      "path": "C:\\Windows\\system32\\winhttp.dll",
+      "base": "0x7ba00000",
+      "size": "0x34df",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x7ba01000",
+        "size": "0x297",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x7ba02000",
+        "size": "0x4df",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "advapi32.dll",
+      "path": "C:\\Windows\\system32\\advapi32.dll",
+      "base": "0x78000000",
+      "size": "0x43c0",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x78001000",
+        "size": "0xbf4",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x78002000",
+        "size": "0x13c0",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "psapi.dll",
+      "path": "C:\\Windows\\system32\\psapi.dll",
+      "base": "0x71000000",
+      "size": "0x3183",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x71001000",
+        "size": "0xcc",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x71002000",
+        "size": "0x183",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "user32.dll",
+      "path": "C:\\Windows\\system32\\user32.dll",
+      "base": "0x77d10000",
+      "size": "0x6063",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x77d11000",
+        "size": "0x14eb",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x77d13000",
+        "size": "0x2063",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "gdi32.dll",
+      "path": "C:\\Windows\\system32\\gdi32.dll",
+      "base": "0x77e10000",
+      "size": "0x3651",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x77e11000",
+        "size": "0x462",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x77e12000",
+        "size": "0x651",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "msvcrt.dll",
+      "path": "C:\\Windows\\system32\\msvcrt.dll",
+      "base": "0x77f10000",
+      "size": "0x601a",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x77f11000",
+        "size": "0x18c5",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x77f13000",
+        "size": "0x201a",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "dnsapi.dll",
+      "path": "C:\\Windows\\system32\\dnsapi.dll",
+      "base": "0x78f10000",
+      "size": "0x306d",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x78f11000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x78f12000",
+        "size": "0x6d",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "shlwapi.dll",
+      "path": "C:\\Windows\\system32\\shlwapi.dll",
+      "base": "0x67000000",
+      "size": "0x348f",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x67001000",
+        "size": "0x2fd",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x67002000",
+        "size": "0x48f",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "advpack.dll",
+      "path": "C:\\Windows\\system32\\advpack.dll",
+      "base": "0x68f00000",
+      "size": "0x306e",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x68f01000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x68f02000",
+        "size": "0x6e",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "dbghelp.dll",
+      "path": "C:\\Windows\\system32\\dbghelp.dll",
+      "base": "0x62000000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x62000230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x62000250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x62000380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "shell32.dll",
+      "path": "C:\\Windows\\system32\\shell32.dll",
+      "base": "0x69000000",
+      "size": "0x8ce7",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x69001000",
+        "size": "0x2ef3",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x69004000",
+        "size": "0x3ce7",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "WTSAPI32.dll",
+      "path": "C:\\Windows\\system32\\WTSAPI32.dll",
+      "base": "0x63000000",
+      "size": "0x30da",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x63001000",
+        "size": "0x66",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x63002000",
+        "size": "0xda",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "CRYPT32.dll",
+      "path": "C:\\Windows\\system32\\CRYPT32.dll",
+      "base": "0x58000000",
+      "size": "0x308c",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x58001000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x58002000",
+        "size": "0x8c",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "mscoree.dll",
+      "path": "C:\\Windows\\system32\\mscoree.dll",
+      "base": "0x53000000",
+      "size": "0x307d",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x53001000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x53002000",
+        "size": "0x7d",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "urlmon.dll",
+      "path": "C:\\Windows\\system32\\urlmon.dll",
+      "base": "0x54500000",
+      "size": "0x30ea",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x54501000",
+        "size": "0x66",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x54502000",
+        "size": "0xea",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "riched32.dll",
+      "path": "C:\\Windows\\system32\\riched32.dll",
+      "base": "0x56500000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x56500230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x56500250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x56500380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "userenv.dll",
+      "path": "C:\\Windows\\system32\\userenv.dll",
+      "base": "0x76500000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x76500230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x76500250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x76500380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "ole32.dll",
+      "path": "C:\\Windows\\system32\\ole32.dll",
+      "base": "0x65500000",
+      "size": "0x32f8",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x65501000",
+        "size": "0x1cb",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x65502000",
+        "size": "0x2f8",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "gdiplus.dll",
+      "path": "C:\\Windows\\system32\\gdiplus.dll",
+      "base": "0x75500000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x75500230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x75500250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x75500380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "setupapi.dll",
+      "path": "C:\\Windows\\system32\\setupapi.dll",
+      "base": "0x55500000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x55500230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x55500250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x55500380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "NETAPI32.dll",
+      "path": "C:\\Windows\\system32\\NETAPI32.dll",
+      "base": "0x54400000",
+      "size": "0x3177",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x54401000",
+        "size": "0xcc",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x54402000",
+        "size": "0x177",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "Rpcrt4.dll",
+      "path": "C:\\Windows\\system32\\Rpcrt4.dll",
+      "base": "0x53300000",
+      "size": "0x30ba",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x53301000",
+        "size": "0x66",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x53302000",
+        "size": "0xba",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "linkinfo.dll",
+      "path": "C:\\Windows\\system32\\linkinfo.dll",
+      "base": "0x63300000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x63300230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x63300250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x63300380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "EhStorShell.dll",
+      "path": "C:\\Windows\\system32\\EhStorShell.dll",
+      "base": "0x73300000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x73300230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x73300250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x73300380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "comctl32.dll",
+      "path": "C:\\Windows\\system32\\comctl32.dll",
+      "base": "0x5f500000",
+      "size": "0x30e9",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5f501000",
+        "size": "0x66",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5f502000",
+        "size": "0xe9",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "secur32.dll",
+      "path": "C:\\Windows\\system32\\secur32.dll",
+      "base": "0x5f600000",
+      "size": "0x30c7",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5f601000",
+        "size": "0x66",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5f602000",
+        "size": "0xc7",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "KtmW32.dll",
+      "path": "C:\\Windows\\system32\\KtmW32.dll",
+      "base": "0x5f700000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5f700230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x5f700250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x5f700380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "oleaut32.dll",
+      "path": "C:\\Windows\\system32\\oleaut32.dll",
+      "base": "0x5f800000",
+      "size": "0x31c6",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5f801000",
+        "size": "0x121",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5f802000",
+        "size": "0x1c6",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "bcrypt.dll",
+      "path": "C:\\Windows\\system32\\bcrypt.dll",
+      "base": "0x5f900000",
+      "size": "0x321f",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5f901000",
+        "size": "0xff",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5f902000",
+        "size": "0x21f",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "ncrypt.dll",
+      "path": "C:\\Windows\\system32\\ncrypt.dll",
+      "base": "0x5fa00000",
+      "size": "0x3190",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5fa01000",
+        "size": "0xcc",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5fa02000",
+        "size": "0x190",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "netutils.dll",
+      "path": "C:\\Windows\\system32\\netutils.dll",
+      "base": "0x5fb00000",
+      "size": "0x3084",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5fb01000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5fb02000",
+        "size": "0x84",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "wkscli.dll",
+      "path": "C:\\Windows\\system32\\wkscli.dll",
+      "base": "0x5fc00000",
+      "size": "0x3091",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5fc01000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5fc02000",
+        "size": "0x91",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "iphlpapi.dll",
+      "path": "C:\\Windows\\system32\\iphlpapi.dll",
+      "base": "0x5fd00000",
+      "size": "0x3081",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5fd01000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5fd02000",
+        "size": "0x81",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "sfc_os.dll",
+      "path": "C:\\Windows\\system32\\sfc_os.dll",
+      "base": "0x5fe00000",
+      "size": "0x311e",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5fe01000",
+        "size": "0x88",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5fe02000",
+        "size": "0x11e",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "winmm.dll",
+      "path": "C:\\Windows\\system32\\winmm.dll",
+      "base": "0x5ff00000",
+      "size": "0x310c",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x5ff01000",
+        "size": "0x99",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x5ff02000",
+        "size": "0x10c",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "bcryptprimitives.dll",
+      "path": "C:\\Windows\\system32\\bcryptprimitives.dll",
+      "base": "0x60000000",
+      "size": "0x307d",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x60001000",
+        "size": "0x33",
+        "prot": "r-x"
+       },
+       {
+        "name": ".edata",
+        "address": "0x60002000",
+        "size": "0x7d",
+        "prot": "r--"
+       }
+      ]
+     },
+     {
+      "name": "kernelbase.dll",
+      "path": "C:\\Windows\\system32\\kernelbase.dll",
+      "base": "0x6f000000",
+      "size": "0x390",
+      "segments": [
+       {
+        "name": ".text",
+        "address": "0x6f000230",
+        "size": "0x12",
+        "prot": "r-x"
+       },
+       {
+        "name": ".rdata",
+        "address": "0x6f000250",
+        "size": "0x12a",
+        "prot": "r--"
+       },
+       {
+        "name": ".reloc",
+        "address": "0x6f000380",
+        "size": "0xc",
+        "prot": "r--"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

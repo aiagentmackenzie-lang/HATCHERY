@@ -346,3 +346,68 @@ def test_markdown_renders_rtf_embedded_object_details():
     assert "**RTF embedded objects:**" in md
     assert "objects: 2" in md
     assert "Excel.Sheet.8" in md
+
+
+def test_markdown_renders_emulation_section_with_config():
+    emulation = {
+        "available": True,
+        "status": "completed",
+        "emulator": "speakeasy-emulator",
+        "emulator_version": "2.0.0b6",
+        "schema_hash": "a" * 64,
+        "api_calls": 4,
+        "events_written": 5,
+        "runtime_seconds": 1.25,
+        "unsupported_apis": [],
+        "config": {
+            "network_endpoints": [
+                {"server": "c2.example", "port": 80, "protocol": "tcp.http", "kind": "net_http"}
+            ],
+            "user_agents": ["HatcheryAgent"],
+            "mutexes": ["HatcheryMutex"],
+            "registry": [
+                {
+                    "path": "HKCU\\Software\\Run",
+                    "value_name": "Updater",
+                    "persistence": True,
+                    "kind": "reg_write_value",
+                }
+            ],
+            "dropped_files": [],
+        },
+        "capa_dynamic": {"capabilities": [{"name": "write file", "namespace": "file-system"}]},
+        "snapshots": {"regions_selected": 3, "regions_decoded": 2, "truncated": False},
+    }
+    md = ReportGenerator().generate_markdown(
+        sample_name="packed.exe",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 2048},
+        emulation=emulation,
+    )
+    assert "## Emulation (Windows PE)" in md
+    assert "speakeasy-emulator 2.0.0b6" in md
+    assert "c2.example" in md
+    assert "HatcheryMutex" in md
+    assert "write file" in md
+    assert "not an isolation boundary" in md
+
+
+def test_markdown_renders_emulation_unavailable():
+    md = ReportGenerator().generate_markdown(
+        sample_name="x.exe",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 1},
+        emulation={"available": False, "status": "unavailable", "reason": "image not built"},
+    )
+    assert "Emulation was **not run**" in md
+    assert "image not built" in md
+
+
+def test_json_report_includes_emulation():
+    emulation = {"available": True, "status": "completed", "api_calls": 1}
+    payload = json.loads(
+        ReportGenerator().generate_json(
+            sample_name="x.exe",
+            sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 1},
+            emulation=emulation,
+        )
+    )
+    assert payload["emulation"]["api_calls"] == 1

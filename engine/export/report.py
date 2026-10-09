@@ -35,6 +35,7 @@ class ReportGenerator:
         evasion: Optional[dict] = None,
         attack_version: str = "",
         ocsf_schema_version: str = "",
+        emulation: Optional[dict] = None,
     ) -> str:
         """Generate a Markdown analysis report.
 
@@ -357,6 +358,9 @@ class ReportGenerator:
                 lines.append(f"- {item}")
             lines.append("")
 
+        if emulation:
+            lines.extend(self._render_emulation(emulation))
+
         # IOCs
         if ioc_report:
             lines.append("## Indicators of Compromise")
@@ -395,6 +399,100 @@ class ReportGenerator:
 
         return "\n".join(lines)
 
+    def _render_emulation(self, emulation: dict) -> list[str]:
+        """Render the emulation section, including its declared limits."""
+        lines: list[str] = ["## Emulation (Windows PE)", ""]
+        if not emulation.get("available"):
+            lines.append(
+                f"Emulation was **not run**: {emulation.get('reason') or 'not available'}."
+            )
+            lines.append("")
+            return lines
+
+        lines.append(
+            f"- **Emulator:** {emulation.get('emulator', 'speakeasy')} "
+            f"{emulation.get('emulator_version', '?')} "
+            f"(report schema `{str(emulation.get('schema_hash', ''))[:12]}`)"
+        )
+        lines.append(f"- **Status:** {emulation.get('status', 'unknown')}")
+        if emulation.get("flags"):
+            lines.append(
+                "- **Flags:** " + ", ".join(f"`{flag}`" for flag in emulation["flags"])
+            )
+        lines.append(
+            f"- **API calls:** {int(emulation.get('api_calls') or 0)}; "
+            f"**events written:** {int(emulation.get('events_written') or 0)}"
+        )
+        if emulation.get("runtime_seconds") is not None:
+            lines.append(f"- **Emulated runtime:** {emulation.get('runtime_seconds')}s")
+        if emulation.get("unsupported_apis"):
+            lines.append(
+                "- **INCONCLUSIVE:** unimplemented API(s): "
+                + ", ".join(f"`{api}`" for api in emulation["unsupported_apis"])
+            )
+        lines.append(
+            "> Emulation interprets x86/x64 in a software CPU; the sample did not "
+            "execute natively. It is not an isolation boundary and is not ground truth."
+        )
+        lines.append("")
+
+        config = emulation.get("config") or {}
+        endpoints = config.get("network_endpoints") or []
+        if endpoints:
+            lines.append("### Extracted Configuration")
+            lines.append("")
+            lines.append("| Endpoint | Port | Protocol | Source |")
+            lines.append("|---|---:|---|---|")
+            for endpoint in endpoints:
+                lines.append(
+                    f"| `{endpoint.get('server', '')}` | {endpoint.get('port', '')} "
+                    f"| {endpoint.get('protocol', '')} | {endpoint.get('kind', '')} |"
+                )
+            lines.append("")
+        for label, key in (
+            ("User agents", "user_agents"),
+            ("Mutexes", "mutexes"),
+        ):
+            values = config.get(key) or []
+            if values:
+                lines.append(f"- **{label}:** " + ", ".join(f"`{v}`" for v in values))
+        for key in config.get("registry") or []:
+            marker = " (persistence)" if key.get("persistence") else ""
+            lines.append(
+                f"- **Registry[{key.get('kind', '')}]:** `{key.get('path', '')}`"
+                f" value `{key.get('value_name', '')}`{marker}"
+            )
+        for dropped in config.get("dropped_files") or []:
+            lines.append(
+                f"- **Dropped:** `{dropped.get('path', '')}` "
+                f"sha256 `{str(dropped.get('sha256', ''))[:16]}`"
+            )
+        lines.append("")
+
+        capa = emulation.get("capa_dynamic") or {}
+        capabilities = capa.get("capabilities") or []
+        snapshots = emulation.get("snapshots") or {}
+        lines.append("### capa_dynamic (capa over memory snapshots)")
+        lines.append("")
+        lines.append(
+            f"- Snapshots decoded: {int(snapshots.get('regions_decoded') or 0)} "
+            f"of {int(snapshots.get('regions_available') or snapshots.get('regions_selected') or 0)} "
+            f"candidate region(s); capa ran on "
+            f"{int(snapshots.get('capa_regions') or 0)}"
+        )
+        if capabilities:
+            for capability in capabilities:
+                lines.append(
+                    f"- `{capability.get('name', '')}` ({capability.get('namespace', '')})"
+                )
+        else:
+            lines.append(
+                "- No capabilities found in the captured memory. This is **not** a "
+                "clean result: capa_dynamic only sees regions the emulator captured."
+            )
+        lines.append("")
+        return lines
+
     def generate_json(
         self,
         sample_name: str,
@@ -406,6 +504,7 @@ class ReportGenerator:
         evasion: Optional[dict] = None,
         attack_version: str = "",
         ocsf_schema_version: str = "",
+        emulation: Optional[dict] = None,
     ) -> str:
         """Generate a JSON analysis report.
 
@@ -426,6 +525,7 @@ class ReportGenerator:
             "delivery": (static_results or {}).get("delivery"),
             "behavioral_analysis": sandbox_results,
             "evasion": evasion,
+            "emulation": emulation,
             "ioc_report": ioc_report,
             "limitations": limitations or [],
             "framework_versions": {
@@ -448,6 +548,7 @@ class ReportGenerator:
         evasion: Optional[dict] = None,
         attack_version: str = "",
         ocsf_schema_version: str = "",
+        emulation: Optional[dict] = None,
     ) -> Path:
         """Write both Markdown and JSON reports to a directory.
 
@@ -471,12 +572,14 @@ class ReportGenerator:
             evasion,
             attack_version,
             ocsf_schema_version,
+            emulation,
         )
         (output_dir / "report.md").write_text(md, encoding="utf-8")
 
         json_report = self.generate_json(
             sample_name, sample_hash, static_results, sandbox_results,
             ioc_report, limitations, evasion, attack_version, ocsf_schema_version,
+            emulation,
         )
         (output_dir / "report.json").write_text(json_report, encoding="utf-8")
 
