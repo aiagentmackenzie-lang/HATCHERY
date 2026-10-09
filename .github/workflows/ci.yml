@@ -92,6 +92,10 @@ jobs:
         working-directory: ./server
         run: npm run build
 
+      - name: Unit-test the process-tree parser
+        working-directory: ./server
+        run: npm test
+
       # The built server used to fail at startup because tsc does not copy
       # schema.sql. Prove it actually boots.
       - name: Smoke test the built server

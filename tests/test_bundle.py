@@ -225,3 +225,82 @@ def test_summary_counts_events_by_category_and_severity():
 def test_summary_marks_an_event_less_run_inconclusive():
     bundle = AnalysisBundle(task_id="t", events=[])
     assert bundle.summary()["inconclusive"] is True
+
+
+# ---------------------------------------------------------------------------
+# Monitoring collector honesty
+# ---------------------------------------------------------------------------
+
+
+def test_limitations_name_the_collector_and_its_blind_spots():
+    limits = compute_limitations(
+        isolation={"tier": 1},
+        sandbox={
+            "status": "completed",
+            "monitoring": {
+                "collector": "strace-ptrace",
+                "location": "guest",
+                "blind_spots": ["CPUID is not a syscall."],
+            },
+        },
+        artifacts=None,
+        events=[{"severity": "info"}],
+    )
+    text = " ".join(limits)
+    assert "strace-ptrace" in text
+    assert "CPUID is not a syscall." in text
+
+
+def test_limitations_state_a_collector_downgrade():
+    limits = compute_limitations(
+        isolation={"tier": 3},
+        sandbox={
+            "status": "completed",
+            "monitoring": {
+                "collector": "strace-ptrace",
+                "location": "guest",
+                "blind_spots": [],
+                "downgrade_reason": "ebpf-host is not wired yet",
+            },
+        },
+        artifacts=None,
+        events=[{"severity": "info"}],
+    )
+    assert any("not wired yet" in item for item in limits)
+
+
+def test_limitations_state_the_guest_profile_tell_for_the_tier():
+    limits = compute_limitations(
+        isolation={"tier": 1}, sandbox=None, artifacts=None,
+        events=[{"severity": "info"}],
+    )
+    assert any("Guest-profile tells" in item for item in limits)
+
+
+def test_evasion_summary_fields_flow_from_the_dict():
+    bundle = AnalysisBundle(
+        task_id="t",
+        events=[{"category": "evasion", "severity": "high"}],
+        evasion={
+            "score": 82,
+            "verdict": "evasive",
+            "signals": ["vm-artifact-probe"],
+            "inconclusive": True,
+        },
+    )
+    summary = bundle.summary()
+    assert summary["evasion_score"] == 82
+    assert summary["evasive"] is True
+    assert summary["evasion_inconclusive"] is True
+    assert summary["evasion_signals"] == ["vm-artifact-probe"]
+
+
+def test_evasion_inconclusive_is_stated_in_limitations():
+    limits = compute_limitations(
+        isolation={"tier": 1}, sandbox=None, artifacts=None,
+        events=[{"category": "evasion", "severity": "high"}],
+        evasion={"score": 90, "verdict": "evasive", "signals": ["vm-artifact-probe"],
+                 "inconclusive": True},
+    )
+    text = " ".join(limits)
+    assert "INCONCLUSIVE (evasive)" in text

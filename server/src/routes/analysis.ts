@@ -12,7 +12,7 @@ export async function analysisRoutes(app: FastifyInstance) {
     const db = getDb();
 
     const events = db.prepare(`
-      SELECT pid, syscall_name, args, timestamp, category
+      SELECT pid, syscall_name, args, return_value, timestamp, category
       FROM behavioral_events
       WHERE task_id = ? AND category = 'process'
       ORDER BY id ASC
@@ -55,33 +55,55 @@ export async function analysisRoutes(app: FastifyInstance) {
   });
 }
 
-interface ProcessNode {
+export interface ProcessNode {
   pid: number;
   children: ProcessNode[];
   syscalls: { name: string; args: string; timestamp: string }[];
 }
 
-function buildProcessTree(events: any[]): ProcessNode {
-  const procs = new Map<number, ProcessNode>();
-  let rootPid = 0;
+export function buildProcessTree(events: any[]): ProcessNode {
+  const info = new Map<number, ProcessNode>();
+  const parentOf = new Map<number, number>();
+  const order: number[] = [];
+  const CLONE = new Set(['clone', 'fork', 'vfork', 'clone3']);
 
   for (const ev of events) {
-    if (!procs.has(ev.pid)) {
-      procs.set(ev.pid, { pid: ev.pid, children: [], syscalls: [] });
+    if (!info.has(ev.pid)) {
+      info.set(ev.pid, { pid: ev.pid, children: [], syscalls: [] });
+      order.push(ev.pid);
     }
-    const node = procs.get(ev.pid)!;
-    node.syscalls.push({ name: ev.syscall_name, args: ev.args ?? '', timestamp: ev.timestamp });
+    info.get(ev.pid)!.syscalls.push({
+      name: ev.syscall_name,
+      args: ev.args ?? '',
+      timestamp: ev.timestamp,
+    });
 
-    // First PID seen is the root.
-    if (rootPid === 0) rootPid = ev.pid;
-
-    // NOTE: strace's clone/fork lines do not carry the child pid in a form this
-    // parser can read, so the tree here is grouped by pid rather than truly
-    // parented. A real parent map needs the `clone(...) = <child pid>` return
-    // value parsed at ingest time. Tracked as a known gap.
+    // strace renders a successful clone as `clone(...) = <child pid>`. The
+    // engine stores that return value, so the parent map can be built here —
+    // this is what turns the PID-grouped view into a real process tree.
+    if (CLONE.has(ev.syscall_name)) {
+      const child = Number.parseInt(String(ev.return_value ?? '').trim(), 10);
+      if (Number.isInteger(child) && child > 0 && child !== ev.pid) {
+        parentOf.set(child, ev.pid);
+      }
+    }
   }
 
-  return procs.get(rootPid) ?? { pid: 0, children: [], syscalls: [] };
+  // Root is the earliest process that was never itself a clone child.
+  const rootPid = order.find((pid) => !parentOf.has(pid)) ?? order[0];
+  if (rootPid === undefined) return { pid: 0, children: [], syscalls: [] };
+
+  const visited = new Set<number>();
+  const attach = (pid: number): ProcessNode => {
+    visited.add(pid);
+    const node = info.get(pid) ?? { pid, children: [], syscalls: [] };
+    node.children = order
+      .filter((child) => parentOf.get(child) === pid && !visited.has(child))
+      .map((child) => attach(child));
+    return node;
+  };
+
+  return attach(rootPid);
 }
 
 interface NetworkConnection {

@@ -41,6 +41,7 @@ interface AnalysisBundle {
   sandbox?: Record<string, unknown> | null;
   iocs?: Array<Record<string, unknown>>;
   mitre?: Record<string, unknown>;
+  evasion?: Record<string, unknown> | null;
   limitations?: string[];
   errors?: string[];
   summary?: Record<string, unknown>;
@@ -93,6 +94,7 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
   const sandbox = (bundle.sandbox ?? null) as Record<string, unknown> | null;
   const isolation = (bundle.isolation ?? null) as Record<string, unknown> | null;
   const iocs = (bundle.iocs ?? []) as Array<Record<string, unknown>>;
+  const evasion = (bundle.evasion ?? null) as Record<string, unknown> | null;
 
   const str = (v: unknown): string | null => (v === undefined || v === null ? null : String(v));
   const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
@@ -154,8 +156,8 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
         `INSERT INTO sandbox_results
            (task_id, container_id, status, exit_code, duration_seconds,
             strace_log_path, tcpdump_pcap_path, inotify_log_path,
-            container_logs, artifacts_path, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            container_logs, artifacts_path, error_message, evasion_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         taskId,
         str(sandbox.container_id),
@@ -168,6 +170,7 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
         str(sandbox.container_logs),
         str(artifacts.root),
         str(sandbox.error),
+        evasion ? JSON.stringify(evasion) : null,
       );
     }
 

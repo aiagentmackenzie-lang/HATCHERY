@@ -58,6 +58,7 @@ export async function reportRoutes(app: FastifyInstance) {
         exit_code: sandboxResults.exit_code,
         duration_seconds: sandboxResults.duration_seconds,
         error: sandboxResults.error_message,
+        evasion: safeJsonParse(sandboxResults.evasion_json),
       };
     }
 
@@ -123,6 +124,24 @@ function generateMarkdown(report: any): string {
     lines.push(``);
     for (const c of report.static_analysis.capa.capabilities) {
       lines.push(`- **${c.name}** (${c.namespace})`);
+    }
+    lines.push(``);
+  }
+
+  if (report.sandbox_analysis?.evasion) {
+    const ev = report.sandbox_analysis.evasion;
+    lines.push(`## Evasion Assessment`);
+    lines.push(``);
+    lines.push(`**Score:** ${ev.score}/100 — **${String(ev.verdict ?? 'none').toUpperCase()}**`);
+    if (ev.inconclusive) {
+      lines.push(``);
+      lines.push(`> **INCONCLUSIVE (evasive):** the sample reconnoitered and then exited without observable impact. This is not a clean result.`);
+    }
+    lines.push(``);
+    lines.push(`| Signal | Severity | Count |`);
+    lines.push(`|--------|:--:|--:|`);
+    for (const f of ev.findings ?? []) {
+      lines.push(`| \`${f.signal}\` | ${f.severity} | ${f.count} |`);
     }
     lines.push(``);
   }

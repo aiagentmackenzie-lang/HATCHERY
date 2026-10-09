@@ -1,0 +1,232 @@
+48    17:46:50.755515 execve("/usr/bin/setpriv", ["setpriv", "--reuid=user", "--regid=user", "--clear-groups", "/hatchery/sample/recon-min.sh"], 0xffffe4d568c0 /* 13 vars */) = 0
+48    17:46:50.755722 brk(NULL)         = 0xc6e2b892d000
+48    17:46:50.755771 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf5cc5f762000
+48    17:46:50.755815 faccessat(AT_FDCWD, "/etc/ld.so.preload", R_OK) = -1 ENOENT (No such file or directory)
+48    17:46:50.755867 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.755913 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=7640, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.755967 mmap(NULL, 7640, PROT_READ, MAP_PRIVATE, 3, 0) = 0xf5cc5f760000
+48    17:46:50.756005 close(3)          = 0
+48    17:46:50.756043 openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libcap-ng.so.0", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.756099 read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0\267\0\1\0\0\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0\0hR\0\0\0\0\0\0\0\0\0\0@\08\0\10\0@\0\32\0\31\0\1\0\0\0\5\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\234=\0\0\0\0\0\0\234=\0\0\0\0\0\0\0\0\1\0\0\0\0\0\1\0\0\0\6\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0\364\3\0\0\0\0\0\0\370\3\0\0\0\0\0\0\0\0\1\0\0\0\0\0\2\0\0\0\6\0\0\0\230M\0\0\0\0\0\0\230M\1\0\0\0\0\0\230M\1\0\0\0\0\0\20\2\0\0\0\0\0\0\20\2\0\0\0\0\0\0\10\0\0\0\0\0\0\0\4\0\0\0\4\0\0\0\0\2\0\0\0\0\0\0\0\2\0\0\0\0\0\0\0\2\0\0\0\0\0\0$\0\0\0\0\0\0\0$\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0\7\0\0\0\4\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0000\0\0\0\0\0\0\0000\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0P\345td\4\0\0\00007\0\0\0\0\0\00007\0\0\0\0\0\00007\0\0\0\0\0\0\334\0\0\0\0\0\0\0\334\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0Q\345td\6\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\20\0\0\0\0\0\0\0R\345td\4\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0\260\2\0\0\0\0\0\0\260\2\0\0\0\0\0\0\1\0\0\0\0\0\0\0\4\0\0\0\24\0\0\0\3\0\0\0GNU\0\363Z\17(\222=\277&9?\370\376\26\203;w\0\25\254\320\0\0\0\0\21\0\0\0+\0\0\0\2\0\0\0\7\0\0\0T\0\23\1\220\0\\V \0\6\261\200\22\26@+\0\0\0.\0\0\0003\0\0\0004\0\0\0\0\0\0\0\0\0\0\0005\0\0\0007\0\0\08\0\0\0\0\0\0\0\0\0\0\0\0\0\0\09\0\0\0\0\0\0\0:\0\0\0\0\0\0\0;\0\0\0002\36\312mt\271\204^\25:rP\320\316\246\375\336\23AU\272\350\221\2072\352b^\323\"~\257Ql\347\\\335T\237\251\220\231`Y7?\370S=\22\205D\267\234uP\3\272\32\360Q\237wap\26\365\222\6\314s\205\205\323\346\4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\3\0\t\0H\21\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\3\0\26\08Q\1\0\0\0\0\0\0\0\0\0\0\0\0\0`\2\0\0\22\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\214\0\0\0\22\0\0\0", 832) = 832
+48    17:46:50.756184 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=22760, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.756231 mmap(NULL, 151880, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf5cc5f707000
+48    17:46:50.756269 mmap(0xf5cc5f710000, 86344, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xf5cc5f710000
+48    17:46:50.756341 munmap(0xf5cc5f707000, 36864) = 0
+48    17:46:50.756383 munmap(0xf5cc5f726000, 24904) = 0
+48    17:46:50.756420 mprotect(0xf5cc5f714000, 65536, PROT_NONE) = 0
+48    17:46:50.756461 mmap(0xf5cc5f724000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x4000) = 0xf5cc5f724000
+48    17:46:50.756514 close(3)          = 0
+48    17:46:50.756553 openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.756601 read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0\267\0\1\0\0\0\360u\2\0\0\0\0\0@\0\0\0\0\0\0\0\220K\31\0\0\0\0\0\0\0\0\0@\08\0\n\0@\0B\0A\0\6\0\0\0\4\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0000\2\0\0\0\0\0\0000\2\0\0\0\0\0\0\10\0\0\0\0\0\0\0\3\0\0\0\4\0\0\0\320\262\25\0\0\0\0\0\320\262\25\0\0\0\0\0\320\262\25\0\0\0\0\0\33\0\0\0\0\0\0\0\33\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0\1\0\0\0\5\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\4\326\30\0\0\0\0\0\4\326\30\0\0\0\0\0\0\0\1\0\0\0\0\0\1\0\0\0\6\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\08I\0\0\0\0\0\0\300\20\1\0\0\0\0\0\0\0\1\0\0\0\0\0\2\0\0\0\6\0\0\0\250\v\31\0\0\0\0\0\250\v\32\0\0\0\0\0\250\v\32\0\0\0\0\0\300\1\0\0\0\0\0\0\300\1\0\0\0\0\0\0\10\0\0\0\0\0\0\0\4\0\0\0\4\0\0\0p\2\0\0\0\0\0\0p\2\0\0\0\0\0\0p\2\0\0\0\0\0\0D\0\0\0\0\0\0\0D\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0\7\0\0\0\4\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\0\20\0\0\0\0\0\0\0\220\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0P\345td\4\0\0\0\354\262\25\0\0\0\0\0\354\262\25\0\0\0\0\0\354\262\25\0\0\0\0\0\224g\0\0\0\0\0\0\224g\0\0\0\0\0\0\4\0\0\0\0\0\0\0Q\345td\6\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\20\0\0\0\0\0\0\0R\345td\4\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\0X2\0\0\0\0\0\0X2\0\0\0\0\0\0\1\0\0\0\0\0\0\0\4\0\0\0\24\0\0\0\3\0\0\0GNU\0\227|\2\0346N\343\304\225\300\345\3627[\366\272!$\246\332\4\0\0\0\20\0\0\0\1\0\0\0GNU\0\0\0\0\0\3\0\0\0\7\0\0\0\0\0\0\0\0\0\0\0\377\3\0\0\26\0\0\0\0\1\0\0\16\0\0\0\0000\22\\\240 \23\1\210\3\346\220\305E\214\0\304\0X\0\7\204 p\302\200\1\r\212\34\301\24\21\200\310D2\10*@\210V<- N\262H&\204\320\216\4\f\0\3\2\16\261\254:\17f\310\200\3003\0\300\fP\t \201\t\224\v$ ($\0\204$Z0\20X\200\312DB(\0\6\200\20\32C\0\250T\200\0IP\4Q\212P\22\4\0$\0\10  \21\20", 832) = 832
+48    17:46:50.756689 newfstatat(3, "", {st_mode=S_IFREG|0755, st_size=1661968, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.756738 mmap(NULL, 1830504, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf5cc5f551000
+48    17:46:50.756776 mmap(0xf5cc5f560000, 1764968, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xf5cc5f560000
+48    17:46:50.756817 munmap(0xf5cc5f551000, 61440) = 0
+48    17:46:50.756853 munmap(0xf5cc5f70f000, 3688) = 0
+48    17:46:50.756889 mprotect(0xf5cc5f6ee000, 61440, PROT_NONE) = 0
+48    17:46:50.756928 mmap(0xf5cc5f6fd000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x18d000) = 0xf5cc5f6fd000
+48    17:46:50.756972 mmap(0xf5cc5f703000, 48744, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0xf5cc5f703000
+48    17:46:50.757017 close(3)          = 0
+48    17:46:50.757060 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf5cc5f75e000
+48    17:46:50.757099 set_tid_address(0xf5cc5f75e0f0) = 48
+48    17:46:50.757135 set_robust_list(0xf5cc5f75e100, 24) = 0
+48    17:46:50.757170 rseq(0xf5cc5f75e7c0, 0x20, 0, 0xd428bc00) = 0
+48    17:46:50.757225 mprotect(0xf5cc5f6fd000, 16384, PROT_READ) = 0
+48    17:46:50.757269 mprotect(0xf5cc5f724000, 4096, PROT_READ) = 0
+48    17:46:50.757350 mprotect(0xc6e2b2637000, 4096, PROT_READ) = 0
+48    17:46:50.757397 mprotect(0xf5cc5f767000, 8192, PROT_READ) = 0
+48    17:46:50.757444 prlimit64(0, RLIMIT_STACK, NULL, {rlim_cur=8192*1024, rlim_max=RLIM64_INFINITY}) = 0
+48    17:46:50.757491 munmap(0xf5cc5f760000, 7640) = 0
+48    17:46:50.757540 getrandom("\x6f\x73\xf0\xd4\x1b\xc5\x34\xd2", 8, GRND_NONBLOCK) = 8
+48    17:46:50.757580 brk(NULL)         = 0xc6e2b892d000
+48    17:46:50.757615 brk(0xc6e2b894e000) = 0xc6e2b894e000
+48    17:46:50.757660 openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757707 openat(AT_FDCWD, "/usr/share/locale/locale.alias", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757751 openat(AT_FDCWD, "/usr/lib/locale/en_US.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757793 openat(AT_FDCWD, "/usr/lib/locale/en_US.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757834 openat(AT_FDCWD, "/usr/lib/locale/en_US/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757874 openat(AT_FDCWD, "/usr/lib/locale/en.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757915 openat(AT_FDCWD, "/usr/lib/locale/en.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.757955 openat(AT_FDCWD, "/usr/lib/locale/en/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+48    17:46:50.758010 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 3
+48    17:46:50.758058 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    17:46:50.758116 close(3)          = 0
+48    17:46:50.758155 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 3
+48    17:46:50.758195 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    17:46:50.758241 close(3)          = 0
+48    17:46:50.758297 newfstatat(AT_FDCWD, "/etc/nsswitch.conf", {st_mode=S_IFREG|0644, st_size=494, ...}, 0) = 0
+48    17:46:50.758357 newfstatat(AT_FDCWD, "/", {st_mode=S_IFDIR|0755, st_size=4096, ...}, 0) = 0
+48    17:46:50.758404 openat(AT_FDCWD, "/etc/nsswitch.conf", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.758449 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=494, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.758498 read(3, "# /etc/nsswitch.conf\n#\n# Example configuration of GNU Name Service Switch functionality.\n# If you have the `glibc-doc-reference' and `info' packages installed, try:\n# `info libc \"Name Service Switch\"' for information about this file.\n\npasswd:         files\ngroup:          files\nshadow:         files\ngshadow:        files\n\nhosts:          files dns\nnetworks:       files\n\nprotocols:      db files\nservices:       db files\nethers:         db files\nrpc:            db files\n\nnetgroup:       nis\n", 4096) = 494
+48    17:46:50.758569 read(3, "", 4096) = 0
+48    17:46:50.758606 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=494, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.758652 close(3)          = 0
+48    17:46:50.758692 openat(AT_FDCWD, "/etc/passwd", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.758734 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=1011, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.758780 lseek(3, 0, SEEK_SET) = 0
+48    17:46:50.758817 read(3, "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nbin:x:2:2:bin:/bin:/usr/sbin/nologin\nsys:x:3:3:sys:/dev:/usr/sbin/nologin\nsync:x:4:65534:sync:/bin:/bin/sync\ngames:x:5:60:games:/usr/games:/usr/sbin/nologin\nman:x:6:12:man:/var/cache/man:/usr/sbin/nologin\nlp:x:7:7:lp:/var/spool/lpd:/usr/sbin/nologin\nmail:x:8:8:mail:/var/mail:/usr/sbin/nologin\nnews:x:9:9:news:/var/spool/news:/usr/sbin/nologin\nuucp:x:10:10:uucp:/var/spool/uucp:/usr/sbin/nologin\nproxy:x:13:13:proxy:/bin:/usr/sbin/nologin\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\nbackup:x:34:34:backup:/var/backups:/usr/sbin/nologin\nlist:x:38:38:Mailing List Manager:/var/list:/usr/sbin/nologin\nirc:x:39:39:ircd:/run/ircd:/usr/sbin/nologin\ngnats:x:41:41:Gnats Bug-Reporting System (admin):/var/lib/gnats:/usr/sbin/nologin\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n_apt:x:100:65534::/nonexistent:/usr/sbin/nologin\ntcpdump:x:101:101::/nonexistent:/usr/sbin/nologin\nuser:x:1000:1000::/home/user:/bin/bash\n", 4096) = 1011
+48    17:46:50.758911 close(3)          = 0
+48    17:46:50.758950 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 3
+48    17:46:50.758988 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    17:46:50.759034 close(3)          = 0
+48    17:46:50.759071 socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0) = 3
+48    17:46:50.759108 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    17:46:50.759153 close(3)          = 0
+48    17:46:50.759190 newfstatat(AT_FDCWD, "/etc/nsswitch.conf", {st_mode=S_IFREG|0644, st_size=494, ...}, 0) = 0
+48    17:46:50.759240 openat(AT_FDCWD, "/etc/group", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.759295 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=474, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.759445 lseek(3, 0, SEEK_SET) = 0
+48    17:46:50.759490 read(3, "root:x:0:\ndaemon:x:1:\nbin:x:2:\nsys:x:3:\nadm:x:4:\ntty:x:5:\ndisk:x:6:\nlp:x:7:\nmail:x:8:\nnews:x:9:\nuucp:x:10:\nman:x:12:\nproxy:x:13:\nkmem:x:15:\ndialout:x:20:\nfax:x:21:\nvoice:x:22:\ncdrom:x:24:\nfloppy:x:25:\ntape:x:26:\nsudo:x:27:\naudio:x:29:\ndip:x:30:\nwww-data:x:33:\nbackup:x:34:\noperator:x:37:\nlist:x:38:\nirc:x:39:\nsrc:x:40:\ngnats:x:41:\nshadow:x:42:\nutmp:x:43:\nvideo:x:44:\nsasl:x:45:\nplugdev:x:46:\nstaff:x:50:\ngames:x:60:\nusers:x:100:\nnogroup:x:65534:\ntcpdump:x:101:\nuser:x:1000:\n", 4096) = 474
+48    17:46:50.759564 close(3)          = 0
+48    17:46:50.759604 prctl(PR_SET_KEEPCAPS, 1) = 0
+48    17:46:50.759643 capget({version=0 /* _LINUX_CAPABILITY_VERSION_??? */, pid=0}, NULL) = 0
+48    17:46:50.759686 gettid()          = 48
+48    17:46:50.759741 openat(AT_FDCWD, "/proc/sys/kernel/cap_last_cap", O_RDONLY) = 3
+48    17:46:50.759795 read(3, "40\n", 7) = 3
+48    17:46:50.759835 close(3)          = 0
+48    17:46:50.759871 capget({version=_LINUX_CAPABILITY_VERSION_3, pid=48}, {effective=1<<CAP_CHOWN|1<<CAP_DAC_OVERRIDE|1<<CAP_FOWNER|1<<CAP_FSETID|1<<CAP_KILL|1<<CAP_SETGID|1<<CAP_SETUID|1<<CAP_SETPCAP|1<<CAP_NET_BIND_SERVICE|1<<CAP_NET_RAW|1<<CAP_SYS_CHROOT|1<<CAP_MKNOD|1<<CAP_AUDIT_WRITE|1<<CAP_SETFCAP, permitted=1<<CAP_CHOWN|1<<CAP_DAC_OVERRIDE|1<<CAP_FOWNER|1<<CAP_FSETID|1<<CAP_KILL|1<<CAP_SETGID|1<<CAP_SETUID|1<<CAP_SETPCAP|1<<CAP_NET_BIND_SERVICE|1<<CAP_NET_RAW|1<<CAP_SYS_CHROOT|1<<CAP_MKNOD|1<<CAP_AUDIT_WRITE|1<<CAP_SETFCAP, inheritable=0}) = 0
+48    17:46:50.759923 openat(AT_FDCWD, "/proc/48/status", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.759973 newfstatat(3, "", {st_mode=S_IFREG|0444, st_size=0, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.760021 read(3, "Name:\tsetpriv\nUmask:\t0022\nState:\tR (running)\nTgid:\t48\nNgid:\t0\nPid:\t48\nPPid:\t45\nTracerPid:\t45\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t64\nGroups:\t0 \nNStgid:\t48\nNSpid:\t48\nNSpgid:\t44\nNSsid:\t1\nKthread:\t0\nVmPeak:\t    2328 kB\nVmSize:\t    2328 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1556 kB\nVmRSS:\t    1556 kB\nRssAnon:\t     120 kB\nRssFile:\t    1436 kB\nRssShmem:\t       0 kB\nVmData:\t     220 kB\nVmStk:\t     132 kB\nVmExe:\t      28 kB\nVmLib:\t    1784 kB\nVmPTE:\t      44 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t4/23472\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t00000000a80425fb\nCapEff:\t00000000a80425fb\nCapBnd:\t00000000a80425fb\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t1\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\tf\nCpus_allowed_list:\t0-3\nMems_allowed:\t000000", 1024) = 1024
+48    17:46:50.760130 close(3)          = 0
+48    17:46:50.760173 capset({version=_LINUX_CAPABILITY_VERSION_3, pid=48}, {effective=1<<CAP_CHOWN|1<<CAP_DAC_OVERRIDE|1<<CAP_FOWNER|1<<CAP_FSETID|1<<CAP_KILL|1<<CAP_SETGID|1<<CAP_SETUID|1<<CAP_SETPCAP|1<<CAP_NET_BIND_SERVICE|1<<CAP_NET_RAW|1<<CAP_SYS_CHROOT|1<<CAP_MKNOD|1<<CAP_AUDIT_WRITE|1<<CAP_SETFCAP, permitted=1<<CAP_CHOWN|1<<CAP_DAC_OVERRIDE|1<<CAP_FOWNER|1<<CAP_FSETID|1<<CAP_KILL|1<<CAP_SETGID|1<<CAP_SETUID|1<<CAP_SETPCAP|1<<CAP_NET_BIND_SERVICE|1<<CAP_NET_RAW|1<<CAP_SYS_CHROOT|1<<CAP_MKNOD|1<<CAP_AUDIT_WRITE|1<<CAP_SETFCAP, inheritable=0}) = 0
+48    17:46:50.760215 getresuid([0], [0], [0]) = 0
+48    17:46:50.760259 setresuid(1000, 1000, 1000) = 0
+48    17:46:50.760308 capset(0xf5cc5f75e7f4, 0xf5cc5f75e7fc) = 0
+48    17:46:50.760346 getresgid(0xffffe84aae10, 0xffffe84aae14, 0xffffe84aae18) = 0
+48    17:46:50.760385 setresgid(1000, 1000, 1000) = 0
+48    17:46:50.760425 setgroups(0, [])  = 0
+48    17:46:50.760477 execve(0xffffe84abead, 0xffffe84ab0a8, 0xffffe84ab0b8) = 0
+48    17:46:50.760639 brk(NULL)         = 0xb22b96fd7000
+48    17:46:50.760692 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf7b4aabf4000
+48    17:46:50.760735 faccessat(AT_FDCWD, "/etc/ld.so.preload", R_OK) = -1 ENOENT (No such file or directory)
+48    17:46:50.760779 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.760826 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=7640, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.760873 mmap(NULL, 7640, PROT_READ, MAP_PRIVATE, 3, 0) = 0xf7b4aabf2000
+48    17:46:50.760911 close(3)          = 0
+48    17:46:50.760949 openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+48    17:46:50.760992 read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0\267\0\1\0\0\0\360u\2\0\0\0\0\0@\0\0\0\0\0\0\0\220K\31\0\0\0\0\0\0\0\0\0@\08\0\n\0@\0B\0A\0\6\0\0\0\4\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0000\2\0\0\0\0\0\0000\2\0\0\0\0\0\0\10\0\0\0\0\0\0\0\3\0\0\0\4\0\0\0\320\262\25\0\0\0\0\0\320\262\25\0\0\0\0\0\320\262\25\0\0\0\0\0\33\0\0\0\0\0\0\0\33\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0\1\0\0\0\5\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\4\326\30\0\0\0\0\0\4\326\30\0\0\0\0\0\0\0\1\0\0\0\0\0\1\0\0\0\6\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\08I\0\0\0\0\0\0\300\20\1\0\0\0\0\0\0\0\1\0\0\0\0\0\2\0\0\0\6\0\0\0\250\v\31\0\0\0\0\0\250\v\32\0\0\0\0\0\250\v\32\0\0\0\0\0\300\1\0\0\0\0\0\0\300\1\0\0\0\0\0\0\10\0\0\0\0\0\0\0\4\0\0\0\4\0\0\0p\2\0\0\0\0\0\0p\2\0\0\0\0\0\0p\2\0\0\0\0\0\0D\0\0\0\0\0\0\0D\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0\7\0\0\0\4\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\0\20\0\0\0\0\0\0\0\220\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0P\345td\4\0\0\0\354\262\25\0\0\0\0\0\354\262\25\0\0\0\0\0\354\262\25\0\0\0\0\0\224g\0\0\0\0\0\0\224g\0\0\0\0\0\0\4\0\0\0\0\0\0\0Q\345td\6\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\20\0\0\0\0\0\0\0R\345td\4\0\0\0\250\335\30\0\0\0\0\0\250\335\31\0\0\0\0\0\250\335\31\0\0\0\0\0X2\0\0\0\0\0\0X2\0\0\0\0\0\0\1\0\0\0\0\0\0\0\4\0\0\0\24\0\0\0\3\0\0\0GNU\0\227|\2\0346N\343\304\225\300\345\3627[\366\272!$\246\332\4\0\0\0\20\0\0\0\1\0\0\0GNU\0\0\0\0\0\3\0\0\0\7\0\0\0\0\0\0\0\0\0\0\0\377\3\0\0\26\0\0\0\0\1\0\0\16\0\0\0\0000\22\\\240 \23\1\210\3\346\220\305E\214\0\304\0X\0\7\204 p\302\200\1\r\212\34\301\24\21\200\310D2\10*@\210V<- N\262H&\204\320\216\4\f\0\3\2\16\261\254:\17f\310\200\3003\0\300\fP\t \201\t\224\v$ ($\0\204$Z0\20X\200\312DB(\0\6\200\20\32C\0\250T\200\0IP\4Q\212P\22\4\0$\0\10  \21\20", 832) = 832
+48    17:46:50.761074 newfstatat(3, "", {st_mode=S_IFREG|0755, st_size=1661968, ...}, AT_EMPTY_PATH) = 0
+48    17:46:50.761121 mmap(NULL, 1830504, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xf7b4aaa00000
+48    17:46:50.761159 mmap(0xf7b4aaa00000, 1764968, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xf7b4aaa00000
+48    17:46:50.761200 munmap(0xf7b4aabaf000, 65128) = 0
+48    17:46:50.761237 mprotect(0xf7b4aab8e000, 61440, PROT_NONE) = 0
+48    17:46:50.761275 mmap(0xf7b4aab9d000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x18d000) = 0xf7b4aab9d000
+48    17:46:50.761322 mmap(0xf7b4aaba3000, 48744, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0xf7b4aaba3000
+48    17:46:50.761364 close(3)          = 0
+48    17:46:50.761405 set_tid_address(0xf7b4aabf4f50) = 48
+48    17:46:50.761440 set_robust_list(0xf7b4aabf4f60, 24) = 0
+48    17:46:50.761487 rseq(0xf7b4aabf5620, 0x20, 0, 0xd428bc00) = 0
+48    17:46:50.761549 mprotect(0xf7b4aab9d000, 16384, PROT_READ) = 0
+48    17:46:50.761605 mprotect(0xb22b96f1b000, 8192, PROT_READ) = 0
+48    17:46:50.761645 mprotect(0xf7b4aabf9000, 8192, PROT_READ) = 0
+48    17:46:50.761689 prlimit64(0, RLIMIT_STACK, NULL, {rlim_cur=8192*1024, rlim_max=RLIM64_INFINITY}) = 0
+48    17:46:50.761731 munmap(0xf7b4aabf2000, 7640) = 0
+48    17:46:50.761778 getuid()          = 1000
+48    17:46:50.761813 getgid()          = 1000
+48    17:46:50.761848 getpid()          = 48
+48    17:46:50.761890 rt_sigaction(SIGCHLD, {sa_handler=0xb22b96f026e4, sa_mask=~[RTMIN RT_1], sa_flags=0}, NULL, 8) = 0
+48    17:46:50.761934 geteuid()         = 1000
+48    17:46:50.761969 getrandom("\x81\xf9\x3e\x9b\x7a\x02\x25\x7c", 8, GRND_NONBLOCK) = 8
+48    17:46:50.762007 brk(NULL)         = 0xb22b96fd7000
+48    17:46:50.762042 brk(0xb22b96ff8000) = 0xb22b96ff8000
+48    17:46:50.762083 getppid()         = 45
+48    17:46:50.762140 newfstatat(AT_FDCWD, "/hatchery", {st_mode=S_IFDIR|0755, st_size=4096, ...}, 0) = 0
+48    17:46:50.762193 newfstatat(AT_FDCWD, ".", {st_mode=S_IFDIR|0755, st_size=4096, ...}, 0) = 0
+48    17:46:50.762242 openat(AT_FDCWD, "/hatchery/sample/recon-min.sh", O_RDONLY) = 3
+48    17:46:50.762303 fcntl(3, F_DUPFD, 10) = 10
+48    17:46:50.762346 close(3)          = 0
+48    17:46:50.762382 fcntl(10, F_SETFD, FD_CLOEXEC) = 0
+48    17:46:50.762417 geteuid()         = 1000
+48    17:46:50.762452 getegid()         = 1000
+48    17:46:50.762487 rt_sigaction(SIGINT, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+48    17:46:50.762529 rt_sigaction(SIGINT, {sa_handler=0xb22b96f026e4, sa_mask=~[RTMIN RT_1], sa_flags=0}, NULL, 8) = 0
+48    17:46:50.762571 rt_sigaction(SIGQUIT, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+48    17:46:50.762611 rt_sigaction(SIGQUIT, {sa_handler=SIG_DFL, sa_mask=~[RTMIN RT_1], sa_flags=0}, NULL, 8) = 0
+48    17:46:50.762652 rt_sigaction(SIGTERM, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+48    17:46:50.762693 rt_sigaction(SIGTERM, {sa_handler=SIG_DFL, sa_mask=~[RTMIN RT_1], sa_flags=0}, NULL, 8) = 0
+48    17:46:50.762736 read(10, "#!/bin/sh\n# Minimal \"evasive loader\"-shaped probe: reconnoiter via shell builtins only\n# (no external processes), then exit quietly. Captured as a real fixture to\n# prove an event-thin but recon-heavy run is reported as evasive/inconclusive.\nread x < /proc/cpuinfo\nread x < /proc/uptime\nread x < /proc/self/status\n[ -r /sys/class/dmi/id/product_name ]\n[ -r /sys/hypervisor/type ]\n[ -x /usr/bin/strace ]\n[ -x /usr/bin/gdb ]\n[ -x /usr/bin/ltrace ]\n[ -x /usr/bin/tcpdump ]\n[ -x /usr/bin/inotifywait ]\nexit 0\n", 8192) = 505
+48    17:46:50.762807 openat(AT_FDCWD, "/proc/cpuinfo", O_RDONLY) = 3
+48    17:46:50.762854 fcntl(0, F_DUPFD, 10) = 11
+48    17:46:50.762892 close(0)          = 0
+48    17:46:50.762927 fcntl(11, F_SETFD, FD_CLOEXEC) = 0
+48    17:46:50.762962 dup3(3, 0, 0)     = 0
+48    17:46:50.762997 close(3)          = 0
+48    17:46:50.763033 read(0, "p", 1)   = 1
+48    17:46:50.763081 read(0, "r", 1)   = 1
+48    17:46:50.763118 read(0, "o", 1)   = 1
+48    17:46:50.763154 read(0, "c", 1)   = 1
+48    17:46:50.763191 read(0, "e", 1)   = 1
+48    17:46:50.763231 read(0, "s", 1)   = 1
+48    17:46:50.763267 read(0, "s", 1)   = 1
+48    17:46:50.763313 read(0, "o", 1)   = 1
+48    17:46:50.763350 read(0, "r", 1)   = 1
+48    17:46:50.763386 read(0, "\t", 1)  = 1
+48    17:46:50.763422 read(0, ":", 1)   = 1
+48    17:46:50.763459 read(0, " ", 1)   = 1
+48    17:46:50.763495 read(0, "0", 1)   = 1
+48    17:46:50.763531 read(0, "\n", 1)  = 1
+48    17:46:50.763570 dup3(11, 0, 0)    = 0
+48    17:46:50.763607 close(11)         = 0
+48    17:46:50.763644 openat(AT_FDCWD, "/proc/uptime", O_RDONLY) = 3
+48    17:46:50.763691 fcntl(0, F_DUPFD, 10) = 11
+48    17:46:50.763726 close(0)          = 0
+48    17:46:50.763761 fcntl(11, F_SETFD, FD_CLOEXEC) = 0
+48    17:46:50.763797 dup3(3, 0, 0)     = 0
+48    17:46:50.763831 close(3)          = 0
+48    17:46:50.763866 read(0, "4", 1)   = 1
+48    17:46:50.763905 read(0, "1", 1)   = 1
+48    17:46:50.763942 read(0, "8", 1)   = 1
+48    17:46:50.763978 read(0, "3", 1)   = 1
+48    17:46:50.764014 read(0, ".", 1)   = 1
+48    17:46:50.764051 read(0, "3", 1)   = 1
+48    17:46:50.764087 read(0, "4", 1)   = 1
+48    17:46:50.764123 read(0, " ", 1)   = 1
+48    17:46:50.764159 read(0, "1", 1)   = 1
+48    17:46:50.764195 read(0, "6", 1)   = 1
+48    17:46:50.764231 read(0, "2", 1)   = 1
+48    17:46:50.764268 read(0, "7", 1)   = 1
+48    17:46:50.764315 read(0, "7", 1)   = 1
+48    17:46:50.764352 read(0, ".", 1)   = 1
+48    17:46:50.764388 read(0, "2", 1)   = 1
+48    17:46:50.764425 read(0, "2", 1)   = 1
+48    17:46:50.764461 read(0, "\n", 1)  = 1
+48    17:46:50.764499 dup3(11, 0, 0)    = 0
+48    17:46:50.764536 close(11)         = 0
+48    17:46:50.764573 openat(AT_FDCWD, "/proc/self/status", O_RDONLY) = 3
+48    17:46:50.764617 fcntl(0, F_DUPFD, 10) = 11
+48    17:46:50.764652 close(0)          = 0
+48    17:46:50.764687 fcntl(11, F_SETFD, FD_CLOEXEC) = 0
+48    17:46:50.764724 dup3(3, 0, 0)     = 0
+48    17:46:50.764759 close(3)          = 0
+48    17:46:50.764794 read(0, "N", 1)   = 1
+48    17:46:50.764837 read(0, "a", 1)   = 1
+48    17:46:50.764873 read(0, "m", 1)   = 1
+48    17:46:50.764910 read(0, "e", 1)   = 1
+48    17:46:50.764946 read(0, ":", 1)   = 1
+48    17:46:50.764982 read(0, "\t", 1)  = 1
+48    17:46:50.765018 read(0, "r", 1)   = 1
+48    17:46:50.765054 read(0, "e", 1)   = 1
+48    17:46:50.765091 read(0, "c", 1)   = 1
+48    17:46:50.765127 read(0, "o", 1)   = 1
+48    17:46:50.765163 read(0, "n", 1)   = 1
+48    17:46:50.765204 read(0, "-", 1)   = 1
+48    17:46:50.765284 read(0, "m", 1)   = 1
+48    17:46:50.765380 read(0, "i", 1)   = 1
+48    17:46:50.765463 read(0, "n", 1)   = 1
+48    17:46:50.765539 read(0, ".", 1)   = 1
+48    17:46:50.765615 read(0, "s", 1)   = 1
+48    17:46:50.765691 read(0, "h", 1)   = 1
+48    17:46:50.765770 read(0, "\n", 1)  = 1
+48    17:46:50.765847 dup3(11, 0, 0)    = 0
+48    17:46:50.765922 close(11)         = 0
+48    17:46:50.766006 faccessat2(AT_FDCWD, "/sys/class/dmi/id/product_name", R_OK, AT_EACCESS) = 0
+48    17:46:50.766108 faccessat2(AT_FDCWD, "/sys/hypervisor/type", R_OK, AT_EACCESS) = -1 ENOENT (No such file or directory)
+48    17:46:50.766197 faccessat2(AT_FDCWD, "/usr/bin/strace", X_OK, AT_EACCESS) = 0
+48    17:46:50.766287 faccessat2(AT_FDCWD, "/usr/bin/gdb", X_OK, AT_EACCESS) = -1 ENOENT (No such file or directory)
+48    17:46:50.766397 faccessat2(AT_FDCWD, "/usr/bin/ltrace", X_OK, AT_EACCESS) = -1 ENOENT (No such file or directory)
+48    17:46:50.766490 faccessat2(AT_FDCWD, "/usr/bin/tcpdump", X_OK, AT_EACCESS) = 0
+48    17:46:50.766575 faccessat2(AT_FDCWD, "/usr/bin/inotifywait", X_OK, AT_EACCESS) = 0
+48    17:46:50.766659 exit_group(0)     = ?
+48    17:46:50.766777 +++ exited with 0 +++

@@ -20,7 +20,11 @@ from pathlib import Path
 from typing import Optional
 
 from engine.sandbox.artifacts import ArtifactSet, collect_artifacts
-from engine.sandbox.isolation import IsolationProbe, probe_isolation
+from engine.sandbox.isolation import (
+    IsolationProbe,
+    probe_isolation,
+    resolve_collector,
+)
 from engine.sandbox.network import DEFAULT_NETWORK_NAME
 
 logger = logging.getLogger(__name__)
@@ -82,6 +86,7 @@ class ContainerResult:
     container_logs: str = ""
     artifacts: Optional[ArtifactSet] = None
     isolation: Optional[dict] = None
+    monitoring: Optional[dict] = None
     error: Optional[str] = None
 
     @property
@@ -117,6 +122,7 @@ class ContainerResult:
             "container_logs": self.container_logs[:5000],
             "artifacts": self.artifacts.to_dict() if self.artifacts else None,
             "isolation": self.isolation,
+            "monitoring": self.monitoring,
             "error": self.error,
         }
 
@@ -312,6 +318,14 @@ class ContainerManager:
 
         ready, problems = self.readiness()
         result.isolation = self.isolation.to_dict()
+        # Record how behaviour was observed, and what that misses, before the
+        # run even starts. The collector actually in force may be weaker than
+        # the tier recommends; that gap is stated, not hidden.
+        collector, downgrade = resolve_collector(self.isolation.tier)
+        result.monitoring = collector.to_dict()
+        if downgrade:
+            result.monitoring["downgrade_reason"] = downgrade
+            logger.warning("Monitoring collector downgraded: %s", downgrade)
         if not ready:
             result.status = "error"
             result.error = "Sandbox not ready: " + "; ".join(problems)

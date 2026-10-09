@@ -25,7 +25,48 @@ class TestReportGenerator:
         assert "def456" in report
         assert "ghi789" in report
         assert "File Hashes" in report
-        assert "Known Limitations" in report
+        # The stale hardcoded "Known Limitations" block was removed: limitations
+        # are computed per run and rendered under a single heading.
+        assert "Known Limitations" not in report
+
+    def test_json_report_uses_computed_limitations_not_a_hardcoded_list(self):
+        """Regression: the JSON report used to carry its own hardcoded
+        limitations list that contradicted the computed one."""
+        limits = ["Isolation tier 1 (shared-kernel): no boundary."]
+        report_json = self.gen.generate_json(
+            sample_name="test.bin",
+            sample_hash={"md5": "x", "sha1": "y", "sha256": "z", "file_size": 100},
+            limitations=limits,
+        )
+        data = json.loads(report_json)
+        assert data["limitations"] == limits
+
+    def test_markdown_renders_evasion_section(self):
+        evasion = {
+            "score": 82,
+            "verdict": "evasive",
+            "impact_score": 0,
+            "recon_then_quiet": True,
+            "inconclusive": True,
+            "findings": [
+                {
+                    "signal": "vm-artifact-probe",
+                    "severity": "medium",
+                    "count": 3,
+                    "description": "Read hypervisor/DMI identifiers",
+                }
+            ],
+        }
+        report = self.gen.generate_markdown(
+            sample_name="test.bin",
+            sample_hash={"md5": "x", "sha1": "y", "sha256": "z", "file_size": 100},
+            evasion=evasion,
+        )
+        assert "Evasion Assessment" in report
+        assert "82/100" in report
+        assert "EVASIVE" in report
+        assert "INCONCLUSIVE (evasive)" in report
+        assert "vm-artifact-probe" in report
 
     def test_generate_markdown_with_yara(self):
         """Test generating a Markdown report with YARA matches."""

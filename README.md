@@ -83,6 +83,10 @@ Not aspirational. What is in the code today.
 | capa capability extraction | ✅ | static only (capa 9.x) |
 | Packer detection | ✅ | UPX, VMProtect, Themida, MPRESS, NSIS, generic |
 | Detonation under syscall tracing | ✅ | Linux ELF; artifact recovery verified end-to-end |
+| **Per-tier monitoring strategy** | ✅ | every bundle names the collector used *and its blind spots*; a downgrade says so |
+| **Evasion detection (scored, first-class)** | ✅ | recon breadth + ordering; a recon-then-quiet run is reported evasive/inconclusive |
+| **gVisor tier-2 runtime registration** | ⚠️ | `scripts/install-runsc-docker-runtime.sh` provided; the tier-2 Sentry trace is not read back into the bundle yet |
+| **eBPF syscall collection** | ❌ | intended for tiers 2/3; `strace` is the declared fallback |
 | Filesystem monitoring (inotify) | ✅ | |
 | Network capture (tcpdump → PCAP) | ✅ | parsed; **egress is blocked**, so this is usually empty by design |
 | Dropped-file recovery | ✅ | filesystem diff, excludes its own working directory |
@@ -107,8 +111,9 @@ Not aspirational. What is in the code today.
 2. **Containers share a kernel.** At tier 1 there is no boundary. Run malware you do not trust only at tier 2 or 3, on a machine you are willing to lose.
 3. **Egress is blocked by default.** The sandbox network is `internal`, so a sample cannot reach its real C2 or exfiltrate. The cost is that samples requiring a live internet will not fully detonate. A believable simulated internet is future work.
 4. **Windows malware is analyzed statically.** Dynamic Windows analysis needs a Windows guest, which needs licensing and hardware virtualisation.
-5. **`strace` is the fallback, not the ambition.** ptrace-based tracing has high overhead and is detectable; in 2026 eBPF rootkits exist that `SIGKILL` processes which attempt to `ptrace` a protected PID. eBPF-based collection is the intended direction.
-6. **Process trees in the dashboard are grouped by PID, not truly parented.** strace's fork/clone lines do not carry the child PID in a form the ingest currently reads.
+5. **`strace` is the fallback, not the ambition.** ptrace-based tracing has high overhead and is detectable; in 2026 eBPF rootkits exist that `SIGKILL` processes which attempt to `ptrace` a protected PID. Every run now names its collector and that collector's blind spots, and eBPF-based collection for tiers 2/3 is the intended direction — see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2, D11.
+6. **`strace` cannot see time-based checks.** `RDTSC`, `CPUID` and vDSO-served `clock_gettime` are CPU/userspace operations, not syscalls. The captured probe in `tests/fixtures/strace-evasive-real.log` ran a `date +%s` loop and produced no clock syscall at all. eBPF-based collection (tier 2/3) is the intended fix; until then evasion is scored from the syscall-level surrogates that *are* visible, and the run says what the collector could not see.
+7. **A tier-2 host is not available here.** gVisor gives a real boundary without KVM and the registration script exists, but this host has no `runsc` and installing one restarts the Docker daemon, so tier 2 was not verified end-to-end in this revision.
 
 ---
 
@@ -170,16 +175,18 @@ The end-to-end suite is opt-in because it starts a container. It is the suite th
 ```
 sample ──► intake (hash / PE / ELF / strings)
               │
-              ├──► static (YARA-X / capa / packer)  ─┐
-              │                                      │
-              └──► detonation (tier-probed container)│
-                        │  strace  ──► events.jsonl  │
-                        │  inotify ──► events.jsonl  ├──► bundle/analysis.json
-                        │  tcpdump ──► pcap ────────┘        bundle/events.jsonl
-                        │                                        │
-                        └──► artifacts ──► run dir               ├──► report.md
-                                                                 ├──► stix_bundle.json
-                                                                 └──► API ingest ──► SQLite ──► dashboard
+              ├──► static (YARA-X / capa / packer) ───┐
+              │                                       │
+              └──► detonation (tier-probed container) │
+                        │  collector (strace / gVisor  │
+                        │  Sentry trace / host eBPF)    │
+                        │      └──► events.jsonl        │
+                        │  inotify ──► events.jsonl     ├──► bundle/analysis.json
+                        │  tcpdump ──► pcap ────────────┘    bundle/events.jsonl
+                        │                                   │
+                        └──► artifacts ──► run dir          ├──► report.md
+                                                           ├──► stix_bundle.json
+                                                           └──► API ingest ──► SQLite ──► dashboard
 ```
 
 ---
@@ -188,7 +195,7 @@ sample ──► intake (hash / PE / ELF / strings)
 
 **Phase 0 — make it true.** ✅ *done in this revision.* Ten ship-blockers fixed (network never created, artifact paths wrong, seccomp blocking its own tracer, unbound name masking errors, exit code always zero, fake services never started, no ingest path so the dashboard was permanently empty, and more), the README rewritten to match reality, and the security defaults tightened.
 
-**Phase 1 — an isolation boundary that holds.** gVisor tier by default where available; eBPF collection instead of ptrace; a consistent guest profile; and **instrumenting evasion as a first-class signal** (repeated `RDTSC`, CPUID hypervisor leaves, VM-artifact enumeration, analysis-tool hunting, clock-bracketed sleeps) so that a sample which reconnoiters and then exits quietly is scored as evasive rather than clean.
+**Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; a gVisor tier-2 registration script; a consistent guest profile documented per tier.* ⚠️ *tier-2 Sentry-trace collection and host-side eBPF are designed and declared per run but not wired into the run path yet; tier 2 was not verifiable on this host (no `runsc`).*
 
 **Phase 2 — breadth.** Delivery-format intake (Office, PDF, LNK, ISO/IMG, archives, HTML/SVG), emulation-based unpacking and config extraction, ATT&CK v19 rebuild (Detection Strategies + Analytics; the `Stealth`/`Impair Defenses` split), OCSF events, MISP/OpenCTI push, ATT&CK Navigator layer, candidate Sigma rules from observed behavior.
 

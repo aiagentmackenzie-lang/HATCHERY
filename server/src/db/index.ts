@@ -48,7 +48,26 @@ export function getDb(): Database.Database {
   const schema = fs.readFileSync(findSchemaPath(), 'utf-8');
   db.exec(schema);
 
+  migrate(db);
+
   return db;
+}
+
+/**
+ * Additive migrations for databases created before a column existed.
+ *
+ * `CREATE TABLE IF NOT EXISTS` does not add columns to an existing table, so a
+ * database from a previous revision would silently lack them and every insert
+ * naming the column would fail at runtime. Check, then ALTER.
+ */
+function migrate(database: Database.Database): void {
+  const columns = database
+    .prepare('PRAGMA table_info(sandbox_results)')
+    .all() as Array<{ name: string }>;
+  const hasEvasion = columns.some((c) => c.name === 'evasion_json');
+  if (!hasEvasion) {
+    database.exec('ALTER TABLE sandbox_results ADD COLUMN evasion_json TEXT');
+  }
 }
 
 export interface TaskRow {

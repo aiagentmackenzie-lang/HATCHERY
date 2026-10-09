@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS sandbox_results (
     container_logs TEXT,
     artifacts_path TEXT,
     error_message TEXT,
+    evasion_json TEXT,         -- scored evasion assessment from the engine
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

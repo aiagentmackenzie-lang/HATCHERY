@@ -307,6 +307,8 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     sandbox_result_dict: Optional[dict] = None
     strace_result = None
     net_result = None
+    evasion_dict: Optional[dict] = None
+    evasion_events: list[dict] = []
     inotify_log_path: Optional[Path] = None
     sandbox_error: Optional[str] = None
     if not no_sandbox:
@@ -354,6 +356,33 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                         console.print(f"  Events parsed: [cyan]{strace_result.parsed_events}[/cyan]")
                         console.print(f"  Network connections: [red]{len(strace_result.network_connections)}[/red]")
                         console.print(f"  Process operations: [red]{len(strace_result.process_operations)}[/red]")
+
+                        # Evasion is a first-class signal. A recon-heavy but
+                        # impact-free run is evasive, not clean.
+                        from engine.monitor.evasion import analyze_evasion
+
+                        evasion_report = analyze_evasion(strace_result)
+                        evasion_dict = evasion_report.to_dict()
+                        evasion_events = evasion_report.normalized_events()
+                        evasion_color = (
+                            "red" if evasion_report.verdict == "evasive"
+                            else "yellow" if evasion_report.verdict == "suspicious"
+                            else "green"
+                        )
+                        console.print(
+                            f"  Evasion score: [{evasion_color}]"
+                            f"{evasion_report.score}/100 ({evasion_report.verdict})[/{evasion_color}]"
+                        )
+                        for finding in evasion_report.findings:
+                            console.print(
+                                f"    • [{finding.severity.value}] "
+                                f"{finding.signal.value} x{finding.count}"
+                            )
+                        if evasion_report.inconclusive:
+                            console.print(
+                                "  [red]⚠ Recon-then-quiet: reported as evasive/"
+                                "INCONCLUSIVE, not clean.[/red]"
+                            )
 
                 # Filesystem events recorded by inotifywait
                 if sandbox_result.artifacts and sandbox_result.artifacts.inotify_log:
@@ -420,11 +449,12 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     else:
         console.print("[dim]No ATT&CK techniques mapped[/dim]")
 
-    # Unified behavioral event stream: syscalls + filesystem + network
+    # Unified behavioral event stream: syscalls + filesystem + network + evasion
     events = normalize_events(
         strace_result=strace_result,
         inotify_log=inotify_log_path,
         net_result=net_result,
+        evasion_events=evasion_events,
     )
 
     # One bundle, one source of truth. Everything downstream — the API, the
@@ -435,6 +465,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         sandbox=sandbox_result_dict,
         artifacts=sandbox_result_dict.get("artifacts") if sandbox_result_dict else None,
         events=events,
+        evasion=evasion_dict,
     )
     bundle = AnalysisBundle(
         task_id=task_id,
@@ -450,6 +481,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         sandbox=sandbox_result_dict,
         iocs=ioc_report.to_dict().get("iocs", []),
         mitre=mitre_result.to_dict(),
+        evasion=evasion_dict,
         events=events,
         limitations=limitations,
         errors=[sandbox_error] if sandbox_error else [],
@@ -458,9 +490,19 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     summary = bundle.summary()
     console.print(f"  Events: [cyan]{summary['events_total']}[/cyan] {summary['events_by_category']}")
     console.print(f"  IOCs: [cyan]{summary['iocs_total']}[/cyan] ({summary['iocs_high_or_critical']} high/critical)")
+    if summary["evasive"]:
+        console.print(
+            f"  [red]Evasion: score {summary['evasion_score']}/100 "
+            f"({summary['evasion_verdict']}) signals={summary['evasion_signals']}[/red]"
+        )
     console.print(f"  analysis.json: [cyan]{analysis_path}[/cyan]")
     console.print(f"  events.jsonl:  [cyan]{events_path}[/cyan]")
-    if summary["inconclusive"]:
+    if summary["evasion_inconclusive"]:
+        console.print(
+            "  [red]INCONCLUSIVE (evasive): sample reconnoitered and exited with no "
+            "observable impact.[/red]"
+        )
+    elif summary["inconclusive"]:
         console.print("  [red]INCONCLUSIVE: no behavioral events were recorded.[/red]")
 
     # Human-readable report, generated from the same data
@@ -474,6 +516,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         ioc_report=ioc_report.to_dict(),
         limitations=limitations,
         events=events,
+        evasion=evasion_dict,
     )
     console.print(f"  Markdown: [cyan]{report_dir / 'report.md'}[/cyan]")
 

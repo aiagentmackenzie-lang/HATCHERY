@@ -155,3 +155,45 @@ def test_tier_one_run_is_labeled_as_having_no_boundary(detonation):
     if tier in (IsolationTier.STATIC_ONLY, IsolationTier.SHARED_KERNEL):
         assert result.isolation["is_security_boundary"] is False
         assert "shares the host kernel" in result.isolation["boundary"]
+
+
+def test_monitoring_collector_and_blind_spots_are_reported(detonation):
+    """Every run must name how behaviour was observed and what it could not see."""
+    result, _ = detonation
+    assert result.monitoring is not None
+    assert result.monitoring["collector"]
+    assert result.monitoring["location"] in ("guest", "host", "none")
+    assert result.monitoring["blind_spots"]
+
+
+RECON_SCRIPT = """#!/bin/sh
+# Event-thin recon-then-quiet probe. Builtins only, no external processes.
+read x < /proc/cpuinfo
+read x < /proc/uptime
+read x < /proc/self/status
+[ -r /sys/class/dmi/id/product_name ]
+[ -r /sys/hypervisor/type ]
+[ -x /usr/bin/strace ]
+[ -x /usr/bin/gdb ]
+[ -x /usr/bin/ltrace ]
+exit 0
+"""
+
+
+def test_recon_then_quiet_detonation_is_evasive_and_inconclusive(manager, tmp_path):
+    """The whole pipeline: a sample that reconnoiters and exits quietly is
+    reported evasive/inconclusive, not clean."""
+    from engine.monitor.evasion import analyze_evasion
+    from engine.monitor.strace_parser import StraceParser
+
+    sample = tmp_path / "recon.sh"
+    sample.write_text(RECON_SCRIPT)
+    sample.chmod(0o755)
+    result = manager.execute(sample, tmp_path / "run")
+    assert result.status == "completed", result.error
+    assert result.strace_log
+
+    parsed = StraceParser().parse_file(Path(result.strace_log))
+    report = analyze_evasion(parsed)
+    assert report.verdict == "evasive", report.to_dict()
+    assert report.inconclusive is True

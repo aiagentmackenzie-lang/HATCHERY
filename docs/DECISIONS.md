@@ -139,6 +139,46 @@ A real Windows guest needs licensing, KVM and a much larger operational surface.
 
 ---
 
+## D11 — The monitoring strategy is per-tier, and every run names the collector it used
+
+**Decision.** Observation is separated from isolation. The tier decides what an attacker must defeat; the *collector* decides what was actually observed, and it changes with the tier:
+
+| Tier | Collector | Location |
+|:--|:--|:--|
+| 1 shared-kernel | `strace-ptrace` | in-guest (attached to the sample) |
+| 2 sandboxed-kernel | `gvisor-sentry-strace` | host (runsc's own Sentry trace) |
+| 3 hardware-vm | `ebpf-host` | host (eBPF past the guest) |
+
+Every bundle records `sandbox.monitoring` — collector, location, and its blind spots — and `compute_limitations` turns that into a plain-language line. When the recommended collector for a tier is not implemented yet, `resolve_collector()` returns the fallback **and a downgrade reason**, and that reason is printed, stored and rendered. A run may never imply a stronger collector than it used.
+
+**Evidence — `strace` cannot see the checks that matter most.** The captured fixture `tests/fixtures/strace-evasive-real.log` ran `date +%s` inside a five-iteration timing loop. The strace log contains **no clock syscall at all**: glibc served `clock_gettime` from the vDSO, which is a pure userspace call. `RDTSC` and `CPUID` are CPU instructions and are never syscalls to begin with. A ptrace-based tracer therefore cannot see most accelerated-sleep and time-based-evasion checks — the exact thing D9 names as the load-bearing check. `tests/test_evasion.py::test_vdso_clock_reads_are_invisible_to_strace` pins this observation.
+
+**What is not wired, and is said so.** At tiers 2 and 3 the run still falls back to ptrace today. gVisor exposes its own Sentry trace (`runsc --strace`), and its `strace`/`strace-syscalls`/`strace-log-size` flags are in gVisor's OCI-annotation override allow-list, but the trace destination (`--debug-log`) is a host-side runtimeArg and reading it back into the bundle is future work. `scripts/install-runsc-docker-runtime.sh` registers a runtime with the trace on; the engine does not yet collect from it, and the report says so rather than pretending.
+
+---
+
+## D12 — Evasion is a first-class, scored signal; recon-then-quiet is inconclusive
+
+**Decision.** `engine/monitor/evasion.py` scores *density and ordering* of environment reconnaissance, emits `category="evasion"` events into the same `events.jsonl` stream, and writes `summary.evasion_score` / `summary.evasive` / `summary.evasion_inconclusive` into the bundle. A run that reconnoiters across several categories and then exits without observable impact is reported as **evasive and INCONCLUSIVE**, with an explicit line in `limitations`.
+
+Signals scored: VM/DMI artifact reads, VM-guest-tool paths, `/proc/cpuinfo`/`auxv`, `/proc/uptime`, `/proc/self/status` (TracerPid) and `ptrace`, `/proc/self/maps`, analysis-tool enumeration, repeated `nanosleep`/`clock_nanosleep`, and the recon→quiet ordering. A single `/proc/cpuinfo` read is deliberately *not* evasive; a dozen reads across categories followed by silence is.
+
+**Evidence.** Two real captures back this. `tests/fixtures/strace-evasive-real.log` (a probe that reconnoiters, then exits) scores 100/100 `evasive`, `recon_then_quiet=True`, `impact=0`, `inconclusive=True`. `tests/fixtures/strace-real.log` (the benign Phase 0 capture, which reads `/etc/passwd` and writes files) scores 0/100 `none`. The distinguishing term is not raw event count — the real evasive capture is 1586 lines — it is *impact*: writes to non-excluded paths and IP connects. That is what separates "looked around and did nothing" from "looked around and then acted".
+
+**Why it matters.** Before this, a sample that detected the sandbox and exited produced a clean-looking, event-thin run. Now the evasion itself is the finding. The score is also the natural trigger for escalating to a stronger tier later.
+
+---
+
+## D13 — gVisor is the intended default where available; a tier-2 host is a stated goal, not a claim
+
+**Decision.** The tier model already ranked gVisor (`runsc`) above shared-kernel and below microVM, and `runsc-hatchery`/`runsc` map to tier 2. This revision makes the tier genuinely usable: `scripts/install-runsc-docker-runtime.sh` installs runsc and registers a Docker runtime with the Sentry trace on, for hosts that want a real boundary without `/dev/kvm`.
+
+**Honest status.** This host (macOS + colima) has no `runsc`, and installing one restarts the Docker daemon used by other workloads, so it was **not** installed here. The single most important open question from the handoff — *does `strace` still function inside a gVisor sandbox?* — is therefore answered at the design level rather than by a live detonation: the per-tier strategy does not rely on ptrace at tier 2 and instead uses gVisor's own trace (D11). Verifying it end-to-end needs a Linux host with `runsc` and Raphael's approval to install it, which is exactly the "ask first" boundary in the handoff.
+
+**Trade-off accepted.** Registering the runtime globally with `--strace` traces every container under it, which costs performance. A dedicated analysis host is the intended deployment; the script says so.
+
+---
+
 ## What was deliberately not done
 
 - **Rewriting the MITRE mapping for ATT&CK v19.** It is a real gap: v18 (Oct 2025) replaced detections with **Detection Strategies** and **Analytics** and deprecated Data Sources; v19 (Apr 2026) split Defense Evasion into **Stealth** and **Impair Defenses** and deleted Rootkit and Modify Registry as standalone techniques. Doing this properly means touching every rule's metadata and the mapper, and doing it half-way is worse than flagging it. Scheduled as Phase 2 and marked ⚠️ in the README.

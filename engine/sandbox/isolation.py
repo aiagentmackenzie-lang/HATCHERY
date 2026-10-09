@@ -115,6 +115,7 @@ RUNTIME_TIERS: dict[str, IsolationTier] = {
     "runc": IsolationTier.SHARED_KERNEL,
     "crun": IsolationTier.SHARED_KERNEL,
     "runsc": IsolationTier.SANDBOXED_KERNEL,
+    "runsc-hatchery": IsolationTier.SANDBOXED_KERNEL,
     "gvisor": IsolationTier.SANDBOXED_KERNEL,
     "kata-runtime": IsolationTier.HARDWARE_VM,
     "kata-qemu": IsolationTier.HARDWARE_VM,
@@ -125,7 +126,174 @@ RUNTIME_TIERS: dict[str, IsolationTier] = {
 
 # Preference order when several tiers are available: strongest wins, unless
 # the caller asks explicitly.
-TIER_PREFERENCE: list[str] = ["kata-fc", "kata-clh", "kata-qemu", "runsc", "crun", "runc"]
+TIER_PREFERENCE: list[str] = [
+    "kata-fc", "kata-clh", "kata-qemu", "runsc-hatchery", "runsc", "crun", "runc",
+]
+
+
+# ---------------------------------------------------------------------------
+# Per-tier monitoring strategy
+# ---------------------------------------------------------------------------
+#
+# Isolation tells you what an attacker must defeat. It does *not* tell you how
+# behaviour was observed, and the two are not the same question: ptrace-based
+# tracing is visible to the sample and can be killed, whereas gVisor's own
+# Sentry trace and host-side eBPF are not attached to the sample at all. A run
+# must therefore name the collector that was actually used and what that
+# collector cannot see.
+#
+# The empirical fact this is built on: `strace` cannot observe `RDTSC`, `CPUID`
+# or a vDSO-served `clock_gettime`. The captured fixture
+# `tests/fixtures/strace-evasive-real.log` ran `date +%s` in a loop and the log
+# contains no clock syscall, because glibc resolved it in the vDSO. Timing and
+# VM checks are therefore largely invisible to tier-1 collection.
+
+
+@dataclass(frozen=True)
+class MonitoringStrategy:
+    """How behaviour is observed, and what that observation misses."""
+
+    collector: str
+    location: str
+    """``guest`` (attached to the sample) or ``host`` (outside it)."""
+    how: str
+    blind_spots: tuple[str, ...]
+    requires: str
+
+    def to_dict(self) -> dict:
+        return {
+            "collector": self.collector,
+            "location": self.location,
+            "how": self.how,
+            "blind_spots": list(self.blind_spots),
+            "requires": self.requires,
+        }
+
+
+NO_COLLECTOR = MonitoringStrategy(
+    collector="none",
+    location="none",
+    how="Nothing executes; there is no behaviour to observe.",
+    blind_spots=("Everything: static analysis cannot observe behaviour.",),
+    requires="none",
+)
+
+STRACE_COLLECTOR = MonitoringStrategy(
+    collector="strace-ptrace",
+    location="guest",
+    how=(
+        "strace -f -tt attached to the sample with ptrace; the seccomp profile "
+        "must permit ptrace or the tracer cannot attach."
+    ),
+    blind_spots=(
+        "RDTSC/RDTSCP and CPUID are CPU instructions, not syscalls, and never "
+        "appear.",
+        "clock_gettime/gettimeofday served by the vDSO are userspace calls and "
+        "never appear; timing checks are therefore largely invisible.",
+        "The tracer is detectable: /proc/self/status exposes TracerPid, and "
+        "ptrace stops the process at every syscall.",
+        "A sample can kill the tracer; 2026 eBPF rootkits SIGKILL processes that "
+        "ptrace a protected PID.",
+        "Anything the sample does before the tracer attaches is not observed.",
+    ),
+    requires="a seccomp profile that permits ptrace",
+)
+
+GVISOR_COLLECTOR = MonitoringStrategy(
+    collector="gvisor-sentry-strace",
+    location="host",
+    how=(
+        "gVisor's own Sentry-level syscall trace (runsc --strace / "
+        "--strace-event) written to the host debug log, instead of ptracing the "
+        "sample. gVisor's strace flags are OCI-annotation-overridable, but the "
+        "log destination is a host-side runtimeArg."
+    ),
+    blind_spots=(
+        "Syscalls gVisor does not implement are absent by construction.",
+        "Requires host-side runtimeArgs (--strace, --debug-log); reading them "
+        "back into the bundle is not wired yet.",
+    ),
+    requires="runsc registered as a Docker runtime with --strace and --debug-log",
+)
+
+EBPF_COLLECTOR = MonitoringStrategy(
+    collector="ebpf-host",
+    location="host",
+    how=(
+        "eBPF syscall collection on the host (Tetragon/Tracee/Falco or a "
+        "bpftrace set) observing past the guest; guest strace only as a "
+        "declared fallback."
+    ),
+    blind_spots=(
+        "Requires a Linux host with BPF and BTF; unavailable on macOS and on "
+        "this project's CI.",
+        "Guest behaviour not surfaced through the host boundary may be "
+        "invisible, depending on the collector's hooks.",
+    ),
+    requires="a Linux host with BPF/BTF and a collector installed",
+)
+
+# The collector each tier should use. The gap between this and what is wired
+# is reported per run rather than hidden.
+TIER_RECOMMENDED_COLLECTOR: dict[IsolationTier, MonitoringStrategy] = {
+    IsolationTier.STATIC_ONLY: NO_COLLECTOR,
+    IsolationTier.SHARED_KERNEL: STRACE_COLLECTOR,
+    IsolationTier.SANDBOXED_KERNEL: GVISOR_COLLECTOR,
+    IsolationTier.HARDWARE_VM: EBPF_COLLECTOR,
+}
+
+
+def recommended_collector(tier: IsolationTier) -> MonitoringStrategy:
+    """Return the collector that *should* be used at this tier."""
+    return TIER_RECOMMENDED_COLLECTOR[tier]
+
+
+# Which guest-profile tells are structurally impossible to fix at each tier.
+# The point is not to "look more real"; it is to say plainly which checks a
+# sample can use to fingerprint the environment, so a sample that abandons
+# execution is read as evasion rather than as a clean run.
+TIER_GUEST_TELLS: dict[IsolationTier, str] = {
+    IsolationTier.STATIC_ONLY: "n/a — nothing executes.",
+    IsolationTier.SHARED_KERNEL: (
+        "The host kernel version, CPU count, RAM, disk size and uptime are "
+        "readable through /proc and cannot be faked, and CPUID reports the "
+        "host. Modern loaders chain a dozen such checks and abandon execution "
+        "at the first failure."
+    ),
+    IsolationTier.SANDBOXED_KERNEL: (
+        "gVisor presents its own kernel and /proc rather than the host's, so "
+        "host uptime and kernel version are no longer direct reads, but the "
+        "sandbox is still identifiable (its kernel string is distinctive) and "
+        "CPUID behaviour depends on the platform in use."
+    ),
+    IsolationTier.HARDWARE_VM: (
+        "A real guest kernel is presented, but hypervisor presence remains "
+        "visible through the CPUID hypervisor bit and vendor leaf, and through "
+        "paravirtualised device names."
+    ),
+}
+
+
+def resolve_collector(tier: IsolationTier) -> tuple[MonitoringStrategy, str]:
+    """Return the collector actually usable today, plus a downgrade reason.
+
+    Only ``strace-ptrace`` is wired. At tier 2 and 3 the recommended collector
+    (gVisor Sentry trace / host-side eBPF) is *not* implemented yet, so the run
+    falls back to ptrace and says so. The alternative — silently using the
+    fallback while the report implies the stronger collector — is the exact
+    dishonesty this project exists to avoid.
+    """
+    recommended = recommended_collector(tier)
+    if recommended.collector in (NO_COLLECTOR.collector, STRACE_COLLECTOR.collector):
+        return recommended, ""
+    return (
+        STRACE_COLLECTOR,
+        (
+            f"tier {int(tier)} recommends {recommended.collector!r}, which is not "
+            f"wired yet; this run fell back to {STRACE_COLLECTOR.collector!r}, "
+            "which the sample can detect and can kill."
+        ),
+    )
 
 
 @dataclass

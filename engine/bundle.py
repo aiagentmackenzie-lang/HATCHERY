@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.sandbox.isolation import IsolationTier, TIER_PROFILES
+from engine.sandbox.isolation import IsolationTier, TIER_GUEST_TELLS, TIER_PROFILES
 
 logger = logging.getLogger(__name__)
 
@@ -178,12 +178,19 @@ def normalize_events(
     strace_result: Any = None,
     inotify_log: Optional[Path] = None,
     net_result: Any = None,
+    evasion_events: Optional[list[dict]] = None,
 ) -> list[dict]:
-    """Merge every behavioral source into one chronological event list."""
+    """Merge every behavioral source into one chronological event list.
+
+    ``evasion_events`` come from :func:`engine.monitor.evasion.analyze_evasion`
+    and carry ``category="evasion"``. They are normalised rows like every
+    other source, so the API and dashboard consume them without a second path.
+    """
     rows = (
         events_from_strace(strace_result)
         + events_from_inotify(inotify_log)
         + events_from_network(net_result)
+        + list(evasion_events or [])
     )
     rows.sort(key=lambda r: (r.get("timestamp") or "", r.get("source") or ""))
     return rows
@@ -200,6 +207,7 @@ def compute_limitations(
     artifacts: Optional[dict],
     events: list[dict],
     egress_blocked: bool = True,
+    evasion: Optional[dict] = None,
 ) -> list[str]:
     """State plainly what this run does not establish.
 
@@ -239,7 +247,42 @@ def compute_limitations(
             "INCONCLUSIVE, not as evidence of benign behavior."
         )
 
+    # Evasion is a finding in its own right, and an evasive run that produced
+    # no impact is inconclusive rather than clean. This is the difference the
+    # project exists to make.
+    if evasion:
+        verdict = str(evasion.get("verdict", "none"))
+        score = int(evasion.get("score", 0))
+        signals = evasion.get("signals") or []
+        if evasion.get("inconclusive"):
+            limits.append(
+                f"Evasion score {score}/100 ({verdict}); signals: "
+                f"{', '.join(signals) or 'none'}. The sample reconnoitered and "
+                "then exited without observable impact. Treat this run as "
+                "INCONCLUSIVE (evasive), not clean."
+            )
+        elif verdict in ("evasive", "suspicious"):
+            limits.append(
+                f"Evasion score {score}/100 ({verdict}); signals: "
+                f"{', '.join(signals) or 'none'}. Environment reconnaissance was "
+                "observed; the sample may be adapting to the analysis environment."
+            )
+        limits.append(
+            "RDTSC/CPUID and vDSO clock reads are CPU/userspace operations and "
+            "are not visible to ptrace-based syscall tracing at this tier."
+        )
+
     if sandbox:
+        monitoring = sandbox.get("monitoring") or {}
+        if monitoring:
+            blind = monitoring.get("blind_spots") or []
+            limits.append(
+                f"Behaviour was observed with {monitoring.get('collector', 'unknown')} "
+                f"({monitoring.get('location', 'unknown')}). It cannot see: "
+                + "; ".join(blind)
+            )
+            if monitoring.get("downgrade_reason"):
+                limits.append(str(monitoring["downgrade_reason"]))
         if sandbox.get("status") == "timeout":
             limits.append(
                 "The sample was still running when the timeout expired. Anything it "
@@ -248,10 +291,7 @@ def compute_limitations(
         if sandbox.get("error"):
             limits.append(f"Sandbox reported an error: {sandbox['error']}")
 
-    limits.append(
-        "A Linux guest cannot hide the host from the sample: kernel version, CPU "
-        "count, RAM and uptime are readable via /proc at any isolation tier."
-    )
+    limits.append(f"Guest-profile tells at tier {int(tier)}: {TIER_GUEST_TELLS[tier]}")
     limits.append(
         "Dynamic analysis covers Linux ELF behavior only. Windows, macOS, document "
         "and script samples are analysed statically; see the static section."
@@ -275,6 +315,7 @@ class AnalysisBundle:
     sandbox: Optional[dict] = None
     iocs: list[dict] = field(default_factory=list)
     mitre: dict = field(default_factory=dict)
+    evasion: Optional[dict] = None
     events: list[dict] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -293,6 +334,7 @@ class AnalysisBundle:
             "sandbox": self.sandbox,
             "iocs": self.iocs,
             "mitre": self.mitre,
+            "evasion": self.evasion,
             "limitations": self.limitations,
             "errors": self.errors,
             "summary": self.summary(),
@@ -326,6 +368,11 @@ class AnalysisBundle:
             "techniques": (self.mitre or {}).get("technique_count", 0),
             "dynamic_analysis_performed": bool(self.sandbox),
             "inconclusive": not self.events,
+            "evasion_score": int((self.evasion or {}).get("score", 0)),
+            "evasion_verdict": (self.evasion or {}).get("verdict", "none"),
+            "evasion_signals": (self.evasion or {}).get("signals", []),
+            "evasive": (self.evasion or {}).get("verdict") in ("evasive", "suspicious"),
+            "evasion_inconclusive": bool((self.evasion or {}).get("inconclusive", False)),
         }
 
 
