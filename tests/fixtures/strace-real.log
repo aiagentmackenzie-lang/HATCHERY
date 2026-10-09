@@ -1,0 +1,44 @@
+# Real strace capture, taken from a HATCHERY sandbox run.
+# Command: strace -f -tt -s 1024 -e trace=all -o strace.log setpriv ... sample.sh
+#
+# Note the field order: PID first, THEN the timestamp. This is what strace
+# actually writes with -f -tt to a file, and it is the opposite of what this
+# parser originally assumed. Do not 'fix' this fixture to match the parser.
+48    16:43:15.159801 execve("/usr/bin/setpriv", ["setpriv", "--reuid=user", "--regid=user", "--clear-groups", "/hatchery/sample/hatchery-probe.sh"], 0xffffcb105450 /* 13 vars */) = 0
+48    16:43:15.160006 brk(NULL)         = 0xb2155bf8a000
+48    16:43:15.160057 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xefbc7eec2000
+48    16:43:15.160101 faccessat(AT_FDCWD, "/etc/ld.so.preload", R_OK) = -1 ENOENT (No such file or directory)
+48    16:43:15.160151 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+48    16:43:15.160197 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=7640, ...}, AT_EMPTY_PATH) = 0
+48    16:43:15.160250 mmap(NULL, 7640, PROT_READ, MAP_PRIVATE, 3, 0) = 0xefbc7eec0000
+48    16:43:15.160319 close(3)          = 0
+48    16:43:15.160387 openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libcap-ng.so.0", O_RDONLY|O_CLOEXEC) = 3
+48    16:43:15.160451 read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0\267\0\1\0\0\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0\0hR\0\0\0\0\0\0\0\0\0\0@\08\0\10\0@\0\32\0\31\0\1\0\0\0\5\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\234=\0\0\0\0\0\0\234=\0\0\0\0\0\0\0\0\1\0\0\0\0\0\1\0\0\0\6\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0\364\3\0\0\0\0\0\0\370\3\0\0\0\0\0\0\0\0\1\0\0\0\0\0\2\0\0\0\6\0\0\0\230M\0\0\0\0\0\0\230M\1\0\0\0\0\0\230M\1\0\0\0\0\0\20\2\0\0\0\0\0\0\20\2\0\0\0\0\0\0\10\0\0\0\0\0\0\0\4\0\0\0\4\0\0\0\0\2\0\0\0\0\0\0\0\2\0\0\0\0\0\0\0\2\0\0\0\0\0\0$\0\0\0\0\0\0\0$\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0\7\0\0\0\4\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0000\0\0\0\0\0\0\0000\0\0\0\0\0\0\0\10\0\0\0\0\0\0\0P\345td\4\0\0\00007\0\0\0\0\0\00007\0\0\0\0\0\00007\0\0\0\0\0\0\334\0\0\0\0\0\0\0\334\0\0\0\0\0\0\0\4\0\0\0\0\0\0\0Q\345td\6\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\20\0\0\0\0\0\0\0R\345td\4\0\0\0PM\0\0\0\0\0\0PM\1\0\0\0\0\0PM\1\0\0\0\0\0\260\2\0\0\0\0\0\0\260\2\0\0\0\0\0\0\1\0\0\0\0\0\0\0\4\0\0\0\24\0\0\0\3\0\0\0GNU\0\363Z\17(\222=\277&9?\370\376\26\203;w\0\25\254\320\0\0\0\0\21\0\0\0+\0\0\0\2\0\0\0\7\0\0\0T\0\23\1\220\0\\V \0\6\261\200\22\26@+\0\0\0.\0\0\0003\0\0\0004\0\0\0\0\0\0\0\0\0\0\0005\0\0\0007\0\0\08\0\0\0\0\0\0\0\0\0\0\0\0\0\0\09\0\0\0\0\0\0\0:\0\0\0\0\0\0\0;\0\0\0002\36\312mt\271\204^\25:rP\320\316\246\375\336\23AU\272\350\221\2072\352b^\323\"~\257Ql\347\\\335T\237\251\220\231`Y7?\370S=\22\205D\267\234uP\3\272\32\360Q\237wap\26\365\222\6\314s\205\205\323\346\4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\3\0\t\0H\21\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\3\0\26\08Q\1\0\0\0\0\0\0\0\0\0\0\0\0\0`\2\0\0\22\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\214\0\0\0\22\0\0\0", 832) = 832
+48    16:43:15.160538 newfstatat(3, "", {st_mode=S_IFREG|0644, st_size=22760, ...}, AT_EMPTY_PATH) = 0
+48    16:43:15.160587 mmap(NULL, 151880, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xefbc7ee67000
+48    16:43:15.160627 mmap(0xefbc7ee70000, 86344, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xefbc7ee70000
+48    16:43:15.160671 munmap(0xefbc7ee67000, 36864) = 0
+48    16:43:15.160708 munmap(0xefbc7ee86000, 24904) = 0
+48    16:43:15.160744 mprotect(0xefbc7ee74000, 65536, PROT_NONE) = 0
+48    16:43:15.160783 mmap(0xefbc7ee84000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x4000) = 0xefbc7ee84000
+48    16:43:15.160837 close(3)          = 0
+48    16:43:15.162453 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    16:43:15.162615 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    16:43:15.163104 openat(AT_FDCWD, "/etc/passwd", O_RDONLY|O_CLOEXEC) = 3
+48    16:43:15.163457 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    16:43:15.163587 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+48    16:43:15.167377 openat(AT_FDCWD, "/tmp/hatchery-probe.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+48    16:43:15.168134 write(1, "probe-start\n", 12) = 12
+48    16:43:15.168754 clone(child_stack=0xffffcfc2a050, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+49    16:43:15.170755 openat(AT_FDCWD, "/etc/passwd", O_RDONLY) = 3
+48    16:43:15.171670 clone(child_stack=0xffffcfc2a050, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+48    16:43:15.174557 clone(child_stack=0xffffcfc2a050, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+48    16:43:15.179858 clone(child_stack=0xffffcfc29ff0, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>
+52    16:43:15.183356 uname({sysname="Linux", nodename="workstation", ...}) = 0
+52    16:43:15.183696 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+52    16:43:15.183940 connect(3, {sa_family=AF_UNIX, sun_path="/var/run/nscd/socket"}, 110) = -1 ENOENT (No such file or directory)
+52    16:43:15.185476 connect(3, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.11")}, 16) = 0
+52    16:43:15.186451 connect(3, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.11")}, 16) = 0
+52    16:43:15.187996 connect(3, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.11")}, 16) = 0
+52    16:43:15.188796 connect(3, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.11")}, 16) = 0
+48    16:43:15.190553 clone(child_stack=0xffffcfc2a050, flags=CLONE_VM|CLONE_VFORK|SIGCHLD <unfinished ...>

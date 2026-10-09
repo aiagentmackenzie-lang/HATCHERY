@@ -37,3 +37,8 @@ server/dist/
 
 # Docker
 *.log
+
+# Real behavioural fixtures are part of the test suite and MUST be tracked.
+# Without this negation `*.log` silently excluded the strace fixture the parser
+# tests are written against, so CI could not run the test it backs.
+!tests/fixtures/*.log
