@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import tarfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
@@ -24,7 +25,11 @@ from engine.monitor.gvisor_strace import (
     default_gvisor_log_reader,
     read_gvisor_trace,
 )
-from engine.sandbox.artifacts import ArtifactSet, collect_artifacts
+from engine.sandbox.artifacts import (
+    ArtifactSet,
+    collect_artifacts,
+    collect_artifacts_via_volume,
+)
 from engine.sandbox.isolation import (
     GVISOR_COLLECTOR,
     STRACE_COLLECTOR,
@@ -52,6 +57,9 @@ DEFAULT_MEMORY_LIMIT = "1g"
 DEFAULT_PIDS_LIMIT = 256      # bound fork bombs
 SANDBOX_IMAGE = "hatchery-sandbox:latest"
 SECCOMP_PATH = Path(__file__).parent / "seccomp.json"
+# Container path the sample's artifacts are written to. At tier 2 this is backed
+# by a named Docker volume so the files survive the gVisor sandbox exiting.
+OUTPUT_CONTAINER_PATH = "/hatchery/output"
 
 
 @dataclass
@@ -98,6 +106,8 @@ class ContainerResult:
     gvisor_trace_log: Optional[Path] = None
     gvisor_trace_source: str = ""
     gvisor_trace_error: str = ""
+    output_volume: str = ""
+    artifact_volume_error: str = ""
     error: Optional[str] = None
 
     @property
@@ -137,6 +147,8 @@ class ContainerResult:
             "gvisor_trace_log": str(self.gvisor_trace_log) if self.gvisor_trace_log else None,
             "gvisor_trace_source": self.gvisor_trace_source,
             "gvisor_trace_error": self.gvisor_trace_error,
+            "output_volume": self.output_volume,
+            "artifact_volume_error": self.artifact_volume_error,
             "error": self.error,
         }
 
@@ -349,6 +361,7 @@ class ContainerManager:
         env_list: list[str],
         security_opt: list[str],
         annotations: dict[str, str],
+        binds: Optional[list[str]] = None,
     ) -> Container:
         """Create a container carrying OCI annotations.
 
@@ -366,6 +379,7 @@ class ContainerManager:
             cap_add=["NET_RAW"],
             security_opt=security_opt,
             runtime=runtime,
+            binds=binds or [],
         )
         host_config["Annotations"] = annotations
 
@@ -450,6 +464,23 @@ class ContainerManager:
         env_vars.update(self.config.extra_env)
         env_list = [f"{k}={v}" for k, v in env_vars.items()]
 
+        output_volume = ""
+        if probe.tier == IsolationTier.SANDBOXED_KERNEL:
+            output_volume = f"hatchery-output-{uuid.uuid4().hex[:12]}"
+            try:
+                self.client.volumes.create(name=output_volume)
+                logger.info(
+                    "Created tier-2 output volume %s for /hatchery/output",
+                    output_volume,
+                )
+            except Exception as e:  # noqa: BLE001 - reported, never silent
+                output_volume = ""
+                result.artifact_volume_error = (
+                    f"could not create the named volume used to recover tier-2 "
+                    f"in-guest artifacts: {e}"
+                )
+                logger.error(result.artifact_volume_error)
+
         container: Optional[Container] = None
         try:
             self._ensure_network()
@@ -466,6 +497,7 @@ class ContainerManager:
                     env_list=env_list,
                     security_opt=security_opt,
                     annotations=annotations,
+                    binds=[f"{output_volume}:{OUTPUT_CONTAINER_PATH}:rw"] if output_volume else [],
                 )
             else:
                 container = self.client.containers.create(
@@ -575,14 +607,23 @@ class ContainerManager:
                     )
                     logger.warning("gVisor trace not recovered: %s", source)
 
-            # Recover artifacts while the container still exists. A missing
-            # or empty behavioral source is a finding, not a warning to bury.
+            # Recover artifacts while the container still exists. At tier 2 the
+            # gVisor rootfs overlay is in memory, so the files come back through
+            # the named volume via a short runc sidecar instead of get_archive on
+            # the sandbox container. A missing or empty source is a finding, not
+            # a warning to bury.
             try:
-                result.artifacts = collect_artifacts(container, results_dir)
+                if probe.tier == IsolationTier.SANDBOXED_KERNEL and output_volume:
+                    result.artifacts = collect_artifacts_via_volume(
+                        self.client, output_volume, results_dir, self.config.image
+                    )
+                else:
+                    result.artifacts = collect_artifacts(container, results_dir)
+                if result.artifact_volume_error:
+                    result.artifacts.errors.append(result.artifact_volume_error)
                 if result.artifacts.errors:
                     for problem in result.artifacts.errors:
                         logger.warning("Artifact problem: %s", problem)
-                            # Only fatal when we got nothing at all.
                 if not result.artifacts.has_any_behavior and not result.gvisor_trace_log:
                     result.error = (
                         "No behavioral data was recovered from this run — "
@@ -616,5 +657,14 @@ class ContainerManager:
                     logger.info("Container %s removed", container.id[:12])
                 except Exception as e:  # noqa: BLE001
                     logger.warning("Container cleanup failed: %s", e)
+            if output_volume:
+                try:
+                    self.client.volumes.get(output_volume).remove(force=True)
+                    logger.info("Removed tier-2 output volume %s", output_volume)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "Could not remove tier-2 output volume %s: %s",
+                        output_volume, e,
+                    )
 
         return result

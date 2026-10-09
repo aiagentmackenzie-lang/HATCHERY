@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "version": "1.9.0",
+    "source_url": "https://github.com/ocsf/ocsf-schema/tree/v1.9.0",
+    "source_commit": "856d462",
+    "source_sha256": "817e65c39eb84dad4cb9a51d268a337eb4a9b8ca8a90c2d40b37d7cbca4cd719",
+    "source_sha256_scope": "sha256 over the schema source files this exporter reads: dictionary.json, categories.json, events/base_event.json, events/findings/finding.json, events/findings/detection_finding.json, objects/metadata.json, objects/product.json, objects/finding_info.json, objects/evidences.json",
+    "note": "Generated from the OCSF schema tag v1.9.0. Only the parts HATCHERY emits are pinned; field names and enum values are copied verbatim from the schema."
+  },
+  "categories": {
+    "2": "Findings"
+  },
+  "classes": {
+    "2004": {
+      "name": "Detection Finding",
+      "category_uid": 2,
+      "category_name": "Findings",
+      "activity_ids": [1, 2, 3],
+      "type_uid_formula": "class_uid * 100 + activity_id"
+    }
+  },
+  "severity_id": {
+    "0": "Unknown",
+    "1": "Informational",
+    "2": "Low",
+    "3": "Medium",
+    "4": "High",
+    "5": "Critical",
+    "6": "Fatal",
+    "99": "Other"
+  },
+  "confidence_id": {
+    "0": "Unknown",
+    "1": "Low",
+    "2": "Medium",
+    "3": "High",
+    "99": "Other"
+  },
+  "status_id": {
+    "1": "New",
+    "2": "In Progress",
+    "3": "Suppressed",
+    "4": "Resolved",
+    "5": "Archived",
+    "6": "Deleted"
+  },
+  "required_fields": [
+    "activity_id",
+    "category_uid",
+    "class_uid",
+    "metadata",
+    "severity_id",
+    "time",
+    "type_uid",
+    "finding_info"
+  ],
+  "metadata_required_fields": ["product", "version"],
+  "finding_info_required_fields": ["uid"],
+  "evidence_required_any": [
+    "actor",
+    "api",
+    "connection_info",
+    "data",
+    "database",
+    "databucket",
+    "device",
+    "dst_endpoint",
+    "email",
+    "file",
+    "process",
+    "query",
+    "resources",
+    "src_endpoint",
+    "url",
+    "user",
+    "job",
+    "script"
+  ]
+}

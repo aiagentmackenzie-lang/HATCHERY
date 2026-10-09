@@ -109,3 +109,20 @@ def test_missing_annotations_are_a_test_visible_regression():
     )
     host_config = manager._client.api.config["config"]["host_config"]  # type: ignore[union-attr]
     assert host_config["Annotations"] == {}
+
+
+def test_tier_two_output_volume_is_mounted_into_the_sandbox():
+    """D17: the named volume is how tier-2 in-guest artifacts survive the gVisor
+    sandbox exiting. If the bind is dropped the artifacts silently vanish."""
+    manager = _manager()
+    manager._create_container_with_annotations(
+        target_name="probe.sh",
+        runtime="runsc-hatchery",
+        env_list=[],
+        security_opt=[],
+        annotations=dict(ContainerManager.GVISOR_ANNOTATIONS),
+        binds=["hatchery-output-abc:/hatchery/output:rw"],
+    )
+    host_config = manager._client.api.config["config"]["host_config"]  # type: ignore[union-attr]
+    assert host_config["binds"] == ["hatchery-output-abc:/hatchery/output:rw"]
+    assert manager._client.api.config["config"]["host_config"]["runtime"] == "runsc-hatchery"

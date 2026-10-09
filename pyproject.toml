@@ -23,6 +23,7 @@ dependencies = [
     "flare-capa>=9.0",
     "aiofiles>=24.1",
     "httpx>=0.28",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -59,4 +60,10 @@ hatchery = "engine.cli:cli"
 include = ["engine*"]
 
 [tool.setuptools.package-data]
-engine = ["static/rules/**/*.yar", "sandbox/seccomp.json", "sandbox/docker/*"]
+engine = [
+    "static/rules/**/*.yar",
+    "sandbox/seccomp.json",
+    "sandbox/docker/*",
+    "export/attack/*.json",
+    "export/ocsf/*.json",
+]

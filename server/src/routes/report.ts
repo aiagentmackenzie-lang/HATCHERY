@@ -79,6 +79,22 @@ export async function reportRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'STIX bundle not found' });
     }
 
+    if (format === 'navigator') {
+      const navigatorPath = path.join('results', taskId, 'attack-navigator.json');
+      if (fs.existsSync(navigatorPath)) {
+        return reply.send(JSON.parse(fs.readFileSync(navigatorPath, 'utf-8')));
+      }
+      return reply.code(404).send({ error: 'ATT&CK Navigator layer not found' });
+    }
+
+    if (format === 'ocsf') {
+      const ocsfPath = path.join('results', taskId, 'ocsf.json');
+      if (fs.existsSync(ocsfPath)) {
+        return reply.send(JSON.parse(fs.readFileSync(ocsfPath, 'utf-8')));
+      }
+      return reply.code(404).send({ error: 'OCSF findings not found' });
+    }
+
     return reply.send(report);
   });
 }

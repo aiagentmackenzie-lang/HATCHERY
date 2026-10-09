@@ -64,6 +64,8 @@ results/<task_id>/
 │   ├── exec/exec.log
 │   └── dropped/
 ├── report.md             # human-readable
+├── attack-navigator.json # ATT&CK Navigator Layer v4.5
+├── ocsf.json             # OCSF 1.9.0 Detection Findings
 └── stix_bundle.json      # STIX 2.1
 ```
 
@@ -91,7 +93,9 @@ Not aspirational. What is in the code today.
 | Network capture (tcpdump → PCAP) | ✅ | parsed; **egress is blocked**, so this is usually empty by design |
 | Dropped-file recovery | ✅ | filesystem diff, excludes its own working directory |
 | IOC extraction + STIX 2.1 export | ✅ | one implementation; IDs validated against the spec |
-| MITRE ATT&CK mapping | ⚠️ | technique IDs present; **not yet rebuilt for v19** (see roadmap) |
+| MITRE ATT&CK mapping | ✅ | data-driven from a pinned ATT&CK **19.2** dataset; unknown, revoked or wrong-tactic IDs fail a test |
+| ATT&CK Navigator layer (v4.5) | ✅ | `attack-navigator.json`; score, colour and comment per technique |
+| OCSF Detection Findings (1.9.0) | ✅ | `ocsf.json`; required fields and enum values validated against the pinned schema |
 | Isolation tier probing + honest reporting | ✅ | the point of the project |
 | `hatchery doctor` readiness check | ✅ | |
 | API + dashboard backed by real data | ✅ | ingest verified: 572 events, 206 file, 32 network from one run |
@@ -101,7 +105,7 @@ Not aspirational. What is in the code today.
 | **Windows / macOS dynamic analysis** | ❌ | static only |
 | **Unpacking / config extraction** | ❌ | planned |
 | **AI triage** | ❌ | planned; prompt-contract design is in the roadmap |
-| **OCSF / Sigma / ATT&CK Navigator output** | ❌ | planned |
+| **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
 
 ---
 
@@ -113,7 +117,7 @@ Not aspirational. What is in the code today.
 4. **Windows malware is analyzed statically.** Dynamic Windows analysis needs a Windows guest, which needs licensing and hardware virtualisation.
 5. **`strace` is the tier-1 fallback, not the ambition.** ptrace-based tracing has high overhead and is detectable; in 2026 eBPF rootkits exist that `SIGKILL` processes which attempt to `ptrace` a protected PID. Tier 2 no longer uses ptrace: it reads gVisor's own Sentry trace from the runsc debug log. eBPF-based collection for tier 3 is the intended direction — see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2, D11, D14.
 6. **What each collector cannot see.** At tier 1, `strace` cannot see time-based checks: `RDTSC`, `CPUID` and vDSO-served `clock_gettime` are CPU/userspace operations, not syscalls (the probe in `tests/fixtures/strace-evasive-real.log` ran a `date +%s` loop and produced no clock syscall). At tier 2, gVisor's Sentry trace *does* capture `clock_gettime` — the vDSO path becomes a Sentry syscall — but `RDTSC`/`CPUID` remain instructions and are not emitted. Every run names its collector and that collector's blind spots, and reads `summary.evasion_*` from whatever source it actually had.
-7. **Tier 2 was verified end-to-end on this host.** gVisor needs no KVM and the registration script exists; installing `runsc` and wiring its Sentry trace were verified against a real detonation. Two consequences are documented rather than hidden: gVisor's trace is container-wide (the entrypoint and monitors appear alongside the sample), and Docker's `get_archive` cannot see files written inside a gVisor container because the rootfs overlay is in-memory — so the in-guest strace/inotify/pcap artifacts are not recoverable at tier 2 and the Sentry trace is the collector.
+7. **Tier 2 was verified end-to-end on this host.** gVisor needs no KVM and the registration script exists; installing `runsc` and wiring its Sentry trace were verified against a real detonation. Two consequences are documented rather than hidden: gVisor's trace is container-wide, so the engine attributes events to the sample's process subtree and records how many entrypoint/monitor events it excluded; and Docker's `get_archive` cannot see files written inside a gVisor container because the rootfs overlay is in-memory, so the in-guest strace/inotify/dropped artifacts are recovered copy-based through a named Docker volume read back by a short `runc` sidecar — no host bind mount (D5). The Sentry trace remains the syscall collector.
 
 ---
 
@@ -161,9 +165,16 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 301 tests
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 337 tests
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
+```
+
+The pinned frameworks are refreshed with one idempotent script, which records the
+source URL, version string and SHA256 in the generated artifact:
+
+```bash
+python scripts/refresh_attack_dataset.py
 ```
 
 The end-to-end suite is opt-in because it starts a container. It is the suite that would have caught every blocker this project shipped with: it asserts that syscalls are really captured, filesystem events are really recorded, artifacts are really recovered, the sample's own exit code is reported, and the bundle really describes the run.
@@ -197,7 +208,7 @@ sample ──► intake (hash / PE / ELF / strings)
 
 **Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; and the gVisor tier-2 boundary made real and wired — a runsc runtime, per-container OCI annotations that enable the Sentry trace, and a parser that turns it into `source="gvisor-sentry"` events and evasion scores. Verified end-to-end on a live gVisor detonation.* ⚠️ *host-side eBPF for tier 3 is designed and declared per run but not wired; `strace` remains the tier-3 fallback and the run says so.*
 
-**Phase 2 — breadth.** Delivery-format intake (Office, PDF, LNK, ISO/IMG, archives, HTML/SVG), emulation-based unpacking and config extraction, ATT&CK v19 rebuild (Detection Strategies + Analytics; the `Stealth`/`Impair Defenses` split), OCSF events, MISP/OpenCTI push, ATT&CK Navigator layer, candidate Sigma rules from observed behavior.
+**Phase 2 — breadth.** Delivery-format intake (Office, PDF, LNK, ISO/IMG, archives, HTML/SVG) and emulation-based unpacking/config extraction remain ahead. The telemetry half is **done in this revision**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts. MISP/OpenCTI push remains planned.
 
 **Phase 3 — AI triage, done properly.** Local (Ollama) function-level behavioral reporting with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**. Sample-derived text is treated as hostile input: malware contains strings designed to steer an LLM's verdict.
 

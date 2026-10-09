@@ -10,6 +10,7 @@ from engine.sandbox.artifacts import (
     ARTIFACT_SPECS,
     ArtifactSet,
     collect_artifacts,
+    collect_artifacts_via_volume,
     extract_tar_stream,
 )
 
@@ -152,3 +153,84 @@ def test_dropped_files_reads_from_the_recovered_directory(tmp_path: Path):
     result = ArtifactSet(root=tmp_path, found={"dropped_dir": dropped})
 
     assert [p.name for p in result.dropped_files] == ["evil.sh"]
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 artifact recovery through a named volume (D17)
+# ---------------------------------------------------------------------------
+
+
+class FakeSidecar(FakeContainer):
+    """A short helper container with the output volume mounted."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        super().__init__(files)
+        self.removed = False
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def wait(self, timeout: int = 0) -> dict:
+        return {"StatusCode": 0}
+
+    def remove(self, force: bool = False) -> None:
+        self.removed = True
+
+
+class FakeVolumes:
+    def create(self, name: str, **kwargs):  # noqa: ANN201
+        return {"Name": name}
+
+
+class FakeVolumeContainers:
+    def __init__(self, sidecar: FakeSidecar) -> None:
+        self.sidecar = sidecar
+        self.created_kwargs: dict = {}
+
+    def create(self, **kwargs: object) -> FakeSidecar:
+        self.created_kwargs = dict(kwargs)
+        return self.sidecar
+
+
+class FakeVolumeClient:
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self.volumes = FakeVolumes()
+        self.containers = FakeVolumeContainers(FakeSidecar(files))
+
+
+class ExplodingContainers:
+    def create(self, **kwargs: object):  # noqa: ANN201
+        raise RuntimeError("daemon refused")
+
+
+class ExplodingClient:
+    def __init__(self) -> None:
+        self.volumes = FakeVolumes()
+        self.containers = ExplodingContainers()
+
+
+def test_volume_route_recovers_artifacts_and_mounts_the_volume(tmp_path: Path):
+    client = FakeVolumeClient(
+        {
+            "/hatchery/output/strace/strace.log": b"execve() = 0\n",
+            "/hatchery/output/inotify/inotify.log": b"event\n",
+        }
+    )
+    result = collect_artifacts_via_volume(client, "hatchery-output-abc", tmp_path, "hatchery-sandbox:latest")
+
+    assert result.strace_log is not None
+    assert result.inotify_log is not None
+    assert result.has_any_behavior
+    kwargs = client.containers.created_kwargs
+    assert kwargs["runtime"] == "runc"
+    assert kwargs["volumes"] == {"hatchery-output-abc": {"bind": "/hatchery/output", "mode": "rw"}}
+    assert client.containers.sidecar.removed is True
+
+
+def test_volume_route_reports_failure_instead_of_silence(tmp_path: Path):
+    result = collect_artifacts_via_volume(ExplodingClient(), "vol", tmp_path, "img")
+
+    assert not result.has_any_behavior
+    assert set(result.missing) == {spec.key for spec in ARTIFACT_SPECS}
+    assert any("sidecar" in e and "daemon refused" in e for e in result.errors)

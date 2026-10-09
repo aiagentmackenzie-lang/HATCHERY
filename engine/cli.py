@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import time
@@ -31,6 +32,7 @@ from engine.bundle import (
     render_limitations,
     write_bundle,
 )
+from engine.export.ocsf_export import OCSF_SCHEMA_VERSION
 from engine.static.yara_scanner import lint_rules
 
 console = Console()
@@ -307,6 +309,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     sandbox_result_dict: Optional[dict] = None
     strace_result = None
     gvisor_result = None
+    syscall_result: Any = None
     net_result = None
     evasion_dict: Optional[dict] = None
     evasion_events: list[dict] = []
@@ -348,7 +351,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
 
                 # Parse the syscall source that this tier's collector produced.
                 # Tier 2 uses gVisor's Sentry trace; tier 1 uses in-guest strace.
-                syscall_result: Any = None
+                syscall_result = None
                 if sandbox_result.gvisor_trace_log:
                     from engine.monitor.gvisor_strace import GvisorStraceParser
                     console.print("\n  [bold]Parsing gVisor Sentry trace...[/bold]")
@@ -378,6 +381,31 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                     console.print(f"  Network connections: [red]{len(syscall_result.network_connections)}[/red]")
                     console.print(f"  Process operations: [red]{len(syscall_result.process_operations)}[/red]")
 
+                # The gVisor Sentry trace is container-wide: the entrypoint,
+                # strace, inotifywait and tcpdump all appear. Attribute the
+                # events to the sample's process subtree before scoring or
+                # normalising, and record what was excluded (D17).
+                if gvisor_result is not None:
+                    from engine.monitor.attribution import attribute_to_sample
+
+                    scoped_events, attribution = attribute_to_sample(
+                        gvisor_result.events, sample_name=file.name
+                    )
+                    gvisor_result = dataclasses.replace(
+                        gvisor_result,
+                        events=scoped_events,
+                        parsed_events=len(scoped_events),
+                    )
+                    syscall_result = gvisor_result
+                    if sandbox_result_dict is not None:
+                        monitoring = sandbox_result_dict.setdefault("monitoring", {})
+                        monitoring["trace_attribution"] = attribution.to_dict()
+                    console.print(
+                        f"  Attribution: [cyan]{attribution.included}[/cyan] sample events, "
+                        f"[dim]{attribution.excluded} excluded[/dim]"
+                    )
+
+                if syscall_result is not None:
                     # Evasion is a first-class signal. A recon-heavy but
                     # impact-free run is evasive, not clean.
                     from engine.monitor.evasion import analyze_evasion
@@ -452,10 +480,27 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     # MITRE ATT&CK mapping
     console.print("\n[bold]▸ MITRE ATT&CK Mapping[/bold]")
     mapper = MITREMapper()
+    mapped_events = None
+    if syscall_result is not None:
+        mapped_events = syscall_result
+    file_watch_data = None
+    if inotify_log_path is not None:
+        from engine.bundle import events_from_inotify
+
+        file_watch_data = {"events": events_from_inotify(inotify_log_path)}
     mitre_result = mapper.map_all(
         capa_data=capa_result.to_dict(),
         yara_data=yara_result.to_dict(),
+        behavior_result=mapped_events,
+        file_watch_data=file_watch_data,
     )
+    if mitre_result.errors:
+        console.print(
+            f"  [red]⚠ {len(mitre_result.errors)} ATT&CK mapping(s) rejected by the "
+            f"pinned ATT&CK {mitre_result.attack_version} dataset[/red]"
+        )
+        for problem in mitre_result.errors[:5]:
+            console.print(f"    • [red]{problem}[/red]")
     if mitre_result.technique_count > 0:
         table = Table(title="ATT&CK Techniques", show_header=True)
         table.add_column("Tactic", style="cyan")
@@ -539,6 +584,8 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         limitations=limitations,
         events=events,
         evasion=evasion_dict,
+        attack_version=mitre_result.attack_version,
+        ocsf_schema_version=OCSF_SCHEMA_VERSION,
     )
     console.print(f"  Markdown: [cyan]{report_dir / 'report.md'}[/cyan]")
 
@@ -548,6 +595,65 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     stix_path = results_dir / "stix_bundle.json"
     stix_path.write_text(stix_bundle, encoding="utf-8")
     console.print(f"  STIX 2.1: [cyan]{stix_path}[/cyan]")
+
+    # ATT&CK Navigator layer and OCSF Detection Findings: the same validated
+    # mapping, in the two interoperable shapes analysts actually consume.
+    from engine.export.attack_navigator import build_navigator_layer, validate_navigator_layer
+    from engine.export.ocsf_export import build_ocsf_findings, validate_all as validate_ocsf
+
+    navigator_layer = build_navigator_layer(
+        mitre=mitre_result.to_dict(),
+        sample_name=file.name,
+        task_id=task_id,
+    )
+    navigator_errors = validate_navigator_layer(navigator_layer)
+    if navigator_errors:
+        for problem in navigator_errors:
+            console.print(f"  [red]Navigator layer error: {problem}[/red]")
+    navigator_path = results_dir / "attack-navigator.json"
+    navigator_path.write_text(json.dumps(navigator_layer, indent=2), encoding="utf-8")
+    console.print(f"  ATT&CK Navigator: [cyan]{navigator_path}[/cyan]")
+
+    ocsf_findings = build_ocsf_findings(
+        task_id=task_id,
+        sample_name=file.name,
+        mitre=mitre_result.to_dict(),
+        evasion=evasion_dict,
+        events=events,
+        summary=summary,
+        limitations=limitations,
+    )
+    ocsf_errors = validate_ocsf(ocsf_findings)
+    if ocsf_errors:
+        for problem in ocsf_errors:
+            console.print(f"  [red]OCSF finding error: {problem}[/red]")
+    ocsf_path = results_dir / "ocsf.json"
+    ocsf_path.write_text(json.dumps(ocsf_findings, indent=2), encoding="utf-8")
+    console.print(f"  OCSF (Detection Finding): [cyan]{ocsf_path}[/cyan]")
+
+    # Candidate Sigma rules: generated drafts, clearly labelled and unreviewed.
+    from engine.export.sigma_candidates import (
+        build_sigma_candidates,
+        validate_sigma_rule,
+        write_sigma_candidates,
+    )
+
+    sigma_rules = build_sigma_candidates(
+        mitre=mitre_result.to_dict(),
+        events=events,
+        task_id=task_id,
+        sample_name=file.name,
+        attack_version=mitre_result.attack_version,
+    )
+    sigma_errors = [p for rule in sigma_rules for p in validate_sigma_rule(rule)]
+    for problem in sigma_errors:
+        console.print(f"  [red]Sigma candidate error: {problem}[/red]")
+    sigma_dir = write_sigma_candidates(results_dir, sigma_rules)
+    if sigma_dir is not None:
+        console.print(
+            f"  Candidate Sigma: [cyan]{sigma_dir}[/cyan] "
+            f"({len(sigma_rules)} generated draft(s), review required)"
+        )
 
     # Save task data
     task_data["status"] = "completed"
@@ -588,7 +694,7 @@ def status(task_id: str) -> None:
 
 @cli.command()
 @click.argument("task_id")
-@click.option("--format", "fmt", type=click.Choice(["markdown", "json", "stix"]), default="markdown")
+@click.option("--format", "fmt", type=click.Choice(["markdown", "json", "stix", "navigator", "ocsf"]), default="markdown")
 def report(task_id: str, fmt: str) -> None:
     """Generate an analysis report for a completed task."""
     if task_id not in _tasks:
@@ -604,6 +710,10 @@ def report(task_id: str, fmt: str) -> None:
         console.print_json((results_dir / "report.json").read_text())
     elif fmt == "stix" and (results_dir / "stix_bundle.json").exists():
         console.print_json((results_dir / "stix_bundle.json").read_text())
+    elif fmt == "navigator" and (results_dir / "attack-navigator.json").exists():
+        console.print_json((results_dir / "attack-navigator.json").read_text())
+    elif fmt == "ocsf" and (results_dir / "ocsf.json").exists():
+        console.print_json((results_dir / "ocsf.json").read_text())
     else:
         console.print(f"[red]Report not found for task {task_id}[/red]")
 

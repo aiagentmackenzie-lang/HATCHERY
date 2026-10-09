@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = "1.0"
 ANALYSIS_FILENAME = "analysis.json"
 EVENTS_FILENAME = "events.jsonl"
+# Interoperable exports written alongside the bundle, by the same engine run.
+EXPORT_FILENAMES: dict[str, str] = {
+    "stix": "stix_bundle.json",
+    "navigator": "attack-navigator.json",
+    "ocsf": "ocsf.json",
+    "sigma": "sigma-candidates",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -281,13 +288,14 @@ def compute_limitations(
             continue
         if key == "strace_log" and has_gvisor_trace:
             limits.append(
-                "The in-guest strace log was not recoverable: gVisor keeps the "
-                "container rootfs overlay in memory, so Docker's get_archive "
-                "cannot see it. Syscall behavior comes from the gVisor Sentry "
-                "trace instead."
+                "The in-guest strace log was not recovered through the tier-2 output "
+                "volume. Syscall behaviour comes from the gVisor Sentry trace instead."
             )
             continue
         limits.append(f"No {key.replace('_', ' ')} was recovered — {consequence}.")
+
+    for problem in artifacts.get("errors") or []:
+        limits.append(f"Artifact recovery problem: {problem}")
 
     if not events:
         limits.append(
@@ -331,6 +339,21 @@ def compute_limitations(
             )
             if monitoring.get("downgrade_reason"):
                 limits.append(str(monitoring["downgrade_reason"]))
+            attribution = monitoring.get("trace_attribution") or {}
+            if attribution:
+                if attribution.get("attributed"):
+                    limits.append(
+                        "Behaviour was attributed to the sample's process subtree "
+                        f"(root PID {attribution.get('sample_root_pid')}): "
+                        f"{attribution.get('included')} events kept, "
+                        f"{attribution.get('excluded')} entrypoint/monitor events "
+                        "excluded before scoring."
+                    )
+                else:
+                    limits.append(
+                        "Sample-subtree attribution failed, so this trace is "
+                        "container-wide: " + str(attribution.get("reason", ""))
+                    )
         if sandbox.get("status") == "timeout":
             limits.append(
                 "The sample was still running when the timeout expired. Anything it "
@@ -385,6 +408,7 @@ class AnalysisBundle:
             "evasion": self.evasion,
             "limitations": self.limitations,
             "errors": self.errors,
+            "exports": dict(EXPORT_FILENAMES),
             "summary": self.summary(),
         }
 

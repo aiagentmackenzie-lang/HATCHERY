@@ -71,10 +71,20 @@ fi
 # Filesystem snapshot. Exclude HATCHERY's own working directory and the kernel
 # pseudo-filesystems: otherwise every artifact this script writes shows up in
 # the diff and gets reported as a file the sample dropped.
+#
+# `find / -xdev` deliberately does not cross filesystem boundaries, and /tmp,
+# /var/tmp and /dev/shm are separate tmpfs mounts under gVisor. Snapshotting
+# them explicitly is what makes dropped-file recovery work at tier 2 instead of
+# silently reporting no dropped files for a sample that wrote to /tmp.
 SNAPSHOT_EXCLUDES=(-path /hatchery -prune -o -path /proc -prune -o -path /sys -prune -o)
 
 snapshot_filesystem() {
-    find / -xdev "${SNAPSHOT_EXCLUDES[@]}" -type f -print 2>/dev/null | sort
+    {
+        find / -xdev "${SNAPSHOT_EXCLUDES[@]}" -type f -print 2>/dev/null
+        for tmpdir in /tmp /var/tmp /dev/shm; do
+            [ -d "$tmpdir" ] && find "$tmpdir" -type f -print 2>/dev/null
+        done
+    } | sort -u
 }
 
 # Give the background monitors a moment to establish their watches. Without

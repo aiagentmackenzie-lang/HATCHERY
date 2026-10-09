@@ -33,7 +33,7 @@ The seccomp profile in `engine/sandbox/seccomp.json` is a deny-list and is there
 | CORS | permissive (`origin: true`) — tighten before exposing |
 | Sample path submissions | restricted to `samples/` and `uploads/` |
 | Upload filenames | reduced to a bare name; traversal segments stripped |
-| Artifact transfer | copy-based over the Docker API; tar members validated, `data` filter applied |
+| Artifact transfer | copy-based over the Docker API; tar members validated, `data` filter applied. At tier 2, a named Docker volume read by a short `runc` sidecar — never a host bind mount |
 | Sample execution | unprivileged (`setpriv` to uid 1000); tracers run privileged, the sample never does |
 
 ## Issues fixed in this revision

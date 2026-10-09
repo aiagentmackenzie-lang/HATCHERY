@@ -215,9 +215,12 @@ GVISOR_COLLECTOR = MonitoringStrategy(
         "--strace does not emit them; the Sentry services them internally.",
         "The trace destination (--debug-log) is a host-side runtimeArg and is "
         "not annotation-overridable; the annotations only toggle the flags.",
+        "The trace is container-wide: the entrypoint and monitors are in it. "
+        "HATCHERY attributes events to the sample's process subtree before "
+        "scoring and records how many were excluded.",
         "Docker's get_archive cannot see files written inside a gVisor "
-        "container (the rootfs overlay is in-memory), so in-guest strace, "
-        "inotify and tcpdump artifacts are not recoverable at tier 2.",
+        "container (the rootfs overlay is in-memory); in-guest artifacts are "
+        "recovered copy-based through a named output volume instead.",
     ),
     requires="runsc registered as a Docker runtime with --debug-log; a readable debug-log directory",
 )

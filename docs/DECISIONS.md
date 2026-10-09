@@ -196,9 +196,57 @@ Signals scored: VM/DMI artifact reads, VM-guest-tool paths, `/proc/cpuinfo`/`aux
 
 ---
 
+## D15 — The ATT&CK mapping is data-driven from a pinned v19 dataset
+
+**Decision.** `engine/export/mitre_map.py` no longer hardcodes technique names, tactics or deprecation state. A compact artifact derived from MITRE's `attack-stix-data` repository is the single source of truth; `MITREMapper` resolves and validates every emitted ID against it. `scripts/refresh_attack_dataset.py` regenerates the artifact idempotently and records the source URL, version string and SHA256 in its header. An unknown, revoked, deprecated or wrong-tactic ID is an **error** (the technique is not emitted), and `MITREMapper.validate()` raises.
+
+**Verified against ATT&CK 19.2** (source `enterprise-attack-19.2.json`, SHA256 `dc1639caa5501d720e280cf1cbd8fbe009884a0c9b3e6e9ed9d0c25166c3d8f4`, spec 3.3.0). The handoff's claims were checked, not trusted:
+
+* `Defense Evasion` is gone; the tactics are `stealth` and `defense-impairment`. **True.**
+* `Rootkit` (T1014) and `Modify Registry` (T1112) were deleted. **False** — both exist and are not revoked/deprecated in 19.2. The real deletion marker in this dataset is `revoked` (149 techniques), and `Indicator Blocking` (T1562.006) is revoked, which is why `/etc/hosts` now has no mapping at all rather than a guessed one.
+* `T1678 Delay Execution` exists and `T1497.003` is at a 2.x version. **True.**
+
+**Fixed wrong mappings** (each was checked against the dataset): `clone` no longer maps to Process Injection; `fork` is no longer Native API; `bind` no longer claims to be Lateral Tool Transfer "Non-Standard Port (Listen)"; `mmap` no longer claims Process Hollowing; `/etc/hosts` no longer claims Modify Registry (a Windows technique, on a Linux path); `connect` is port/protocol aware instead of always T1071; and the YARA `mitre_attck` path no longer emits `tactic="Unknown"` with a truncated ID.
+
+**Cost accepted.** Committing MITRE's 53.8 MB STIX bundle would be wasteful; the artifact is 203.7 KiB and carries the hash of the bytes it came from. The observation→technique associations are still authored — validation proves an ID exists and fits its tactic, not that the association is the best possible one.
+
+---
+
+## D16 — OCSF and ATT&CK Navigator are first-class outputs, beside STIX
+
+**Decision.** One run now emits, next to `stix_bundle.json`: an **ATT&CK Navigator Layer v4.5** (`attack-navigator.json`) with a score, colour and comment per technique, and **OCSF 1.9.0 Detection Findings** (`ocsf.json`) with `class_uid` 2004 (`category_uid` 2, Findings). Each has one producer in the Python engine; the API serves the files, it does not regenerate them.
+
+**Evidence.** The schema was fetched and read, not guessed. OCSF **1.9.0** (`ocsf/ocsf-schema` tag `v1.9.0`, commit `856d462`, SHA256 over the files this exporter reads `817e65c39eb84dad4cb9a51d268a337eb4a9b8ca8a90c2d40b37d7cbca4cd719`). `engine/export/ocsf/schema-1.9.0.json` pins the class, category and enum values used. Required fields (`activity_id`, `category_uid`, `class_uid`, `metadata`, `severity_id`, `time`, `type_uid`, `finding_info`), the class/category relationship, the enum membership, the metadata schema citation and the evidence constraint are validated by `validate_finding`, and the suite fails on a malformed severity, class or category.
+
+---
+
+## D17 — Tier-2 traces are attributed to the sample; tier-2 artifacts are recovered copy-based
+
+**Decision.** The gVisor Sentry trace is container-wide. `engine/monitor/attribution.py` finds the process whose `execve` target is `/hatchery/sample/<name>`, follows `clone`/`fork`/`clone3`/`vfork` children to a fixpoint, and keeps only that subtree before evasion scoring and event normalisation. The bundle records `monitoring.trace_attribution = {sample_root_pid, included, excluded, reason}` and a limitation line states what was excluded. When the root cannot be found, **every** event is kept and the reason says so — nothing is dropped silently.
+
+Tier-2 in-guest artifacts (the in-guest strace, inotify, dropped files) are recovered **copy-based** through a **named Docker volume** mounted at `/hatchery/output` and read back by a short `runc` sidecar; no host bind mount is used (D5).
+
+**Evidence — both routes were tested on a live tier-2 host.**
+
+* `runsc --root=/var/run/docker/runtime-runc/moby tar rootfs-upper -file=<tar> <container-id>` **works while the sandbox is alive** (it recovered `./hatchery/output/inotify/inotify.log`), but after the container exits it fails with `error loading container: file does not exist` — the in-memory overlay is gone. That is exactly when the engine recovers artifacts, so this route was rejected.
+* The named-volume route works **after** exit: a container that wrote artifacts exited, and a sidecar (`docker run -v hatchery-vol:/out alpine ...`) read back a 5-line inotify log and a 331-line strace log. Reusing the existing `collect_artifacts` on the sidecar keeps the tar-member validation and the `data` filter.
+
+**A bug found while proving it.** `find / -xdev` does not cross filesystem boundaries, and under gVisor `/tmp`, `/var/tmp` and `/dev/shm` are separate tmpfs mounts, so the filesystem-diff dropped-file recovery silently reported no files for a sample that wrote to `/tmp`. `entrypoint.sh` now snapshots those tmpfs paths explicitly. The opt-in E2E suite asserts at tier 2 that the in-guest strace log, inotify log and dropped files are recovered.
+
+---
+
+## D18 — Candidate Sigma rules, labelled as generated drafts
+
+**Decision.** `engine/export/sigma_candidates.py` emits candidate Sigma rules for the techniques actually observed in a run, into `sigma-candidates/`. Every rule carries `status: experimental`, a description beginning `GENERATED DRAFT`, and an `x_hatchery` block with `generated: true, reviewed: false` plus the technique, source, confidence and detection-strategy references. A technique with no honest selection is skipped rather than emitted as a vague rule.
+
+**Why candidates and not detections.** A rule generated from one detonation has not been backtested and will false-positive. Labelling it a validated detection would be the exact dishonesty this project exists to avoid. Promoting a candidate to production is a human decision, and the artefact says so.
+
+---
+
 ## What was deliberately not done
 
-- **Rewriting the MITRE mapping for ATT&CK v19.** It is a real gap: v18 (Oct 2025) replaced detections with **Detection Strategies** and **Analytics** and deprecated Data Sources; v19 (Apr 2026) split Defense Evasion into **Stealth** and **Impair Defenses** and deleted Rootkit and Modify Registry as standalone techniques. Doing this properly means touching every rule's metadata and the mapper, and doing it half-way is worse than flagging it. Scheduled as Phase 2 and marked ⚠️ in the README.
+- **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
+- **Sigma rules as validated detections.** D18 emits candidate drafts only. They are not backtested; promoting one is a human decision.
 - **AI triage.** Phase 3, deliberately after the pipeline is trustworthy. When it lands it will use versioned prompt contracts, JSON-schema-validated output, grounding requirements and fail-closed suppression, in the shape Microsoft documented for DTDA. Critically, **sample-derived text is untrusted input**: Microsoft's Project Ire write-up notes a sample containing the literal string `BelievemeIamMustang-Panda`, explicitly flagged as *"adversarial input to LLM-driven analysis, biasing the verdict."* Any LLM layer here must treat malware strings as data, never instructions.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 
@@ -212,7 +260,7 @@ Signals scored: VM/DMI artifact reads, VM-guest-tool paths, `/proc/cpuinfo`/`aux
 
 **Detection content.** mandiant/capa releases v9.0–v9.3; VirusTotal "YARA-X is stable!" (Jun 2025) and "VirusTotal moves to YARA-X"; Andrea Fortuna, "Threat hunting with YARA-X" (Apr 2026).
 
-**Frameworks.** MITRE ATT&CK v18 release notes and v18.0→v18.1 detailed changelog; "ATT&CK v18: The Detection Overhaul You've Been Waiting For" (Oct 2025); ATT&CK v19 announcement (Apr 2026); NIST SP 800-61r3 (Apr 2025).
+**Frameworks.** MITRE ATT&CK v18 release notes and v18.0→v18.1 detailed changelog; "ATT&CK v18: The Detection Overhaul You've Been Waiting For" (Oct 2025); ATT&CK v19 announcement (Apr 2026); the pinned dataset `mitre-attack/attack-stix-data` `enterprise-attack-19.2.json` (SHA256 `dc1639caa5501d720e280cf1cbd8fbe009884a0c9b3e6e9ed9d0c25166c3d8f4`, spec 3.3.0); the OCSF schema tag `v1.9.0` (`ocsf/ocsf-schema`, commit `856d462`); the ATT&CK Navigator Layer v4.5 format; NIST SP 800-61r3 (Apr 2025).
 
 **Commercial and OSS landscape.** CAPEv2 documentation; Joe Sandbox v44 "Smoke Quartz" release notes (Jan 2026); VMRay; Recorded Future Triage; Cyberpress "Malware Analysis Tools 2026".
 

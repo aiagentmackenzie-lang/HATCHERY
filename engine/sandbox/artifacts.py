@@ -217,3 +217,67 @@ def collect_artifacts(container, run_dir: Path) -> ArtifactSet:
         )
 
     return result
+
+
+def collect_artifacts_via_volume(
+    client,
+    volume_name: str,
+    run_dir: Path,
+    image: str,
+    helper_runtime: str = "runc",
+    timeout: int = 60,
+) -> ArtifactSet:
+    """Recover artifacts from a named Docker volume through a short sidecar.
+
+    Why this route (docs/DECISIONS.md D17): at tier 2 gVisor keeps the container
+    rootfs overlay in memory, so ``get_archive`` on the sandbox container cannot
+    see files the sample wrote. A **named volume** mounted at
+    ``/hatchery/output`` is a real host-backed mount proxied by gVisor's gofer,
+    so its contents survive the sandbox exiting. A short ``runc`` sidecar mounts
+    the same volume and ``get_archive`` copies the files out — still copy-based,
+    never a host bind mount (D5).
+
+    ``runsc tar rootfs-upper`` was tested first and works **only while the
+    sandbox is alive**; it fails with "file does not exist" once the container
+    has exited, which is exactly when the engine recovers artifacts. This route
+    is the one that works after exit.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    result = ArtifactSet(root=run_dir)
+
+    sidecar = None
+    try:
+        sidecar = client.containers.create(
+            image=image,
+            entrypoint=["/bin/true"],
+            runtime=helper_runtime,
+            volumes={volume_name: {"bind": "/hatchery/output", "mode": "rw"}},
+            detach=True,
+            network_mode="none",
+        )
+        sidecar.start()
+        sidecar.wait(timeout=timeout)
+    except Exception as e:  # noqa: BLE001 - any failure is reported, not hidden
+        result.errors.append(
+            f"could not read the tier-2 output volume {volume_name!r} through a "
+            f"{helper_runtime} sidecar: {e}"
+        )
+        for spec in ARTIFACT_SPECS:
+            result.missing.append(spec.key)
+        if sidecar is not None:
+            _remove_quietly(sidecar)
+        return result
+
+    try:
+        result = collect_artifacts(sidecar, run_dir)
+    finally:
+        _remove_quietly(sidecar)
+
+    return result
+
+
+def _remove_quietly(container) -> None:
+    try:
+        container.remove(force=True)
+    except Exception as e:  # noqa: BLE001 - cleanup must not mask the real result
+        logger.warning("Sidecar cleanup failed: %s", e)

@@ -128,9 +128,7 @@ def test_syscall_trace_contains_real_activity(detonation):
 
 def test_filesystem_events_were_recorded(detonation):
     result, _ = detonation
-    if _tier(result) == IsolationTier.SANDBOXED_KERNEL:
-        pytest.skip("in-guest inotify log is not recoverable under gVisor")
-    assert result.artifacts.inotify_log is not None
+    assert result.artifacts.inotify_log is not None, result.artifacts.describe()
     text = result.artifacts.inotify_log.read_text(errors="replace")
     assert "hatchery-e2e-write.txt" in text
 
@@ -139,11 +137,26 @@ def test_dropped_files_are_the_samples_files_and_nothing_else(detonation):
     """The filesystem diff used to include HATCHERY's own output directory, so
     every artifact the sandbox wrote was reported as a file the sample dropped."""
     result, _ = detonation
-    if _tier(result) == IsolationTier.SANDBOXED_KERNEL:
-        pytest.skip("in-guest dropped-file recovery is not possible under gVisor")
+    assert result.artifacts is not None, result.error
     names = {p.name for p in result.artifacts.dropped_files}
-    assert any("hatchery-e2e-write.txt" in n for n in names)
+    assert any("hatchery-e2e-write.txt" in n for n in names), result.artifacts.describe()
     assert not any("_hatchery_output" in n for n in names)
+
+
+def test_tier_two_artifacts_are_recovered_copy_based(detonation):
+    """D17: at tier 2 the in-guest artifacts are recovered through the named
+    output volume via a short runc sidecar, not through the gVisor overlay. The
+    in-guest strace log and inotify log must actually be present."""
+    result, _ = detonation
+    if _tier(result) != IsolationTier.SANDBOXED_KERNEL:
+        pytest.skip("host is not running a tier-2 (gVisor) runtime")
+    assert result.status == "completed", result.error
+    assert result.artifacts is not None
+    assert result.artifacts.strace_log is not None, result.artifacts.describe()
+    assert result.artifacts.strace_log.stat().st_size > 0
+    assert result.artifacts.inotify_log is not None, result.artifacts.describe()
+    assert result.artifacts.has_any_behavior
+    assert not result.artifact_volume_error
 
 
 def test_isolation_tier_is_reported_on_the_result(detonation):
@@ -202,6 +215,25 @@ def test_monitoring_collector_and_blind_spots_are_reported(detonation):
     assert result.monitoring["collector"]
     assert result.monitoring["location"] in ("guest", "host", "none")
     assert result.monitoring["blind_spots"]
+
+
+def test_tier_two_events_are_attributed_to_the_sample_subtree(detonation):
+    """D17: the container-wide gVisor trace is filtered to the sample's process
+    subtree before scoring, and the excluded count is recorded."""
+    result, _ = detonation
+    if _tier(result) != IsolationTier.SANDBOXED_KERNEL:
+        pytest.skip("host is not running a tier-2 (gVisor) runtime")
+    from engine.monitor.attribution import attribute_to_sample
+    from engine.monitor.gvisor_strace import GvisorStraceParser
+
+    parsed = GvisorStraceParser().parse_file(result.gvisor_trace_log)
+    included, attribution = attribute_to_sample(parsed.events, sample_name="probe.sh")
+    assert attribution.attributed, attribution.reason
+    assert attribution.sample_root_pid is not None
+    assert attribution.excluded > 0
+    assert included
+    monitoring = result.to_dict()["monitoring"] or {}
+    assert "trace_attribution" not in monitoring  # set by the CLI, not the manager
 
 
 RECON_SCRIPT = """#!/bin/sh

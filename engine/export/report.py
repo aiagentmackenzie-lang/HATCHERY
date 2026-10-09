@@ -33,6 +33,8 @@ class ReportGenerator:
         limitations: Optional[list[str]] = None,
         events: Optional[list[dict]] = None,
         evasion: Optional[dict] = None,
+        attack_version: str = "",
+        ocsf_schema_version: str = "",
     ) -> str:
         """Generate a Markdown analysis report.
 
@@ -55,6 +57,17 @@ class ReportGenerator:
             "**Engine:** HATCHERY v0.1.0  ",
             "",
         ]
+        if attack_version or ocsf_schema_version:
+            lines.append("## Framework Versions")
+            lines.append("")
+            if attack_version:
+                lines.append(
+                    f"- **MITRE ATT&CK:** {attack_version} "
+                    "(mapping validated against the pinned dataset)"
+                )
+            if ocsf_schema_version:
+                lines.append(f"- **OCSF schema:** {ocsf_schema_version}")
+            lines.append("")
 
         # Hash section
         lines.append("## File Hashes")
@@ -297,6 +310,8 @@ class ReportGenerator:
         ioc_report: Optional[dict] = None,
         limitations: Optional[list[str]] = None,
         evasion: Optional[dict] = None,
+        attack_version: str = "",
+        ocsf_schema_version: str = "",
     ) -> str:
         """Generate a JSON analysis report.
 
@@ -318,6 +333,10 @@ class ReportGenerator:
             "evasion": evasion,
             "ioc_report": ioc_report,
             "limitations": limitations or [],
+            "framework_versions": {
+                "mitre_attack": attack_version,
+                "ocsf_schema": ocsf_schema_version,
+            },
         }
         return json.dumps(report, indent=2, default=str)
 
@@ -332,6 +351,8 @@ class ReportGenerator:
         limitations: Optional[list[str]] = None,
         events: Optional[list[dict]] = None,
         evasion: Optional[dict] = None,
+        attack_version: str = "",
+        ocsf_schema_version: str = "",
     ) -> Path:
         """Write both Markdown and JSON reports to a directory.
 
@@ -353,12 +374,14 @@ class ReportGenerator:
             limitations,
             events,
             evasion,
+            attack_version,
+            ocsf_schema_version,
         )
         (output_dir / "report.md").write_text(md, encoding="utf-8")
 
         json_report = self.generate_json(
             sample_name, sample_hash, static_results, sandbox_results,
-            ioc_report, limitations, evasion,
+            ioc_report, limitations, evasion, attack_version, ocsf_schema_version,
         )
         (output_dir / "report.json").write_text(json_report, encoding="utf-8")
 

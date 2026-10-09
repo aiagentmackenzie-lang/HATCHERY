@@ -304,3 +304,62 @@ def test_evasion_inconclusive_is_stated_in_limitations():
     )
     text = " ".join(limits)
     assert "INCONCLUSIVE (evasive)" in text
+
+
+def test_limitations_state_the_trace_attribution_and_excluded_count():
+    limits = compute_limitations(
+        isolation={"tier": 2},
+        sandbox={
+            "status": "completed",
+            "monitoring": {
+                "collector": "gvisor-sentry-strace",
+                "location": "host",
+                "blind_spots": ["container-wide"],
+                "trace_attribution": {
+                    "attributed": True,
+                    "sample_root_pid": 43,
+                    "included": 226,
+                    "excluded": 46530,
+                    "reason": "kept the subtree of PID 43",
+                },
+            },
+        },
+        artifacts=None,
+        events=[{"severity": "info"}],
+    )
+    text = " ".join(limits)
+    assert "process subtree" in text
+    assert "226 events kept" in text
+    assert "46530 entrypoint/monitor events excluded" in text
+
+
+def test_limitations_state_a_failed_attribution_instead_of_hiding_it():
+    limits = compute_limitations(
+        isolation={"tier": 2},
+        sandbox={
+            "status": "completed",
+            "monitoring": {
+                "collector": "gvisor-sentry-strace",
+                "location": "host",
+                "blind_spots": [],
+                "trace_attribution": {
+                    "attributed": False,
+                    "reason": "could not find an execve target under /hatchery/sample/",
+                },
+            },
+        },
+        artifacts=None,
+        events=[{"severity": "info"}],
+    )
+    text = " ".join(limits)
+    assert "container-wide" in text
+
+
+def test_artifact_recovery_errors_surface_as_limitations():
+    limits = compute_limitations(
+        isolation={"tier": 2},
+        sandbox=None,
+        artifacts={"found": {}, "errors": ["could not read the tier-2 output volume"]},
+        events=[{"severity": "info"}],
+    )
+    assert any("could not read the tier-2 output volume" in item for item in limits)
