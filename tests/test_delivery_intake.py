@@ -317,7 +317,6 @@ def test_decode_js_escapes_is_best_effort_only():
     [
         (bytes.fromhex("377abcaf271c") + b"\x00" * 32, "7z"),
         (b"Rar!\x1a\x07\x00" + b"\x00" * 32, "rar"),
-        (b"{\\rtf1\\ansi hello}", "rtf"),
         (b"MSCF" + b"\x00" * 32, "cab"),
     ],
 )

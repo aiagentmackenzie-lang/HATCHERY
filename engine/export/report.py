@@ -193,6 +193,18 @@ class ReportGenerator:
                     for name in embedded_packages:
                         lines.append(f"- `{name}`")
                     lines.append("")
+                rtf_details = details.get("rtf") or {}
+                rtf_count = int(rtf_details.get("objects") or 0)
+                if rtf_count:
+                    lines.append("**RTF embedded objects:**")
+                    lines.append("")
+                    lines.append(f"- objects: {rtf_count}")
+                    rtf_classes = rtf_details.get("objclasses") or []
+                    if rtf_classes:
+                        lines.append(
+                            "- classes: " + ", ".join(f"`{name}`" for name in rtf_classes)
+                        )
+                    lines.append("")
                 if delivery.get("truncated"):
                     lines.append(
                         "> **Note:** extraction stopped at a configured limit; the "

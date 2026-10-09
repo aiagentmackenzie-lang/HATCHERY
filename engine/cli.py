@@ -227,6 +227,12 @@ def _print_delivery(result: Any) -> None:
         console.print(
             f"  OLE embedded packages: [cyan]{', '.join(embedded_packages)}[/cyan]"
         )
+    rtf_details = details.get("rtf") or {}
+    rtf_count = int(rtf_details.get("objects") or 0)
+    if rtf_count:
+        classes = rtf_details.get("objclasses") or []
+        suffix = f" ({', '.join(classes)})" if classes else ""
+        console.print(f"  RTF embedded objects: [cyan]{rtf_count}[/cyan]{suffix}")
 
 
 def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:

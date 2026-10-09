@@ -318,3 +318,31 @@ def test_markdown_renders_ole_embedded_package_details():
     )
     assert "**OLE embedded packages:**" in md
     assert "dropped.exe" in md
+
+
+def test_markdown_renders_rtf_embedded_object_details():
+    static = {
+        "delivery": {
+            "format": "rtf",
+            "format_detail": "Rich Text Format",
+            "flags": ["rtf", "rtf-embedded-object", "rtf-objclass-package"],
+            "children": [],
+            "unsupported": [],
+            "errors": [],
+            "truncated": False,
+            "details": {
+                "rtf": {
+                    "objects": 2,
+                    "objclasses": ["Excel.Sheet.8", "Package"],
+                }
+            },
+        }
+    }
+    md = ReportGenerator().generate_markdown(
+        sample_name="invoice.rtf",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 4096},
+        static_results=static,
+    )
+    assert "**RTF embedded objects:**" in md
+    assert "objects: 2" in md
+    assert "Excel.Sheet.8" in md

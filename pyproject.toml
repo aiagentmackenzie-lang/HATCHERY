@@ -34,8 +34,9 @@ dev = [
     "mypy>=1.10",
     # Test-only fixture builders and cross-checks: real LNK / ISO9660 / PDF bytes
     # written by an independent implementation, and an independent CFB reader
-    # (olefile) plus MS-OVBA/VBA extractor (oletools) so the OLE fixtures cannot
-    # be validated against HATCHERY's own writer. The runtime stays stdlib.
+    # (olefile) plus MS-OVBA/VBA and RTF OLE-object extractors (oletools) so the
+    # OLE/RTF fixtures cannot be validated against HATCHERY's own writer. The
+    # runtime stays stdlib.
     "pylnk3>=0.4.3",
     "pycdlib>=1.22.0",
     "pypdf>=6.0",

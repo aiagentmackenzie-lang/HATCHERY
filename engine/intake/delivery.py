@@ -13,12 +13,14 @@ intake can fail, and it is *loud* about what it did and did not do:
 
 * Supported container extraction: ZIP (including OOXML Office / JAR / APK),
   tar, gzip, bzip2, xz, HTML/HTA, SVG script blocks, Windows shell links
-  (MS-SHLLINK), ISO9660/IMG images, PDF embedded files + JavaScript, and
-  legacy Office OLE/CFB compound files — whose streams are enumerated and
-  whose embedded VBA macros are decompressed to source and whose
-  ``\x01Ole10Native`` packages are carved out (see ``engine/intake/ole.py``).
-* Formats that are *detected but not extracted* in this revision (RTF, 7z,
-  RAR, CAB) are reported as unsupported, with a reason, and still reach the
+  (MS-SHLLINK), ISO9660/IMG images, PDF embedded files + JavaScript, legacy
+  Office OLE/CFB compound files — whose streams are enumerated and whose
+  embedded VBA macros are decompressed to source and whose ``\x01Ole10Native``
+  packages are carved out (see ``engine/intake/ole.py``) — and RTF embedded
+  objects, whose ``\\objdata`` payload is decoded and (for an OLE/CFB payload)
+  handed to the same OLE parser (see ``engine/intake/rtf.py``).
+* Formats that are *detected but not extracted* in this revision (7z, RAR,
+  CAB) are reported as unsupported, with a reason, and still reach the
   string extractor as raw bytes. They never silently produce "no findings".
 * Every extracted child is hashed, classified, and (at a higher level) run
   through the static pipeline. Extraction is bounded: depth, child count,
@@ -47,7 +49,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional
 
-from engine.intake import ole
+from engine.intake import ole, rtf
 
 logger = logging.getLogger(__name__)
 
@@ -1436,6 +1438,83 @@ def _extract_ole(path: Path, state: _State, depth: int, context: str) -> None:
             _recurse(child, state, depth)
 
 
+def _flag_token(value: str) -> str:
+    """A lower-case flag-safe token for a free-form string (e.g. an objclass)."""
+
+    token = "".join(ch if ch.isalnum() else "-" for ch in value.strip().lower())
+    return token.strip("-") or "unknown"
+
+
+def _extract_rtf(path: Path, state: _State, depth: int, context: str) -> None:
+    """Decode RTF embedded objects and hand them back to the intake path.
+
+    RTF wraps an embedded object in ``{\\*\\objdata ...}`` as a hex run (or a
+    ``\\binN`` raw run); a sibling ``{\\*\\objclass Package}`` names it. The
+    decoded bytes for a Package object are an OLE/CFB compound file, so the
+    object is written as a child and then recursed into: the OLE parser
+    decompresses the VBA project and carves the ``\\x01Ole10Native`` payload.
+    An RTF with no embedded object produces no child and no error — but it is
+    still flagged, so it never renders as an empty static section.
+    """
+
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        state.errors.append(f"{context}: read failed: {exc}")
+        return
+    if len(data) > MAX_ENTRY_BYTES:
+        data = data[:MAX_ENTRY_BYTES]
+        state.truncated = True
+        state.add_flag("rtf-truncated-read")
+    try:
+        document = rtf.parse_rtf(
+            data, max_objects=state.max_children, max_object_bytes=MAX_ENTRY_BYTES
+        )
+    except rtf.RtfError as exc:
+        state.errors.append(f"{context}: RTF parse failed: {exc}")
+        return
+
+    state.add_flag("rtf")
+    details = state.details.setdefault("rtf", {})
+    details["objects"] = len(document.objects)
+    if document.unterminated:
+        state.add_flag("rtf-unterminated")
+    if document.has_objlink:
+        state.add_flag("rtf-objlink")
+    if document.has_objupdate:
+        state.add_flag("rtf-objupdate")
+
+    classes = sorted({obj.objclass for obj in document.objects if obj.objclass})
+    if classes:
+        details["objclasses"] = classes
+
+    index = len(state.children)
+    for ordinal, obj in enumerate(document.objects):
+        if not state.budget_left():
+            state.truncated = True
+            state.add_flag("child-limit-reached")
+            break
+        objflags = ["rtf-embedded-object"]
+        objclass = obj.objclass.strip()
+        if objclass:
+            objflags.append("rtf-objclass-" + _flag_token(objclass))
+            if objclass.lower() == "ole2link":
+                objflags.append("rtf-ole2link")
+        if obj.used_bin:
+            objflags.append("rtf-bin-object")
+        name = _safe_member_name(obj.objname) or f"embedded-object-{ordinal}.bin"
+        child = _write_child(
+            state, index, name, obj.data,
+            extractor="rtf", reason="embedded object decoded from RTF \\objdata",
+            depth=depth, flags=objflags,
+        )
+        index += 1
+        for flag in objflags:
+            state.add_flag(flag)
+        if depth < state.max_depth and state.budget_left():
+            _recurse(child, state, depth)
+
+
 # ---------------------------------------------------------------------------
 # Recursion
 # ---------------------------------------------------------------------------
@@ -1453,6 +1532,7 @@ _EXTRACTORS = {
     DeliveryFormat.ISO: "iso",
     DeliveryFormat.PDF: "pdf",
     DeliveryFormat.OLE: "ole",
+    DeliveryFormat.RTF: "rtf",
 }
 
 
@@ -1491,14 +1571,12 @@ def _dispatch(path: Path, fmt: DeliveryFormat, state: _State, depth: int, contex
         _extract_pdf(path, state, depth, context)
     elif fmt is DeliveryFormat.OLE:
         _extract_ole(path, state, depth, context)
+    elif fmt is DeliveryFormat.RTF:
+        _extract_rtf(path, state, depth, context)
 
 
 def _unsupported_reason(fmt: DeliveryFormat) -> str:
     reasons = {
-        DeliveryFormat.RTF: (
-            "RTF embedded-object extraction is not implemented in this "
-            "revision; the document is still scanned as raw bytes"
-        ),
         DeliveryFormat.SEVEN_ZIP: "7-Zip extraction requires an external library; not extracted",
         DeliveryFormat.RAR: "RAR extraction requires an external library; not extracted",
         DeliveryFormat.CAB: "CAB extraction is not implemented in this revision",
