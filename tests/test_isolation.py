@@ -127,14 +127,28 @@ def test_tier_one_uses_strace_with_no_downgrade():
     assert downgrade == ""
 
 
-def test_tier_two_and_three_declare_the_collector_downgrade():
-    """The recommended collector at tiers 2 and 3 is not wired yet, so the run
-    must say it fell back to a detectable tracer rather than implying otherwise."""
-    for tier in (IsolationTier.SANDBOXED_KERNEL, IsolationTier.HARDWARE_VM):
-        collector, downgrade = resolve_collector(tier)
-        assert collector.collector == "strace-ptrace"
-        assert recommended_collector(tier).collector != "strace-ptrace"
-        assert "fell back" in downgrade
+def test_tier_two_uses_the_wired_gvisor_sentry_trace():
+    """Tier 2's Sentry trace is wired, so the run must name it with no
+    downgrade — the collector is no longer the detectable ptrace tracer."""
+    collector, downgrade = resolve_collector(IsolationTier.SANDBOXED_KERNEL)
+    assert collector.collector == "gvisor-sentry-strace"
+    assert collector.location == "host"
+    assert downgrade == ""
+
+
+def test_tier_three_still_declares_its_collector_downgrade():
+    """Host-side eBPF is not wired yet, so a hardware-VM run must say it fell
+    back to a detectable tracer rather than implying otherwise."""
+    collector, downgrade = resolve_collector(IsolationTier.HARDWARE_VM)
+    assert collector.collector == "strace-ptrace"
+    assert recommended_collector(IsolationTier.HARDWARE_VM).collector == "ebpf-host"
+    assert "fell back" in downgrade
+
+
+def test_gvisor_collector_declares_what_it_cannot_see():
+    blind = " ".join(recommended_collector(IsolationTier.SANDBOXED_KERNEL).blind_spots)
+    assert "RDTSC" in blind and "CPUID" in blind
+    assert "get_archive" in blind
 
 
 def test_strace_collector_declares_the_cpuid_and_vdso_blind_spots():

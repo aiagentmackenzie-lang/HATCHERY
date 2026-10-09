@@ -170,7 +170,7 @@ FS_MUTATORS: frozenset[str] = frozenset(
 # the sample writing its own log, /proc and /sys pseudo-files), not impact.
 IMPACT_EXCLUDED_PREFIXES: tuple[str, ...] = (
     "/dev/null", "/dev/tty", "/dev/stdout", "/dev/stderr", "/dev/pts/",
-    "/proc/", "/sys/", "/hatchery/",
+    "/proc/", "/sys/", "/hatchery",
 )
 
 SLEEP_LOOP_MIN = 3
@@ -216,6 +216,20 @@ def _quoted_paths(args: str) -> list[str]:
 def _path_matches(path: str, markers: tuple[str, ...]) -> bool:
     lower = path.lower()
     return any(marker in lower for marker in markers)
+
+
+def _event_paths(event: Any) -> list[str]:
+    """Path arguments for an event, from whichever collector produced it.
+
+    strace renders paths as quoted strings; gVisor renders them as
+    ``<address> <path>`` and its parser pre-extracts them onto ``event.paths``.
+    Preferring the explicit list keeps the scorer path-based and collector
+    agnostic.
+    """
+    cached = getattr(event, "paths", None)
+    if cached:
+        return list(cached)
+    return _quoted_paths(getattr(event, "args", "") or "")
 
 
 def _basename_matches(path: str, names: frozenset[str]) -> bool:
@@ -374,7 +388,7 @@ def _collect_findings(events: list[Any]) -> dict[EvasionSignal, EvasionFinding]:
         syscall = getattr(event, "syscall", "") or ""
         args = getattr(event, "args", "") or ""
         ts = getattr(event, "timestamp", "") or ""
-        paths = _quoted_paths(args)
+        paths = _event_paths(event)
 
         if syscall in ("ptrace",):
             add(EvasionSignal.DEBUGGER_PROBE, f"ptrace({args})", ts)
@@ -433,7 +447,7 @@ def _count_impact(events: list[Any]) -> int:
             continue
 
         if syscall in FS_MUTATORS:
-            paths = _quoted_paths(args)
+            paths = _event_paths(event)
             target = paths[0] if paths else ""
             if target and not _path_matches(target, IMPACT_EXCLUDED_PREFIXES):
                 impact += 1
@@ -441,7 +455,7 @@ def _count_impact(events: list[Any]) -> int:
 
         if syscall in ("open", "openat", "openat2", "creat"):
             if any(flag in args for flag in WRITE_FLAGS):
-                paths = _quoted_paths(args)
+                paths = _event_paths(event)
                 target = paths[0] if paths else ""
                 if target and not _path_matches(target, IMPACT_EXCLUDED_PREFIXES):
                     impact += 1

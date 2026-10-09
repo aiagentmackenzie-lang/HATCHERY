@@ -16,7 +16,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 from rich.console import Console
@@ -306,6 +306,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     # Phase 2: Sandbox execution
     sandbox_result_dict: Optional[dict] = None
     strace_result = None
+    gvisor_result = None
     net_result = None
     evasion_dict: Optional[dict] = None
     evasion_events: list[dict] = []
@@ -345,44 +346,64 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                 if sandbox_result.error:
                     console.print(f"  [red]Error: {sandbox_result.error}[/red]")
 
-                # Parse syscall log if available
-                if sandbox_result.strace_log:
+                # Parse the syscall source that this tier's collector produced.
+                # Tier 2 uses gVisor's Sentry trace; tier 1 uses in-guest strace.
+                syscall_result: Any = None
+                if sandbox_result.gvisor_trace_log:
+                    from engine.monitor.gvisor_strace import GvisorStraceParser
+                    console.print("\n  [bold]Parsing gVisor Sentry trace...[/bold]")
+                    gvisor_path = Path(sandbox_result.gvisor_trace_log)
+                    if gvisor_path.exists():
+                        gvisor_result = GvisorStraceParser().parse_file(gvisor_path)
+                        syscall_result = gvisor_result
+                        console.print(
+                            f"  Events parsed: [cyan]{gvisor_result.parsed_events}[/cyan] "
+                            f"(source: gvisor-sentry)"
+                        )
+                elif sandbox_result.strace_log:
                     from engine.monitor.strace_parser import StraceParser
                     console.print("\n  [bold]Parsing syscall log...[/bold]")
-                    parser = StraceParser()
                     strace_path = Path(sandbox_result.strace_log)
                     if strace_path.exists():
-                        strace_result = parser.parse_file(strace_path)
+                        strace_result = StraceParser().parse_file(strace_path)
+                        syscall_result = strace_result
                         console.print(f"  Events parsed: [cyan]{strace_result.parsed_events}[/cyan]")
-                        console.print(f"  Network connections: [red]{len(strace_result.network_connections)}[/red]")
-                        console.print(f"  Process operations: [red]{len(strace_result.process_operations)}[/red]")
+                elif sandbox_result.gvisor_trace_error:
+                    console.print(
+                        f"  [yellow]gVisor Sentry trace unavailable: "
+                        f"{sandbox_result.gvisor_trace_error}[/yellow]"
+                    )
 
-                        # Evasion is a first-class signal. A recon-heavy but
-                        # impact-free run is evasive, not clean.
-                        from engine.monitor.evasion import analyze_evasion
+                if syscall_result is not None:
+                    console.print(f"  Network connections: [red]{len(syscall_result.network_connections)}[/red]")
+                    console.print(f"  Process operations: [red]{len(syscall_result.process_operations)}[/red]")
 
-                        evasion_report = analyze_evasion(strace_result)
-                        evasion_dict = evasion_report.to_dict()
-                        evasion_events = evasion_report.normalized_events()
-                        evasion_color = (
-                            "red" if evasion_report.verdict == "evasive"
-                            else "yellow" if evasion_report.verdict == "suspicious"
-                            else "green"
-                        )
+                    # Evasion is a first-class signal. A recon-heavy but
+                    # impact-free run is evasive, not clean.
+                    from engine.monitor.evasion import analyze_evasion
+
+                    evasion_report = analyze_evasion(syscall_result)
+                    evasion_dict = evasion_report.to_dict()
+                    evasion_events = evasion_report.normalized_events()
+                    evasion_color = (
+                        "red" if evasion_report.verdict == "evasive"
+                        else "yellow" if evasion_report.verdict == "suspicious"
+                        else "green"
+                    )
+                    console.print(
+                        f"  Evasion score: [{evasion_color}]"
+                        f"{evasion_report.score}/100 ({evasion_report.verdict})[/{evasion_color}]"
+                    )
+                    for finding in evasion_report.findings:
                         console.print(
-                            f"  Evasion score: [{evasion_color}]"
-                            f"{evasion_report.score}/100 ({evasion_report.verdict})[/{evasion_color}]"
+                            f"    • [{finding.severity.value}] "
+                            f"{finding.signal.value} x{finding.count}"
                         )
-                        for finding in evasion_report.findings:
-                            console.print(
-                                f"    • [{finding.severity.value}] "
-                                f"{finding.signal.value} x{finding.count}"
-                            )
-                        if evasion_report.inconclusive:
-                            console.print(
-                                "  [red]⚠ Recon-then-quiet: reported as evasive/"
-                                "INCONCLUSIVE, not clean.[/red]"
-                            )
+                    if evasion_report.inconclusive:
+                        console.print(
+                            "  [red]⚠ Recon-then-quiet: reported as evasive/"
+                            "INCONCLUSIVE, not clean.[/red]"
+                        )
 
                 # Filesystem events recorded by inotifywait
                 if sandbox_result.artifacts and sandbox_result.artifacts.inotify_log:
@@ -452,6 +473,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     # Unified behavioral event stream: syscalls + filesystem + network + evasion
     events = normalize_events(
         strace_result=strace_result,
+        gvisor_result=gvisor_result,
         inotify_log=inotify_log_path,
         net_result=net_result,
         evasion_events=evasion_events,

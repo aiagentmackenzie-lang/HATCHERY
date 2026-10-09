@@ -203,17 +203,23 @@ GVISOR_COLLECTOR = MonitoringStrategy(
     collector="gvisor-sentry-strace",
     location="host",
     how=(
-        "gVisor's own Sentry-level syscall trace (runsc --strace / "
-        "--strace-event) written to the host debug log, instead of ptracing the "
-        "sample. gVisor's strace flags are OCI-annotation-overridable, but the "
-        "log destination is a host-side runtimeArg."
+        "gVisor's Sentry-level syscall trace, enabled per container with the "
+        "dev.gvisor.flag.debug/strace/strace-log-size/debug-to-user-log OCI "
+        "annotations. runsc writes one .boot.txt per sandbox to its host "
+        "debug-log directory; the engine reads that file back and parses it "
+        "(source='gvisor-sentry'). No global --strace and no ptrace attach."
     ),
     blind_spots=(
         "Syscalls gVisor does not implement are absent by construction.",
-        "Requires host-side runtimeArgs (--strace, --debug-log); reading them "
-        "back into the bundle is not wired yet.",
+        "RDTSC/RDTSCP and CPUID are CPU instructions, not syscalls, and "
+        "--strace does not emit them; the Sentry services them internally.",
+        "The trace destination (--debug-log) is a host-side runtimeArg and is "
+        "not annotation-overridable; the annotations only toggle the flags.",
+        "Docker's get_archive cannot see files written inside a gVisor "
+        "container (the rootfs overlay is in-memory), so in-guest strace, "
+        "inotify and tcpdump artifacts are not recoverable at tier 2.",
     ),
-    requires="runsc registered as a Docker runtime with --strace and --debug-log",
+    requires="runsc registered as a Docker runtime with --debug-log; a readable debug-log directory",
 )
 
 EBPF_COLLECTOR = MonitoringStrategy(
@@ -277,14 +283,18 @@ TIER_GUEST_TELLS: dict[IsolationTier, str] = {
 def resolve_collector(tier: IsolationTier) -> tuple[MonitoringStrategy, str]:
     """Return the collector actually usable today, plus a downgrade reason.
 
-    Only ``strace-ptrace`` is wired. At tier 2 and 3 the recommended collector
-    (gVisor Sentry trace / host-side eBPF) is *not* implemented yet, so the run
-    falls back to ptrace and says so. The alternative — silently using the
-    fallback while the report implies the stronger collector — is the exact
-    dishonesty this project exists to avoid.
+    ``strace-ptrace`` (tier 1) and the gVisor Sentry trace (tier 2) are both
+    wired. Tier 3's recommended host-side eBPF is still not implemented, so a
+    hardware-VM run falls back to ptrace and says so. The alternative —
+    silently using the fallback while the report implies a stronger collector —
+    is the exact dishonesty this project exists to avoid.
     """
     recommended = recommended_collector(tier)
-    if recommended.collector in (NO_COLLECTOR.collector, STRACE_COLLECTOR.collector):
+    if recommended.collector in (
+        NO_COLLECTOR.collector,
+        STRACE_COLLECTOR.collector,
+        GVISOR_COLLECTOR.collector,
+    ):
         return recommended, ""
     return (
         STRACE_COLLECTOR,

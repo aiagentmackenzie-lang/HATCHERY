@@ -85,8 +85,8 @@ Not aspirational. What is in the code today.
 | Detonation under syscall tracing | ✅ | Linux ELF; artifact recovery verified end-to-end |
 | **Per-tier monitoring strategy** | ✅ | every bundle names the collector used *and its blind spots*; a downgrade says so |
 | **Evasion detection (scored, first-class)** | ✅ | recon breadth + ordering; a recon-then-quiet run is reported evasive/inconclusive |
-| **gVisor tier-2 runtime registration** | ⚠️ | `scripts/install-runsc-docker-runtime.sh` provided; the tier-2 Sentry trace is not read back into the bundle yet |
-| **eBPF syscall collection** | ❌ | intended for tiers 2/3; `strace` is the declared fallback |
+| **gVisor tier-2 runtime + Sentry collector** | ✅ | per-container OCI annotations enable runsc's Sentry trace; the engine reads it back and emits `source="gvisor-sentry"` events |
+| **eBPF syscall collection** | ❌ | intended for tier 3; tier 1 uses `strace` and **tier 2 uses gVisor's Sentry trace** |
 | Filesystem monitoring (inotify) | ✅ | |
 | Network capture (tcpdump → PCAP) | ✅ | parsed; **egress is blocked**, so this is usually empty by design |
 | Dropped-file recovery | ✅ | filesystem diff, excludes its own working directory |
@@ -111,9 +111,9 @@ Not aspirational. What is in the code today.
 2. **Containers share a kernel.** At tier 1 there is no boundary. Run malware you do not trust only at tier 2 or 3, on a machine you are willing to lose.
 3. **Egress is blocked by default.** The sandbox network is `internal`, so a sample cannot reach its real C2 or exfiltrate. The cost is that samples requiring a live internet will not fully detonate. A believable simulated internet is future work.
 4. **Windows malware is analyzed statically.** Dynamic Windows analysis needs a Windows guest, which needs licensing and hardware virtualisation.
-5. **`strace` is the fallback, not the ambition.** ptrace-based tracing has high overhead and is detectable; in 2026 eBPF rootkits exist that `SIGKILL` processes which attempt to `ptrace` a protected PID. Every run now names its collector and that collector's blind spots, and eBPF-based collection for tiers 2/3 is the intended direction — see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2, D11.
-6. **`strace` cannot see time-based checks.** `RDTSC`, `CPUID` and vDSO-served `clock_gettime` are CPU/userspace operations, not syscalls. The captured probe in `tests/fixtures/strace-evasive-real.log` ran a `date +%s` loop and produced no clock syscall at all. eBPF-based collection (tier 2/3) is the intended fix; until then evasion is scored from the syscall-level surrogates that *are* visible, and the run says what the collector could not see.
-7. **A tier-2 host is not available here.** gVisor gives a real boundary without KVM and the registration script exists, but this host has no `runsc` and installing one restarts the Docker daemon, so tier 2 was not verified end-to-end in this revision.
+5. **`strace` is the tier-1 fallback, not the ambition.** ptrace-based tracing has high overhead and is detectable; in 2026 eBPF rootkits exist that `SIGKILL` processes which attempt to `ptrace` a protected PID. Tier 2 no longer uses ptrace: it reads gVisor's own Sentry trace from the runsc debug log. eBPF-based collection for tier 3 is the intended direction — see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2, D11, D14.
+6. **What each collector cannot see.** At tier 1, `strace` cannot see time-based checks: `RDTSC`, `CPUID` and vDSO-served `clock_gettime` are CPU/userspace operations, not syscalls (the probe in `tests/fixtures/strace-evasive-real.log` ran a `date +%s` loop and produced no clock syscall). At tier 2, gVisor's Sentry trace *does* capture `clock_gettime` — the vDSO path becomes a Sentry syscall — but `RDTSC`/`CPUID` remain instructions and are not emitted. Every run names its collector and that collector's blind spots, and reads `summary.evasion_*` from whatever source it actually had.
+7. **Tier 2 was verified end-to-end on this host.** gVisor needs no KVM and the registration script exists; installing `runsc` and wiring its Sentry trace were verified against a real detonation. Two consequences are documented rather than hidden: gVisor's trace is container-wide (the entrypoint and monitors appear alongside the sample), and Docker's `get_archive` cannot see files written inside a gVisor container because the rootfs overlay is in-memory — so the in-guest strace/inotify/pcap artifacts are not recoverable at tier 2 and the Sentry trace is the collector.
 
 ---
 
@@ -161,7 +161,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 233 tests
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 301 tests
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 ```
@@ -195,7 +195,7 @@ sample ──► intake (hash / PE / ELF / strings)
 
 **Phase 0 — make it true.** ✅ *done in this revision.* Ten ship-blockers fixed (network never created, artifact paths wrong, seccomp blocking its own tracer, unbound name masking errors, exit code always zero, fake services never started, no ingest path so the dashboard was permanently empty, and more), the README rewritten to match reality, and the security defaults tightened.
 
-**Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; a gVisor tier-2 registration script; a consistent guest profile documented per tier.* ⚠️ *tier-2 Sentry-trace collection and host-side eBPF are designed and declared per run but not wired into the run path yet; tier 2 was not verifiable on this host (no `runsc`).*
+**Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; and the gVisor tier-2 boundary made real and wired — a runsc runtime, per-container OCI annotations that enable the Sentry trace, and a parser that turns it into `source="gvisor-sentry"` events and evasion scores. Verified end-to-end on a live gVisor detonation.* ⚠️ *host-side eBPF for tier 3 is designed and declared per run but not wired; `strace` remains the tier-3 fallback and the run says so.*
 
 **Phase 2 — breadth.** Delivery-format intake (Office, PDF, LNK, ISO/IMG, archives, HTML/SVG), emulation-based unpacking and config extraction, ATT&CK v19 rebuild (Detection Strategies + Analytics; the `Stealth`/`Impair Defenses` split), OCSF events, MISP/OpenCTI push, ATT&CK Navigator layer, candidate Sigma rules from observed behavior.
 

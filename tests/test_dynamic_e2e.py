@@ -12,6 +12,12 @@ filesystem events really are recorded, artifacts really are recovered, and the
 bundle really describes what happened. Every one of those steps was broken in
 the revision this test was written against, and none of them was covered by a
 test.
+
+The suite is tier-aware. At tier 1 the collector is in-guest ``strace`` and its
+filesystem/network artifacts are copied out. At tier 2 the collector is the
+gVisor Sentry trace and Docker's ``get_archive`` cannot see files written
+inside a gVisor container (the rootfs overlay is in-memory), so the artifact
+tests skip there and the syscall tests read the Sentry trace instead.
 """
 
 from __future__ import annotations
@@ -66,6 +72,22 @@ def detonation(manager: ContainerManager, sample: Path, tmp_path_factory):
     return result, run_dir
 
 
+def _tier(result) -> IsolationTier:
+    return IsolationTier(int(result.isolation["tier"]))
+
+
+def _parsed_syscalls(result):
+    """Parse whichever collector this run actually used."""
+    from engine.monitor.gvisor_strace import GvisorStraceParser
+    from engine.monitor.strace_parser import StraceParser
+
+    if result.gvisor_trace_log:
+        return GvisorStraceParser().parse_file(result.gvisor_trace_log)
+    if result.strace_log:
+        return StraceParser().parse_file(Path(result.strace_log))
+    return None
+
+
 def test_container_completes_without_a_sandbox_error(detonation):
     result, _ = detonation
     assert result.status == "completed", result.error
@@ -79,22 +101,35 @@ def test_exit_code_is_the_samples_own_exit_code(detonation):
     assert result.exit_code == 0
 
 
-def test_syscall_log_was_recovered_and_is_not_empty(detonation):
+def test_a_syscall_trace_was_recovered_and_is_not_empty(detonation):
     result, _ = detonation
-    assert result.artifacts is not None
-    assert result.artifacts.strace_log is not None
-    assert result.artifacts.strace_log.stat().st_size > 0
+    parsed = _parsed_syscalls(result)
+    assert parsed is not None
+    assert parsed.parsed_events > 0
+    if _tier(result) == IsolationTier.SANDBOXED_KERNEL:
+        assert result.gvisor_trace_log is not None
+        assert result.gvisor_trace_log.stat().st_size > 0
+    else:
+        assert result.artifacts is not None
+        assert result.artifacts.strace_log is not None
+        assert result.artifacts.strace_log.stat().st_size > 0
 
 
-def test_syscall_log_contains_real_activity(detonation):
+def test_syscall_trace_contains_real_activity(detonation):
     result, _ = detonation
-    text = result.artifacts.strace_log.read_text(errors="replace")
-    assert "execve(" in text
-    assert "/etc/passwd" in text
+    parsed = _parsed_syscalls(result)
+    assert any(e.syscall == "execve" for e in parsed.events)
+    assert any(
+        any("/etc/passwd" in p for p in getattr(e, "paths", []) or [])
+        or "/etc/passwd" in e.args
+        for e in parsed.events
+    )
 
 
 def test_filesystem_events_were_recorded(detonation):
     result, _ = detonation
+    if _tier(result) == IsolationTier.SANDBOXED_KERNEL:
+        pytest.skip("in-guest inotify log is not recoverable under gVisor")
     assert result.artifacts.inotify_log is not None
     text = result.artifacts.inotify_log.read_text(errors="replace")
     assert "hatchery-e2e-write.txt" in text
@@ -104,6 +139,8 @@ def test_dropped_files_are_the_samples_files_and_nothing_else(detonation):
     """The filesystem diff used to include HATCHERY's own output directory, so
     every artifact the sandbox wrote was reported as a file the sample dropped."""
     result, _ = detonation
+    if _tier(result) == IsolationTier.SANDBOXED_KERNEL:
+        pytest.skip("in-guest dropped-file recovery is not possible under gVisor")
     names = {p.name for p in result.artifacts.dropped_files}
     assert any("hatchery-e2e-write.txt" in n for n in names)
     assert not any("_hatchery_output" in n for n in names)
@@ -118,15 +155,16 @@ def test_isolation_tier_is_reported_on_the_result(detonation):
 
 def test_bundle_is_written_and_describes_the_run(manager, sample, tmp_path):
     from engine.bundle import AnalysisBundle, normalize_events, write_bundle
-    from engine.monitor.strace_parser import StraceParser
 
     run_dir = tmp_path / "bundle-run"
     result = manager.execute(sample, run_dir / "sandbox")
     assert result.status == "completed", result.error
 
-    events = []
-    if result.strace_log:
-        parsed = StraceParser().parse_file(Path(result.strace_log))
+    parsed = _parsed_syscalls(result)
+    assert parsed is not None
+    if result.gvisor_trace_log:
+        events = normalize_events(gvisor_result=parsed)
+    else:
         events = normalize_events(strace_result=parsed)
 
     bundle = AnalysisBundle(
@@ -151,7 +189,7 @@ def test_tier_one_run_is_labeled_as_having_no_boundary(detonation):
     """Whatever tier this host supports, the bundle must not imply a boundary
     that is not there."""
     result, _ = detonation
-    tier = IsolationTier(int(result.isolation["tier"]))
+    tier = _tier(result)
     if tier in (IsolationTier.STATIC_ONLY, IsolationTier.SHARED_KERNEL):
         assert result.isolation["is_security_boundary"] is False
         assert "shares the host kernel" in result.isolation["boundary"]
@@ -182,18 +220,44 @@ exit 0
 
 def test_recon_then_quiet_detonation_is_evasive_and_inconclusive(manager, tmp_path):
     """The whole pipeline: a sample that reconnoiters and exits quietly is
-    reported evasive/inconclusive, not clean."""
+    reported evasive/inconclusive from whichever collector this tier uses."""
     from engine.monitor.evasion import analyze_evasion
-    from engine.monitor.strace_parser import StraceParser
 
     sample = tmp_path / "recon.sh"
     sample.write_text(RECON_SCRIPT)
     sample.chmod(0o755)
     result = manager.execute(sample, tmp_path / "run")
     assert result.status == "completed", result.error
-    assert result.strace_log
 
-    parsed = StraceParser().parse_file(Path(result.strace_log))
+    parsed = _parsed_syscalls(result)
+    assert parsed is not None
+    report = analyze_evasion(parsed)
+    assert report.verdict == "evasive", report.to_dict()
+    assert report.inconclusive is True
+
+
+def test_tier_two_uses_the_gvisor_sentry_trace(manager, tmp_path):
+    """Opt-in tier-2 proof: when runsc is the runtime, the gVisor Sentry trace
+    is the collector and evasion is scored from its events. Skipped on a
+    tier-1 host (including CI, which has no runsc)."""
+    from engine.monitor.evasion import analyze_evasion
+    from engine.monitor.gvisor_strace import GvisorStraceParser
+
+    if manager.isolation.tier != IsolationTier.SANDBOXED_KERNEL:
+        pytest.skip("host is not running a tier-2 (gVisor) runtime")
+
+    sample = tmp_path / "recon-min.sh"
+    sample.write_text(RECON_SCRIPT)
+    sample.chmod(0o755)
+    result = manager.execute(sample, tmp_path / "tier2-run")
+    assert result.status == "completed", result.error
+    assert result.monitoring is not None
+    assert result.monitoring["collector"] == "gvisor-sentry-strace"
+    assert result.gvisor_trace_log is not None
+    assert result.gvisor_trace_log.stat().st_size > 0
+
+    parsed = GvisorStraceParser().parse_file(result.gvisor_trace_log)
+    assert parsed.parsed_events > 0
     report = analyze_evasion(parsed)
     assert report.verdict == "evasive", report.to_dict()
     assert report.inconclusive is True

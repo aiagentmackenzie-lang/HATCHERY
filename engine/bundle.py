@@ -72,6 +72,40 @@ def events_from_strace(parse_result: Any) -> list[dict]:
     return rows
 
 
+def events_from_gvisor(parse_result: Any) -> list[dict]:
+    """Convert a :class:`GvisorParseResult` into normalized event rows.
+
+    Same row shape as every other source; only ``source`` differs
+    (``gvisor-sentry``), so downstream consumers need no second code path.
+    """
+    rows: list[dict] = []
+    for event in getattr(parse_result, "events", []) or []:
+        rows.append(
+            {
+                "timestamp": event.timestamp,
+                "pid": event.pid,
+                "syscall_name": event.syscall,
+                "category": event.category.value
+                if hasattr(event.category, "value")
+                else str(event.category),
+                "severity": event.severity.value
+                if hasattr(event.severity, "value")
+                else str(event.severity),
+                "args": json.dumps(
+                    {
+                        "raw": event.args,
+                        "paths": list(getattr(event, "paths", []) or []),
+                    }
+                ),
+                "return_value": event.return_value,
+                "raw_line": f"{event.syscall}({event.args}) = {event.return_value}",
+                "source": "gvisor-sentry",
+                "indicators": list(getattr(event, "indicators", []) or []),
+            }
+        )
+    return rows
+
+
 def events_from_inotify(log_path: Optional[Path]) -> list[dict]:
     """Convert an inotifywait log into normalized file events.
 
@@ -179,15 +213,19 @@ def normalize_events(
     inotify_log: Optional[Path] = None,
     net_result: Any = None,
     evasion_events: Optional[list[dict]] = None,
+    gvisor_result: Any = None,
 ) -> list[dict]:
     """Merge every behavioral source into one chronological event list.
 
     ``evasion_events`` come from :func:`engine.monitor.evasion.analyze_evasion`
-    and carry ``category="evasion"``. They are normalised rows like every
-    other source, so the API and dashboard consume them without a second path.
+    and carry ``category="evasion"``. ``gvisor_result`` comes from
+    :class:`engine.monitor.gvisor_strace.GvisorStraceParser` and carries
+    ``source="gvisor-sentry"``. They are normalised rows like every other
+    source, so the API and dashboard consume them without a second path.
     """
     rows = (
         events_from_strace(strace_result)
+        + events_from_gvisor(gvisor_result)
         + events_from_inotify(inotify_log)
         + events_from_network(net_result)
         + list(evasion_events or [])
@@ -233,13 +271,23 @@ def compute_limitations(
 
     artifacts = artifacts or {}
     found = artifacts.get("found") or {}
+    has_gvisor_trace = bool((sandbox or {}).get("gvisor_trace_log"))
     for key, consequence in (
         ("strace_log", "syscall-level behavior is unknown"),
         ("inotify_log", "filesystem changes are unknown"),
         ("pcap", "network behavior is unknown"),
     ):
-        if key not in found:
-            limits.append(f"No {key.replace('_', ' ')} was recovered — {consequence}.")
+        if key in found:
+            continue
+        if key == "strace_log" and has_gvisor_trace:
+            limits.append(
+                "The in-guest strace log was not recoverable: gVisor keeps the "
+                "container rootfs overlay in memory, so Docker's get_archive "
+                "cannot see it. Syscall behavior comes from the gVisor Sentry "
+                "trace instead."
+            )
+            continue
+        limits.append(f"No {key.replace('_', ' ')} was recovered — {consequence}.")
 
     if not events:
         limits.append(

@@ -153,7 +153,7 @@ Every bundle records `sandbox.monitoring` — collector, location, and its blind
 
 **Evidence — `strace` cannot see the checks that matter most.** The captured fixture `tests/fixtures/strace-evasive-real.log` ran `date +%s` inside a five-iteration timing loop. The strace log contains **no clock syscall at all**: glibc served `clock_gettime` from the vDSO, which is a pure userspace call. `RDTSC` and `CPUID` are CPU instructions and are never syscalls to begin with. A ptrace-based tracer therefore cannot see most accelerated-sleep and time-based-evasion checks — the exact thing D9 names as the load-bearing check. `tests/test_evasion.py::test_vdso_clock_reads_are_invisible_to_strace` pins this observation.
 
-**What is not wired, and is said so.** At tiers 2 and 3 the run still falls back to ptrace today. gVisor exposes its own Sentry trace (`runsc --strace`), and its `strace`/`strace-syscalls`/`strace-log-size` flags are in gVisor's OCI-annotation override allow-list, but the trace destination (`--debug-log`) is a host-side runtimeArg and reading it back into the bundle is future work. `scripts/install-runsc-docker-runtime.sh` registers a runtime with the trace on; the engine does not yet collect from it, and the report says so rather than pretending.
+**Tier 2 is wired; tier 3 is not.** The tier-2 collector is gVisor's own Sentry trace, enabled per analysis container through OCI annotations and read back from runsc's host debug log into `source="gvisor-sentry"` events (D14). Tier 3's host-side eBPF is still unimplemented, so a hardware-VM run falls back to ptrace and says so. `resolve_collector()` returns `gvisor-sentry-strace` with no downgrade at tier 2 and a declared downgrade at tier 3.
 
 ---
 
@@ -169,13 +169,30 @@ Signals scored: VM/DMI artifact reads, VM-guest-tool paths, `/proc/cpuinfo`/`aux
 
 ---
 
-## D13 — gVisor is the intended default where available; a tier-2 host is a stated goal, not a claim
+## D13 — gVisor is the default where available; tier 2 is verified end-to-end, not asserted
 
 **Decision.** The tier model already ranked gVisor (`runsc`) above shared-kernel and below microVM, and `runsc-hatchery`/`runsc` map to tier 2. This revision makes the tier genuinely usable: `scripts/install-runsc-docker-runtime.sh` installs runsc and registers a Docker runtime with the Sentry trace on, for hosts that want a real boundary without `/dev/kvm`.
 
-**Honest status.** This host (macOS + colima) has no `runsc`, and installing one restarts the Docker daemon used by other workloads, so it was **not** installed here. The single most important open question from the handoff — *does `strace` still function inside a gVisor sandbox?* — is therefore answered at the design level rather than by a live detonation: the per-tier strategy does not rely on ptrace at tier 2 and instead uses gVisor's own trace (D11). Verifying it end-to-end needs a Linux host with `runsc` and Raphael's approval to install it, which is exactly the "ask first" boundary in the handoff.
+**Honest status.** With Raphael's approval, `runsc` was installed on this host (macOS + colima), colima's Docker daemon was restarted, and tier 2 was verified **end-to-end** against a real detonation. The handoff's most important open question — *does `strace` still function inside a gVisor sandbox?* — is answered empirically: it does (the entrypoint's in-guest `strace` wrote a 228-line log), but the log is **not recoverable** through Docker's `get_archive` because gVisor keeps the container rootfs overlay in memory. That is why the collector is gVisor's own Sentry trace, not ptrace (D14).
 
-**Trade-off accepted.** Registering the runtime globally with `--strace` traces every container under it, which costs performance. A dedicated analysis host is the intended deployment; the script says so.
+**Trade-off accepted.** The runtime is registered with `--debug-log` **only**; the Sentry trace is enabled per analysis container through OCI annotations, so unrelated containers under the same runtime are not traced. A dedicated analysis host is still the intended deployment; the script says so.
+
+**Persistence note.** colima regenerates `/etc/docker/daemon.json` from its own `colima.yaml` on restart, so a `runsc install` that edits `daemon.json` alone is wiped. The runtime is declared under the `docker:` block of `~/.colima/default/colima.yaml` so it survives restarts.
+
+---
+
+## D14 — The tier-2 collector is gVisor's Sentry trace, enabled per container via OCI annotations
+
+**Decision.** At tier 2 the engine does not attach `ptrace`. It sets four OCI annotations on the sandbox container — `dev.gvisor.flag.debug`, `dev.gvisor.flag.strace`, `dev.gvisor.flag.strace-log-size`, `dev.gvisor.flag.debug-to-user-log` — which are in gVisor's annotation override allow-list, so no `--allow-flag-override` and no global `--strace` are needed. The Sentry trace is read from runsc's host-side debug log and parsed into `source="gvisor-sentry"` events, with `resolve_collector()` returning `gvisor-sentry-strace` **with no downgrade** at tier 2.
+
+**Evidence (all observed, not designed).**
+- **The annotations are honoured.** With `--runtime=runsc-hatchery` and the four annotations, the sandbox boot log records `Debug: true. Strace: true, max size: 1024` and contains 1,202 `strace.go:` syscall lines for the probe. `docker-py` 7.2.0 has no typed `annotations` argument anywhere, so the engine builds the create config explicitly and sets `HostConfig.Annotations`; that forwarding is pinned by a test that fails if it is dropped.
+- **`debug-to-user-log` does not reach `container.logs()`.** The trace is written to runsc's `--debug-log` directory (one `.boot.txt` per sandbox), not the container's stdout. The engine therefore locates the `.boot.txt` containing the container ID and reads it — directly on a Linux host, or through `colima ssh` in the colima VM. This is the fallback D14 authorised, and it keeps the per-container annotation scoping.
+- **In-guest `strace` works under gVisor but its output cannot be copied out.** The entrypoint reported a 228-line strace log, but `docker cp`/`get_archive` returns “Could not find the file” for every file the gVisor container wrote, both while running and after exit. gVisor's `--overlay2` default is `root:self` (an in-memory rootfs overlay), and forcing `all:dir=<path>` did not make the files visible to Docker either. The Sentry trace is the collector for this reason, and the bundle states it.
+- **`clock_gettime` becomes visible at tier 2.** The real capture `tests/fixtures/gvisor-strace-real.log` contains `clock_gettime` entries, because gVisor services the vDSO clock path in the Sentry. Under tier-1 ptrace the same probe produces **no** clock syscall. `RDTSC`/`CPUID` are CPU instructions, not syscalls, and `--strace` does not emit them; the collector's blind-spot list says so rather than claiming otherwise.
+- **Evasion scores from the gVisor source.** The recon-then-quiet probe produces 100/100 `evasive`, `impact=0`, `recon_then_quiet=True`, `inconclusive=True` from 383 parsed gVisor events. A full sandbox detonation emitted 46,100 `gvisor-sentry` events with the same verdict. The trace is container-wide, so the entrypoint's own writes to `/hatchery`, `/proc`, `/sys` and `/dev/null` are excluded from impact by path; treating `AT_FDCWD <cwd>` as a target path was a real bug found this way and is pinned by a test.
+
+**Consequence.** The tier table in D11 now matches the code exactly: tier 1 uses `strace-ptrace`, tier 2 uses `gvisor-sentry-strace`, tier 3 still declares the host-side eBPF downgrade. The `container.logs()` route D14 originally assumed is documented as not working, with the `.boot` read as the implemented fallback.
 
 ---
 

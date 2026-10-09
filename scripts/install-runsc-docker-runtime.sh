@@ -11,10 +11,14 @@
 #   Sentry-level syscall trace (`runsc --strace`), written to the host debug
 #   log, which is what this script turns on.
 #
-#   gVisor added `strace`, `strace-syscalls` and `strace-log-size` to its
-#   OCI-annotation override allow-list, so a container *can* request the trace.
-#   The log destination (`--debug-log`) is a host-side runtimeArg and cannot be
-#   set from inside the container, which is why it is configured here.
+#   gVisor added `debug`, `debug-to-user-log`, `strace`, `strace-syscalls`
+#   and `strace-log-size` to its OCI-annotation override allow-list, so a
+#   single analysis container can switch the trace on for itself. The log
+#   destination (`--debug-log`) is a host-side runtimeArg and is NOT
+#   annotation-overridable, which is why it is configured here — and only it.
+#   HATCHERY sets the per-container annotations at tier 2 (see D14); this
+#   script deliberately does not enable `--strace` globally, because that
+#   would trace every container under the runtime.
 #
 # THIS IS AN OPERATOR ACTION
 #   It requires root and restarts the Docker daemon. HATCHERY never runs it for
@@ -112,15 +116,13 @@ if [ -f "$DAEMON_JSON" ]; then
   log "backed up $DAEMON_JSON -> $backup"
 fi
 
-# `runsc install` merges a runtime entry into daemon.json. The flags after `--`
-# are passed to every container launched with this runtime:
-#   --strace          enable gVisor's Sentry-level syscall trace
+# `runsc install` merges a runtime entry into daemon.json. The flag after `--`
+# is passed to every container launched with this runtime:
 #   --debug-log=DIR/  one log file per sandbox in LOG_DIR (trailing slash)
-#   --strace-log-size cap on argument blobs, matching the in-guest tracer
-log "registering Docker runtime '$RUNTIME_NAME' with --strace"
+# The per-container `strace`/`debug`/`debug-to-user-log`/`strace-log-size` flags
+# are requested through OCI annotations by the engine, not here.
+log "registering Docker runtime '$RUNTIME_NAME'"
 runsc install --runtime "$RUNTIME_NAME" -- \
-  --strace \
-  --strace-log-size=1024 \
   --debug-log="${LOG_DIR}/"
 
 # ---------------------------------------------------------------------------
@@ -152,10 +154,15 @@ cat <<EOF
 Done. What to do next:
   1. cd into the HATCHERY repo and run:  hatchery doctor
      It should now report tier 2 (sandboxed-kernel) via runtime '$RUNTIME_NAME'.
-  2. Detonate a probe and confirm the collector line in the report names
-     gVisor's trace (or reports the declared ptrace fallback), not ptrace.
+  2. Detonate a probe. The run's collector line should name
+     'gvisor-sentry-strace' and the bundle should contain events with
+     source='gvisor-sentry'.
 
 What to check by hand, because it cannot be automated here:
-  * Does ${LOG_DIR} contain a .boot log with syscall lines for the container?
-  * If not, gVisor's trace is not reaching HATCHERY yet and the run will say so.
+  * Does ${LOG_DIR} contain a .boot.txt with `strace.go:` lines for the run?
+    HATCHERY finds it by the container ID it contains.
+  * Docker's `get_archive`/`docker cp` cannot read files written inside a
+    gVisor container (the rootfs overlay is in-memory), so the in-guest
+    strace/inotify/pcap artifacts are not recoverable at tier 2. The Sentry
+    trace is the collector for that reason; the bundle says so.
 EOF

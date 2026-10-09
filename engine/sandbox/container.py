@@ -19,9 +19,17 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from engine.monitor.gvisor_strace import (
+    GvisorLogReader,
+    default_gvisor_log_reader,
+    read_gvisor_trace,
+)
 from engine.sandbox.artifacts import ArtifactSet, collect_artifacts
 from engine.sandbox.isolation import (
+    GVISOR_COLLECTOR,
+    STRACE_COLLECTOR,
     IsolationProbe,
+    IsolationTier,
     probe_isolation,
     resolve_collector,
 )
@@ -87,6 +95,9 @@ class ContainerResult:
     artifacts: Optional[ArtifactSet] = None
     isolation: Optional[dict] = None
     monitoring: Optional[dict] = None
+    gvisor_trace_log: Optional[Path] = None
+    gvisor_trace_source: str = ""
+    gvisor_trace_error: str = ""
     error: Optional[str] = None
 
     @property
@@ -123,6 +134,9 @@ class ContainerResult:
             "artifacts": self.artifacts.to_dict() if self.artifacts else None,
             "isolation": self.isolation,
             "monitoring": self.monitoring,
+            "gvisor_trace_log": str(self.gvisor_trace_log) if self.gvisor_trace_log else None,
+            "gvisor_trace_source": self.gvisor_trace_source,
+            "gvisor_trace_error": self.gvisor_trace_error,
             "error": self.error,
         }
 
@@ -135,10 +149,22 @@ class ContainerManager:
     artifacts -> destroy container.
     """
 
-    def __init__(self, config: Optional[ContainerConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[ContainerConfig] = None,
+        gvisor_reader: Optional[GvisorLogReader] = None,
+    ) -> None:
         self.config = config or ContainerConfig()
         self._client: Optional[docker_sdk.DockerClient] = None
         self._isolation: Optional[IsolationProbe] = None
+        self._gvisor_reader = gvisor_reader
+
+    @property
+    def gvisor_reader(self) -> GvisorLogReader:
+        """Reader for runsc's debug log, local or through a VM."""
+        if self._gvisor_reader is None:
+            self._gvisor_reader = default_gvisor_log_reader()
+        return self._gvisor_reader
 
     # ------------------------------------------------------------------ setup
 
@@ -295,6 +321,67 @@ class ContainerManager:
 
         logger.info("Copied sample %s into container", target_name)
 
+    # gVisor enables its Sentry syscall trace per container through these OCI
+    # annotations. `debug`, `debug-to-user-log`, `strace` and `strace-log-size`
+    # are in gVisor's annotation override allow-list, so this needs neither
+    # `--allow-flag-override` nor a global `--strace` on the runtime (D14).
+    GVISOR_ANNOTATIONS: dict[str, str] = {
+        "dev.gvisor.flag.debug": "true",
+        "dev.gvisor.flag.strace": "true",
+        "dev.gvisor.flag.strace-log-size": "1024",
+        "dev.gvisor.flag.debug-to-user-log": "true",
+    }
+
+    def _annotations_for_tier(self, tier: IsolationTier) -> dict[str, str]:
+        """OCI annotations this tier needs, or none.
+
+        gVisor's Sentry trace is enabled per container (D14); every other tier
+        needs no annotations, so the global runtime stays untraced.
+        """
+        if tier == IsolationTier.SANDBOXED_KERNEL:
+            return dict(self.GVISOR_ANNOTATIONS)
+        return {}
+
+    def _create_container_with_annotations(
+        self,
+        target_name: str,
+        runtime: Optional[str],
+        env_list: list[str],
+        security_opt: list[str],
+        annotations: dict[str, str],
+    ) -> Container:
+        """Create a container carrying OCI annotations.
+
+        docker-py 7.2.0 has no typed ``annotations`` argument on
+        ``containers.create`` or ``create_container`` and drops unexpected
+        kwargs, so the create config is built explicitly and
+        ``HostConfig.Annotations`` set before the request. The daemon stores
+        them there, which is what gVisor reads.
+        """
+        host_config = self.client.api.create_host_config(
+            mem_limit=self.config.memory_limit,
+            nano_cpus=int(self.config.cpu_limit * 1e9),
+            pids_limit=self.config.pids_limit,
+            network_mode=self.config.network_name,
+            cap_add=["NET_RAW"],
+            security_opt=security_opt,
+            runtime=runtime,
+        )
+        host_config["Annotations"] = annotations
+
+        config = self.client.api.create_container_config(
+            image=self.config.image,
+            command=f"/hatchery/sample/{target_name}",
+            hostname=self.config.hostname,
+            detach=True,
+            stdin_open=False,
+            tty=False,
+            environment=env_list,
+            host_config=host_config,
+        )
+        resp = self.client.api.create_container_from_config(config)
+        return self.client.containers.get(resp["Id"])
+
     # ---------------------------------------------------------------- execute
 
     def execute(
@@ -371,23 +458,52 @@ class ContainerManager:
                 "Creating sandbox container for %s (runtime=%s, tier=%d)",
                 target_name, runtime, int(probe.tier),
             )
-            container = self.client.containers.create(
-                image=self.config.image,
-                command=f"/hatchery/sample/{target_name}",
-                hostname=self.config.hostname,
-                environment=env_list,
-                mem_limit=self.config.memory_limit,
-                nano_cpus=int(self.config.cpu_limit * 1e9),
-                pids_limit=self.config.pids_limit,
-                network=self.config.network_name,
-                runtime=runtime,
-                # tcpdump needs a raw socket; nothing else here does.
-                cap_add=["NET_RAW"],
-                security_opt=security_opt,
-                detach=True,
-                stdin_open=False,
-                tty=False,
-            )
+            annotations = self._annotations_for_tier(probe.tier)
+            if annotations:
+                container = self._create_container_with_annotations(
+                    target_name=target_name,
+                    runtime=runtime,
+                    env_list=env_list,
+                    security_opt=security_opt,
+                    annotations=annotations,
+                )
+            else:
+                container = self.client.containers.create(
+                    image=self.config.image,
+                    command=f"/hatchery/sample/{target_name}",
+                    hostname=self.config.hostname,
+                    environment=env_list,
+                    mem_limit=self.config.memory_limit,
+                    nano_cpus=int(self.config.cpu_limit * 1e9),
+                    pids_limit=self.config.pids_limit,
+                    network=self.config.network_name,
+                    runtime=runtime,
+                    # tcpdump needs a raw socket; nothing else here does.
+                    cap_add=["NET_RAW"],
+                    security_opt=security_opt,
+                    detach=True,
+                    stdin_open=False,
+                    tty=False,
+                )
+
+            if annotations:
+                forwarded = (container.attrs.get("HostConfig") or {}).get(
+                    "Annotations"
+                ) or {}
+                missing = [k for k in annotations if k not in forwarded]
+                if missing:
+                    # Without the annotations gVisor will not emit the trace;
+                    # never let that be silent.
+                    logger.error(
+                        "gVisor annotations were not forwarded to container %s: %s",
+                        container.id[:12], missing,
+                    )
+                    result.gvisor_trace_error = (
+                        "Docker did not forward the gVisor annotations "
+                        f"({missing}); the Sentry trace will not be emitted."
+                    )
+                    result.monitoring = STRACE_COLLECTOR.to_dict()
+                    result.monitoring["downgrade_reason"] = result.gvisor_trace_error
 
             result.container_id = container.id
             result.start_time = datetime.now(timezone.utc)
@@ -430,6 +546,35 @@ class ContainerManager:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to read container logs: %s", e)
 
+            # Tier 2: gVisor's Sentry trace is the collector. `--debug-to-user-log`
+            # does NOT put it on the container's stdout, so container.logs() is
+            # empty; the trace is in runsc's host-side debug log. Read it back
+            # while the container still exists (the file itself outlives removal).
+            if probe.tier == IsolationTier.SANDBOXED_KERNEL and not result.gvisor_trace_error:
+                trace_text, source = read_gvisor_trace(
+                    container.id, self.gvisor_reader
+                )
+                if trace_text:
+                    gvisor_dir = results_dir / "gvisor"
+                    gvisor_dir.mkdir(parents=True, exist_ok=True)
+                    trace_path = gvisor_dir / "gvisor-strace.log"
+                    trace_path.write_text(trace_text, encoding="utf-8")
+                    result.gvisor_trace_log = trace_path
+                    result.gvisor_trace_source = source
+                    result.monitoring = GVISOR_COLLECTOR.to_dict()
+                    result.monitoring["trace_source"] = source
+                    logger.info("Recovered gVisor Sentry trace from %s", source)
+                else:
+                    # Enabled but unreadable: say so rather than imply the
+                    # stronger collector was in force.
+                    result.gvisor_trace_error = source
+                    result.monitoring = STRACE_COLLECTOR.to_dict()
+                    result.monitoring["downgrade_reason"] = (
+                        "tier 2 recommended 'gvisor-sentry-strace', but its trace "
+                        f"could not be read back: {source}"
+                    )
+                    logger.warning("gVisor trace not recovered: %s", source)
+
             # Recover artifacts while the container still exists. A missing
             # or empty behavioral source is a finding, not a warning to bury.
             try:
@@ -438,7 +583,7 @@ class ContainerManager:
                     for problem in result.artifacts.errors:
                         logger.warning("Artifact problem: %s", problem)
                             # Only fatal when we got nothing at all.
-                if not result.artifacts.has_any_behavior:
+                if not result.artifacts.has_any_behavior and not result.gvisor_trace_log:
                     result.error = (
                         "No behavioral data was recovered from this run — "
                         "treat the result as inconclusive, not clean."
