@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
+import { ingestBundle } from '../db/ingest.js';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +12,43 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
 const VENV_PYTHON = path.join(ENGINE_ROOT, '.venv', 'bin', 'python3');
 const UPLOADS_DIR = path.join(ENGINE_ROOT, 'uploads');
+const RESULTS_ROOT = path.join(ENGINE_ROOT, 'results');
+
+/**
+ * Roots a caller may point `filePath` at.
+ *
+ * Previously any absolute path on the host was accepted, which turned the
+ * submission endpoint into a reader for arbitrary local files: submit
+ * /etc/shadow, then fetch the report and read the extracted strings. A security
+ * tool must not offer that. Override with HATCHERY_ALLOWED_SAMPLE_ROOTS
+ * (colon-separated) if you have a different intake directory.
+ */
+function allowedSampleRoots(): string[] {
+  const configured = process.env.HATCHERY_ALLOWED_SAMPLE_ROOTS;
+  if (configured) {
+    return configured.split(path.delimiter).filter(Boolean).map((p) => path.resolve(p));
+  }
+  return [path.join(ENGINE_ROOT, 'samples'), UPLOADS_DIR].map((p) => path.resolve(p));
+}
+
+function isAllowedSamplePath(candidate: string): boolean {
+  const resolved = path.resolve(candidate);
+  return allowedSampleRoots().some(
+    (root) => resolved === root || resolved.startsWith(root + path.sep),
+  );
+}
+
+/**
+ * Reduce a client-supplied filename to a bare name.
+ *
+ * `path.join(dir, "../../etc/passwd")` escapes `dir`; busboy hands over the raw
+ * client filename. Strip any directory component and any traversal segments.
+ */
+function safeFilename(name: string): string {
+  const base = path.basename(name.replace(/\\/g, '/'));
+  const cleaned = base.replace(/[^\w.\- ]+/g, '_').replace(/^\.+/, '');
+  return cleaned || `sample-${randomUUID().slice(0, 8)}`;
+}
 
 export async function submitRoutes(app: FastifyInstance) {
   // Submit a sample for analysis (JSON filePath or multipart file upload)
@@ -20,6 +58,8 @@ export async function submitRoutes(app: FastifyInstance) {
     let fileSize: number | undefined;
     let timeout = 120;
     let noSandbox = false;
+
+    const taskId = randomUUID().slice(0, 12);
 
     if (request.isMultipart()) {
       // PhishHawk-style multipart upload: iterate parts to find file + fields
@@ -42,18 +82,19 @@ export async function submitRoutes(app: FastifyInstance) {
       if (fields.timeout) timeout = parseInt(fields.timeout, 10) || 120;
       if (fields.noSandbox) noSandbox = fields.noSandbox === 'true';
 
-      const uploadFileName: string = uploadedFile.filename;
-      const taskId = randomUUID().slice(0, 12);
+      // One task id, used for the upload directory AND the database row. The
+      // previous revision generated two, so the uploaded file lived in a
+      // directory named after a task that did not exist.
+      const safeName = safeFilename(String(uploadedFile.filename));
       const taskUploadDir = path.join(UPLOADS_DIR, taskId);
       fs.mkdirSync(taskUploadDir, { recursive: true });
-      filePath = path.join(taskUploadDir, uploadFileName);
+      filePath = path.join(taskUploadDir, safeName);
 
       await pipeline(uploadedFile.file, fs.createWriteStream(filePath));
       const stats = fs.statSync(filePath);
-      fileName = uploadFileName;
+      fileName = safeName;
       fileSize = stats.size;
     } else {
-      // Existing JSON body path
       const body = request.body ?? {};
       filePath = body.filePath;
       timeout = body.timeout ?? 120;
@@ -63,9 +104,15 @@ export async function submitRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'filePath is required' });
       }
 
-      // Resolve relative paths against workspace
       if (!path.isAbsolute(filePath)) {
-        filePath = path.resolve(process.cwd(), filePath);
+        filePath = path.resolve(ENGINE_ROOT, filePath);
+      }
+
+      if (!isAllowedSamplePath(filePath)) {
+        return reply.code(403).send({
+          error: 'filePath is outside the permitted sample roots',
+          allowed_roots: allowedSampleRoots(),
+        });
       }
 
       if (!fs.existsSync(filePath)) {
@@ -80,8 +127,6 @@ export async function submitRoutes(app: FastifyInstance) {
     if (!filePath || !fileName || fileSize === undefined) {
       return reply.code(400).send({ error: 'Unable to determine sample file' });
     }
-
-    const taskId = randomUUID().slice(0, 12);
 
     const db = getDb();
     db.prepare(`
@@ -120,8 +165,20 @@ export async function submitRoutes(app: FastifyInstance) {
   });
 }
 
+/**
+ * Spawn the engine, then ingest the bundle it produced.
+ *
+ * Exit code 0 alone does not mean the analysis succeeded — the engine can
+ * complete while its sandbox produced nothing. The bundle is the authority, so
+ * a failed or missing bundle marks the task failed rather than "completed".
+ */
 function runAnalysis(taskId: string, filePath: string, timeout: number, noSandbox: boolean) {
-  const args = ['-m', 'engine.cli', 'submit', filePath, '--timeout', String(timeout), '-o', `results/${taskId}`];
+  const resultsDir = path.join(RESULTS_ROOT, taskId);
+  const args = [
+    '-m', 'engine.cli', 'submit', filePath,
+    '--timeout', String(timeout),
+    '-o', resultsDir,
+  ];
   if (noSandbox) args.push('--no-sandbox');
 
   const proc = spawn(VENV_PYTHON, args, {
@@ -134,21 +191,38 @@ function runAnalysis(taskId: string, filePath: string, timeout: number, noSandbo
   });
 
   let stderr = '';
-
   proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+  proc.on('error', (err: Error) => {
+    const db = getDb();
+    db.prepare(
+      `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+       WHERE task_id = ?`,
+    ).run(`Could not start the analysis engine: ${err.message}`, taskId);
+  });
 
   proc.on('close', (code: number) => {
     const db = getDb();
-    if (code === 0) {
-      db.prepare(`
-        UPDATE tasks SET status = 'completed', completed_at = datetime('now'), updated_at = datetime('now')
-        WHERE task_id = ?
-      `).run(taskId);
-    } else {
-      db.prepare(`
-        UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
-        WHERE task_id = ?
-      `).run(stderr.slice(0, 2000), taskId);
+
+    if (code !== 0) {
+      db.prepare(
+        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+         WHERE task_id = ?`,
+      ).run(stderr.slice(0, 2000) || `engine exited with code ${code}`, taskId);
+      return;
     }
+
+    const result = ingestBundle(db, taskId, resultsDir);
+    if (!result.ok) {
+      db.prepare(
+        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+         WHERE task_id = ?`,
+      ).run(result.error ?? 'Bundle ingest failed', taskId);
+      return;
+    }
+
+    console.log(
+      `[hatchery] task ${taskId}: ingested ${result.events} event(s), ${result.iocs} IOC(s)`,
+    );
   });
 }

@@ -2,24 +2,9 @@ import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
 
 export async function analysisRoutes(app: FastifyInstance) {
-  // Run static-only analysis (no sandbox)
-  app.post('/api/analyze/static', async (request: any, reply: any) => {
-    const { filePath } = request.body ?? {};
-    if (!filePath) {
-      return reply.code(400).send({ error: 'filePath is required' });
-    }
-
-    const db = getDb();
-    const taskId = crypto.randomUUID().slice(0, 12);
-
-    // TODO: spawn static analysis subprocess
-    // For now, return task placeholder
-    return reply.send({
-      task_id: taskId,
-      status: 'pending',
-      analysis_type: 'static',
-    });
-  });
+  // NOTE: `POST /api/analyze/static` was removed. It returned a task_id that was
+  // never inserted into the database and never analysed — an endpoint that lied.
+  // Submit through POST /api/submit with {"noSandbox": true} instead.
 
   // Get process tree for a task
   app.get('/api/tasks/:taskId/process-tree', async (request: any, reply: any) => {
@@ -87,21 +72,13 @@ function buildProcessTree(events: any[]): ProcessNode {
     const node = procs.get(ev.pid)!;
     node.syscalls.push({ name: ev.syscall_name, args: ev.args ?? '', timestamp: ev.timestamp });
 
-    // First PID seen is root
+    // First PID seen is the root.
     if (rootPid === 0) rootPid = ev.pid;
 
-    // execve with new PID = child process
-    if (ev.syscall_name === 'clone' || ev.syscall_name === 'fork') {
-      try {
-        const args = JSON.parse(ev.args ?? '{}');
-        const childPid = args.child_pid ?? args.pid;
-        if (childPid && !procs.has(childPid)) {
-          const child: ProcessNode = { pid: childPid, children: [], syscalls: [] };
-          procs.set(childPid, child);
-          node.children.push(child);
-        }
-      } catch { /* ignore parse errors */ }
-    }
+    // NOTE: strace's clone/fork lines do not carry the child pid in a form this
+    // parser can read, so the tree here is grouped by pid rather than truly
+    // parented. A real parent map needs the `clone(...) = <child pid>` return
+    // value parsed at ingest time. Tracked as a known gap.
   }
 
   return procs.get(rootPid) ?? { pid: 0, children: [], syscalls: [] };
@@ -120,18 +97,22 @@ function extractConnections(events: any[]): NetworkConnection[] {
   const connections: NetworkConnection[] = [];
 
   for (const ev of events) {
-    if (ev.syscall_name === 'connect') {
-      try {
-        const args = JSON.parse(ev.args ?? '{}');
-        connections.push({
-          timestamp: ev.timestamp,
-          pid: ev.pid,
-          syscall: 'connect',
-          dst_addr: args.addr ?? args.ip ?? 'unknown',
-          dst_port: args.port ?? 0,
-          protocol: args.protocol ?? 'tcp',
-        });
-      } catch { /* skip */ }
+    try {
+      const args = JSON.parse(ev.args ?? '{}');
+      // Accept both the normalised event shape written by the engine's bundle
+      // (dst_ip/dst_port) and the older addr/ip keys some callers may send.
+      const dstAddr = args.dst_ip ?? args.addr ?? args.ip ?? 'unknown';
+      const dstPort = args.dst_port ?? args.port ?? 0;
+      connections.push({
+        timestamp: ev.timestamp,
+        pid: ev.pid,
+        syscall: ev.syscall_name,
+        dst_addr: dstAddr,
+        dst_port: dstPort,
+        protocol: args.protocol ?? 'tcp',
+      });
+    } catch {
+      // Malformed args are skipped rather than aborting the whole response.
     }
   }
 

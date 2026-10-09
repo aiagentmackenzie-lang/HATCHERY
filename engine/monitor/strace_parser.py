@@ -39,14 +39,24 @@ class EventSeverity(str, Enum):
     CRITICAL = "critical"
 
 
-# strace line patterns
-# Format: HH:MM:SS.microseconds pid syscall(args) = retval
+# strace line patterns.
+#
+# With `-f -tt` writing to a file, strace emits PID first, then timestamp:
+#
+#     18    16:42:30.583502 mmap(NULL, 8192, PROT_READ|PROT_WRITE, ...) = 0x...
+#
+# With a single traced process (no -f) it emits timestamp first, and on a tty it
+# wraps the pid in `[pid 18]`. All three shapes appear in the wild, so accept
+# them rather than betting on one. Betting on one is how this parser previously
+# matched 0 of 227 lines of genuine strace output while its unit tests passed.
 STRACE_LINE_PATTERN = re.compile(
-    r"^(\d{2}:\d{2}:\d{2}\.\d+)\s+"
-    r"(\d+)\s+"
-    r"(\w+)\s*"
-    r"\((.*?)\)\s*"
-    r"=\s*(.+)$"
+    r"^(?:\[pid\s+(\d+)\]\s+)?"          # optional '[pid 18] ' prefix
+    r"(?:(\d+)\s+)?"                       # optional leading pid (real -f -tt order)
+    r"(\d{2}:\d{2}:\d{2}\.\d+)\s+"         # timestamp
+    r"(?:(\d+)\s+)?"                       # optional second pid (legacy order)
+    r"(\w+)\s*"                           # syscall name
+    r"\((.*?)\)\s*"                        # arguments
+    r"=\s*(.+)$"                           # return value
 )
 
 # Process lifecycle lines
@@ -250,9 +260,10 @@ class StraceParser:
         # Try matching standard syscall line
         match = STRACE_LINE_PATTERN.match(line)
         if match:
-            timestamp, pid_str, syscall, args, retval = match.groups()
+            prefix_pid, pid_before, timestamp, pid_after, syscall, args, retval = match.groups()
+            raw_pid = prefix_pid or pid_before or pid_after
             try:
-                pid = int(pid_str)
+                pid = int(raw_pid) if raw_pid else 0
             except ValueError:
                 return None
 

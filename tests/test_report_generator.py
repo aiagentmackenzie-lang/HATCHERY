@@ -132,32 +132,60 @@ class TestReportGenerator:
         assert (output_dir / "report.json").exists()
 
     def test_generate_markdown_with_sandbox(self):
-        """Test generating Markdown with sandbox results."""
+        """Test generating Markdown with sandbox results and events."""
         sandbox_results = {
             "status": "completed",
             "duration_seconds": 45.2,
             "exit_code": 0,
-            "strace": {
-                "parsed_events": 150,
-                "network_connections": [
-                    {"ip": "1.2.3.4", "port": 443, "pid": 100},
-                ],
-                "process_operations": [
-                    {"path": "/bin/sh", "pid": 100},
-                ],
+            "isolation": {
+                "tier": 1,
+                "tier_name": "shared-kernel",
+                "boundary": "The sample shares the host kernel.",
+                "is_security_boundary": False,
+            },
+            "artifacts": {
+                "found": {"strace_log": "/tmp/run/strace/strace.log"},
+                "missing": ["pcap"],
             },
         }
+        events = [
+            {
+                "timestamp": "12:00:00.0",
+                "syscall_name": "connect",
+                "category": "network",
+                "severity": "high",
+                "args": '{"dst_ip": "1.2.3.4", "dst_port": 443}',
+                "raw_line": "connect(3, ...)",
+                "source": "strace",
+            },
+            {
+                "timestamp": "12:00:01.0",
+                "syscall_name": "openat",
+                "category": "file",
+                "severity": "info",
+                "args": "{}",
+                "raw_line": 'openat("/etc/passwd")',
+                "source": "strace",
+            },
+        ]
 
         report = self.gen.generate_markdown(
             sample_name="test.bin",
             sample_hash={"md5": "x", "sha1": "y", "sha256": "z", "file_size": 100},
             sandbox_results=sandbox_results,
+            limitations=["No hardware boundary was in force."],
+            events=events,
         )
 
         assert "Behavioral Analysis" in report
         assert "45.2" in report
         assert "Network Connections" in report
         assert "1.2.3.4" in report
+        # The report must not imply a boundary that is not there.
+        assert "not a security boundary" in report
+        assert "pcap" in report
+        assert "No hardware boundary was in force." in report
+        assert "execve" not in report or "Most Frequent Events" in report
 
 
 if __name__ == "__main__":

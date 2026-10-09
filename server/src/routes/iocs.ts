@@ -1,5 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
+const RESULTS_ROOT = path.join(ENGINE_ROOT, 'results');
 
 export async function iocRoutes(app: FastifyInstance) {
   // Get all IOCs for a task
@@ -37,7 +44,21 @@ export async function iocRoutes(app: FastifyInstance) {
     }
 
     if (format === 'stix') {
-      return reply.send(buildSTIXBundle(taskId, iocs));
+      // Serve the bundle the Python exporter produced.
+      //
+      // This route used to build its own STIX inline, with identifiers like
+      // `indicator--<row id>` which are not valid STIX 2.1 (the spec requires
+      // `type--UUID`). There were therefore two STIX producers that disagreed,
+      // and the one on this side was wrong. There is now one producer.
+      const stixPath = path.join(RESULTS_ROOT, taskId, 'stix_bundle.json');
+      if (!fs.existsSync(stixPath)) {
+        return reply.code(404).send({
+          error: 'No STIX bundle for this task',
+          detail: 'Run the task to completion; the engine writes stix_bundle.json.',
+          path: stixPath,
+        });
+      }
+      return reply.send(JSON.parse(fs.readFileSync(stixPath, 'utf-8')));
     }
 
     // Plain list format
@@ -49,59 +70,4 @@ export async function iocRoutes(app: FastifyInstance) {
 
     return reply.send({ iocs, summary, total: iocs.length });
   });
-}
-
-function buildSTIXBundle(taskId: string, iocs: any[]): any {
-  const now = new Date().toISOString();
-  const objects: any[] = [
-    {
-      type: 'identity',
-      spec_version: '2.1',
-      id: `identity--${taskId}`,
-      created: now,
-      modified: now,
-      name: 'HATCHERY',
-      identity_class: 'system',
-    },
-  ];
-
-  for (const ioc of iocs) {
-    const stixType = iocTypeToSTIX(ioc.ioc_type);
-    if (!stixType) continue;
-
-    objects.push({
-      type: 'indicator',
-      spec_version: '2.1',
-      id: `indicator--${ioc.id}`,
-      created: now,
-      modified: now,
-      name: `${ioc.ioc_type}: ${ioc.value}`,
-      description: ioc.context ?? `Extracted by HATCHERY from task ${taskId}`,
-      indicator_types: ['malicious-activity'],
-      pattern: `[${stixType} = '${ioc.value}']`,
-      pattern_type: 'stix',
-      valid_from: now,
-      labels: [ioc.severity, ioc.source ?? 'hatchery'],
-    });
-  }
-
-  return {
-    type: 'bundle',
-    id: `bundle--${taskId}`,
-    objects,
-  };
-}
-
-function iocTypeToSTIX(iocType: string): string | null {
-  const mapping: Record<string, string> = {
-    ip: 'ipv4-addr',
-    domain: 'domain-name',
-    url: 'url',
-    email: 'email-addr',
-    hash: 'file:hashes.\'SHA-256\'',
-    registry_key: 'windows-registry-key',
-    mutex: 'mutex',
-    file_path: 'file:name',
-  };
-  return mapping[iocType] ?? null;
 }

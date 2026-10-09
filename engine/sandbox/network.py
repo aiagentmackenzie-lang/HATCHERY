@@ -1,8 +1,14 @@
-"""Network isolation configuration for sandbox containers.
+"""Network isolation for sandbox containers.
 
-Creates isolated Docker networks and iptables rules to redirect
-all traffic to fake services. Ensures the sample cannot reach
-the host or the internet.
+Creates an ``internal`` Docker bridge network: containers on it can talk to
+each other but have no route off the host. That means a sample cannot exfiltrate
+data or reach its real C2, which is the behavior we want by default.
+
+The deliberate consequence: a sample that refuses to run without a live
+internet will not fully detonate. Faking a believable internet (DNS that
+NXDOMAINs like a real one, TLS chains, latency) is a separate, larger piece of
+work and is NOT implemented here. Do not claim "fake internet" support until
+that exists.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ except ImportError:
     HAS_DOCKER = False
 
 # Default network configuration
-DEFAULT_NETWORK_NAME = "hatchery-fake"
+DEFAULT_NETWORK_NAME = "hatchery-sandbox"
 DEFAULT_SUBNET = "172.28.0.0/16"
 DEFAULT_GATEWAY = "172.28.0.1"
 FAKE_SERVICE_IP = "172.28.0.2"
@@ -44,10 +50,10 @@ class NetworkConfig:
 
 
 class NetworkIsolator:
-    """Create and manage isolated Docker networks for sandboxing.
+    """Create and manage the isolated Docker network for sandboxing.
 
-    Ensures that sandbox containers can only reach the fake services
-    running on the gateway — no internet, no host access beyond that.
+    The network is ``internal``: no route to the host network or the internet.
+    Containers on it cannot reach out, and nothing outside can reach in.
     """
 
     def __init__(self, config: Optional[NetworkConfig] = None) -> None:
@@ -62,18 +68,34 @@ class NetworkIsolator:
             self._client = docker_sdk.from_env()
         return self._client
 
+    def ensure_network(self) -> str:
+        """Return the sandbox network name, creating it only if missing.
+
+        Safe to call on every detonation: an existing network that may already
+        have containers attached is left untouched.
+        """
+        try:
+            self.client.networks.get(self.config.name)
+            return self.config.name
+        except Exception:  # noqa: BLE001 - absent is the expected path
+            pass
+        return self.create_network()
+
     def create_network(self) -> str:
         """Create the isolated Docker network for sandbox containers.
+
+        Idempotent: returns the existing network rather than deleting it.
+        Deleting a network with attached containers fails, which previously
+        left the network missing and every detonation broken.
 
         Returns:
             Network name.
         """
-        # Remove existing network if it exists
         try:
-            existing = self.client.networks.get(self.config.name)
-            existing.remove()
-            logger.info("Removed existing network: %s", self.config.name)
-        except Exception:
+            self.client.networks.get(self.config.name)
+            logger.debug("Network %s already exists", self.config.name)
+            return self.config.name
+        except Exception:  # noqa: BLE001
             pass
 
         # Create the isolated network

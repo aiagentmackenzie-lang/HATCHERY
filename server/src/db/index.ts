@@ -6,7 +6,28 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DB_PATH = path.join(__dirname, '..', '..', '..', 'data', 'hatchery.db');
-const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+
+/**
+ * Locate schema.sql.
+ *
+ * `tsc` does not copy non-TypeScript assets, so after `npm run build` the
+ * schema is not next to the compiled output. Resolve it from the source tree
+ * instead of assuming the build layout — the built server otherwise never
+ * starts, which is exactly what happened before this existed.
+ */
+function findSchemaPath(): string {
+  const candidates = [
+    path.join(__dirname, 'schema.sql'), // tsx / src/db
+    path.join(__dirname, '..', '..', 'src', 'db', 'schema.sql'), // dist/db -> src/db
+    path.join(process.cwd(), 'src', 'db', 'schema.sql'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    `Could not find schema.sql. Looked in:\n  ${candidates.join('\n  ')}`,
+  );
+}
 
 let db: Database.Database | null = null;
 
@@ -24,7 +45,7 @@ export function getDb(): Database.Database {
   db.pragma('foreign_keys = ON');
 
   // Run schema on first create
-  const schema = fs.readFileSync(SCHEMA_PATH, 'utf-8');
+  const schema = fs.readFileSync(findSchemaPath(), 'utf-8');
   db.exec(schema);
 
   return db;

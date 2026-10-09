@@ -30,6 +30,8 @@ class ReportGenerator:
         static_results: Optional[dict] = None,
         sandbox_results: Optional[dict] = None,
         ioc_report: Optional[dict] = None,
+        limitations: Optional[list[str]] = None,
+        events: Optional[list[dict]] = None,
     ) -> str:
         """Generate a Markdown analysis report.
 
@@ -108,39 +110,102 @@ class ReportGenerator:
             lines.append("")
 
             status = sandbox_results.get("status", "unknown")
-            duration = sandbox_results.get("duration_seconds", 0)
+            duration = sandbox_results.get("duration_seconds", 0) or 0
             exit_code = sandbox_results.get("exit_code", "N/A")
             lines.append(f"- **Status:** {status}")
             lines.append(f"- **Duration:** {duration:.1f}s")
             lines.append(f"- **Exit Code:** {exit_code}")
+
+            isolation = sandbox_results.get("isolation") or {}
+            if isolation:
+                boundary = isolation.get("boundary", "")
+                if isolation.get("is_security_boundary"):
+                    lines.append(
+                        f"- **Isolation:** tier {isolation.get('tier')} "
+                        f"({isolation.get('tier_name')}) — {boundary}"
+                    )
+                else:
+                    lines.append(
+                        f"- **Isolation:** tier {isolation.get('tier')} "
+                        f"({isolation.get('tier_name')}) — **not a security boundary**. "
+                        f"{boundary}"
+                    )
+
+            artifacts = sandbox_results.get("artifacts") or {}
+            found = artifacts.get("found") or {}
+            missing = artifacts.get("missing") or []
+            if found or missing:
+                lines.append("")
+                lines.append("### Captured Artifacts")
+                lines.append("")
+                for key in sorted(found):
+                    lines.append(f"- `{key}`: `{found[key]}`")
+                for key in missing:
+                    lines.append(f"- `{key}`: **not captured**")
+                dropped = artifacts.get("dropped_files") or []
+                if dropped:
+                    lines.append(f"- dropped files: {len(dropped)}")
+
+            if sandbox_results.get("error"):
+                lines.append("")
+                lines.append(f"> **Sandbox note:** {sandbox_results['error']}")
+
             lines.append("")
 
-            # Strace summary
-            strace = sandbox_results.get("strace", {})
-            if strace:
-                event_count = strace.get("parsed_events", 0)
-                lines.append(f"### Syscall Trace ({event_count} events)")
+        # Behavioural detail, rendered from the normalised event stream. The
+        # previous revision read `sandbox_results["strace"]["network_connections"]`,
+        # a key no producer ever wrote, so this section was always empty in real
+        # reports while a hand-written test fixture kept it looking alive.
+        if events:
+            network = [e for e in events if e.get("category") == "network"]
+            if network:
+                lines.append("### Network Connections")
+                lines.append("")
+                lines.append("| Destination | Port | Syscall | Source |")
+                lines.append("|-------------|------|---------|--------|")
+                for event in network[:20]:
+                    try:
+                        args = json.loads(event.get("args") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    lines.append(
+                        f"| {args.get('dst_ip', 'n/a')} | {args.get('dst_port', 'n/a')} "
+                        f"| {event.get('syscall_name', '')} | {event.get('source', '')} |"
+                    )
                 lines.append("")
 
-                # Network connections
-                conns = strace.get("network_connections", [])
-                if conns:
-                    lines.append("#### Network Connections")
-                    lines.append("")
-                    lines.append("| IP | Port | PID |")
-                    lines.append("|----|------|-----|")
-                    for conn in conns[:20]:
-                        lines.append(f"| {conn.get('ip', 'N/A')} | {conn.get('port', 'N/A')} | {conn.get('pid', 'N/A')} |")
-                    lines.append("")
+            counts: dict[str, int] = {}
+            for event in events:
+                key = event.get("syscall_name") or "unknown"
+                counts[key] = counts.get(key, 0) + 1
+            if counts:
+                lines.append("### Most Frequent Events")
+                lines.append("")
+                lines.append("| Event | Count |")
+                lines.append("|-------|-------|")
+                for name, count in sorted(counts.items(), key=lambda kv: -kv[1])[:15]:
+                    lines.append(f"| `{name}` | {count} |")
+                lines.append("")
 
-                # Process operations
-                procs = strace.get("process_operations", [])
-                if procs:
-                    lines.append("#### Process Executions")
-                    lines.append("")
-                    for proc in procs[:10]:
-                        lines.append(f"- `{proc.get('path', 'N/A')}` (PID {proc.get('pid', 'N/A')})")
-                    lines.append("")
+            notable = [
+                e for e in events if e.get("severity") in ("high", "critical")
+            ]
+            if notable:
+                lines.append(f"### High-Severity Events ({len(notable)})")
+                lines.append("")
+                for event in notable[:25]:
+                    lines.append(
+                        f"- `[{event.get('severity', '').upper()}]` "
+                        f"{event.get('syscall_name', '')} — {event.get('raw_line', '')[:160]}"
+                    )
+                lines.append("")
+
+        if limitations:
+            lines.append("## What This Run Does Not Establish")
+            lines.append("")
+            for item in limitations:
+                lines.append(f"- {item}")
+            lines.append("")
 
         # IOCs
         if ioc_report:
@@ -231,6 +296,8 @@ class ReportGenerator:
         static_results: Optional[dict] = None,
         sandbox_results: Optional[dict] = None,
         ioc_report: Optional[dict] = None,
+        limitations: Optional[list[str]] = None,
+        events: Optional[list[dict]] = None,
     ) -> Path:
         """Write both Markdown and JSON reports to a directory.
 
@@ -244,7 +311,13 @@ class ReportGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         md = self.generate_markdown(
-            sample_name, sample_hash, static_results, sandbox_results, ioc_report
+            sample_name,
+            sample_hash,
+            static_results,
+            sandbox_results,
+            ioc_report,
+            limitations,
+            events,
         )
         (output_dir / "report.md").write_text(md, encoding="utf-8")
 

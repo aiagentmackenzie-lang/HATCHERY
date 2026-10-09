@@ -11,7 +11,6 @@ rule HATCHERY_Packing_UPX {
         $s2 = "UPX1" ascii fullword
         $s3 = "UPX2" ascii fullword
         $s4 = "UPX!" ascii fullword
-        $sig1 = { 55 50 58 21 } // "UPX!" magic
 
     condition:
         any of them
@@ -64,7 +63,7 @@ rule HATCHERY_Packing_MPRESS {
     strings:
         $s1 = ".mpress1" ascii fullword
         $s2 = ".mpress2" ascii fullword
-        $sig1 = { 4D 50 52 45 53 53 } // "MPRESS" magic
+        $sig1 = "MPRESS" ascii
 
     condition:
         any of them
@@ -81,10 +80,12 @@ rule HATCHERY_Packing_Generic_HighEntropy {
         mitre_attck = "T1027.002: Software Packing"
 
     condition:
-        // PE file with very few sections — common in packed binaries
-        // Legitimate PE files typically have 4+ sections (.text, .rdata, .data, .rsrc, .reloc)
+        // PE file with very few sections — common in packed binaries.
+        // Legitimate PE files typically have 4+ sections (.text, .rdata, .data, .rsrc, .reloc).
+        // `pe.number_of_sections` is deprecated in YARA-X; index into `pe.sections`
+        // instead, which is undefined past the end of the array.
         uint16(0) == 0x5A4D and
-        pe.number_of_sections <= 2
+        not defined pe.sections[2].name
 }
 
 rule HATCHERY_Packing_NSISSFX {

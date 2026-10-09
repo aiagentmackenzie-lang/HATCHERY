@@ -16,25 +16,38 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Try to import GHOSTWIRE for C2 detection
-# Path is resolved from environment variable or default location
-
+# Optional GHOSTWIRE integration for C2 beacon detection.
+#
+# NOT functional by default. Two reasons this is opt-in and off:
+#   1. The path used to be hardcoded to a checkout location on the author's
+#      machine, which is both non-portable and a needless disclosure of their
+#      filesystem layout. It is now env-only.
+#   2. GHOSTWIRE's package is also named `engine`, which is the same name as
+#      this project's package. Even with the path set, `engine.detection.*`
+#      resolves to HATCHERY's `engine` and the import cannot succeed. Making
+#      this work needs a real plugin boundary, not a sys.path insertion.
+#
+# Until that exists, HATCHERY does its own beacon detection over the captured
+# PCAP and simply reports that GHOSTWIRE is unavailable.
 _GHOSTWIRE_PATH_ENV = os.environ.get("HATCHERY_GHOSTWIRE_PATH", "")
-_GHOSTWIRE_PATH_DEFAULT = Path("/Users/main/Security Apps/GHOSTWIRE")
-GHOSTWIRE_PATH = Path(_GHOSTWIRE_PATH_ENV) if _GHOSTWIRE_PATH_ENV else _GHOSTWIRE_PATH_DEFAULT
+GHOSTWIRE_PATH: Optional[Path] = Path(_GHOSTWIRE_PATH_ENV) if _GHOSTWIRE_PATH_ENV else None
 HAS_GHOSTWIRE = False
 
-try:
-    import sys
-    _gw_path = str(GHOSTWIRE_PATH)
-    if _gw_path not in sys.path:
-        sys.path.insert(0, _gw_path)
-    from engine.detection.beacon import BeaconDetector  # noqa: F401
-    from engine.detection.dns_threats import DNSThreatDetector  # noqa: F401
-    HAS_GHOSTWIRE = True
-    logger.info("GHOSTWIRE integration available")
-except ImportError:
-    logger.debug("GHOSTWIRE not available — C2 detection disabled")
+if GHOSTWIRE_PATH is not None:
+    try:
+        import sys
+
+        _gw_path = str(GHOSTWIRE_PATH)
+        if _gw_path not in sys.path:
+            sys.path.insert(0, _gw_path)
+        from engine.detection.beacon import BeaconDetector  # noqa: F401
+        from engine.detection.dns_threats import DNSThreatDetector  # noqa: F401
+
+        HAS_GHOSTWIRE = True
+        logger.info("GHOSTWIRE integration available")
+    except ImportError as e:
+        # Expected: the `engine` package name collides, so this rarely imports.
+        logger.debug("GHOSTWIRE not available (%s) — C2 detection disabled", e)
 
 
 @dataclass

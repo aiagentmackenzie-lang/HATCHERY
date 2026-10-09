@@ -1,7 +1,11 @@
 """Docker container lifecycle management for malware detonation.
 
-Creates isolated containers, executes samples under strace supervision,
-enforces timeouts, and captures behavioral artifacts after execution.
+Creates a container at the strongest isolation tier the host can provide,
+executes the sample under syscall tracing, enforces a timeout, and recovers
+behavioral artifacts.
+
+The manager reports the isolation tier it used on every run. See
+:mod:`engine.sandbox.isolation` for why that matters.
 """
 
 from __future__ import annotations
@@ -15,6 +19,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from engine.sandbox.artifacts import ArtifactSet, collect_artifacts
+from engine.sandbox.isolation import IsolationProbe, probe_isolation
+from engine.sandbox.network import DEFAULT_NETWORK_NAME
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -27,13 +35,11 @@ except ImportError:
 
 # Default configuration
 DEFAULT_TIMEOUT = 120          # seconds
-DEFAULT_CPU_LIMIT = 0.5       # 50% of one core
-DEFAULT_MEMORY_LIMIT = "512m" # 512MB RAM
+DEFAULT_CPU_LIMIT = 1.0       # 1 core
+DEFAULT_MEMORY_LIMIT = "1g"
+DEFAULT_PIDS_LIMIT = 256      # bound fork bombs
 SANDBOX_IMAGE = "hatchery-sandbox:latest"
 SECCOMP_PATH = Path(__file__).parent / "seccomp.json"
-
-# Artifact subdirectory names in the results directory
-ARTIFACT_DIRS = ["strace", "tcpdump", "inotify", "filesystem", "dropped"]
 
 
 @dataclass
@@ -43,9 +49,11 @@ class ContainerConfig:
     timeout: int = DEFAULT_TIMEOUT
     cpu_limit: float = DEFAULT_CPU_LIMIT
     memory_limit: str = DEFAULT_MEMORY_LIMIT
-    network_name: str = "hatchery-fake"
+    pids_limit: int = DEFAULT_PIDS_LIMIT
+    network_name: str = DEFAULT_NETWORK_NAME
     seccomp_profile: Optional[dict] = None
-    hostname: str = "DESKTOP-WIN10"
+    hostname: str = "workstation"
+    preferred_runtime: Optional[str] = None
     extra_env: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -54,26 +62,46 @@ class ContainerConfig:
             "timeout": self.timeout,
             "cpu_limit": self.cpu_limit,
             "memory_limit": self.memory_limit,
+            "pids_limit": self.pids_limit,
             "network_name": self.network_name,
             "hostname": self.hostname,
+            "preferred_runtime": self.preferred_runtime,
         }
 
 
 @dataclass
 class ContainerResult:
     """Result of a sandbox container execution."""
+
     container_id: str = ""
     status: str = ""  # completed, timeout, error, crashed
     exit_code: Optional[int] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     duration_seconds: float = 0.0
-    strace_log: str = ""
-    tcpdump_pcap: str = ""
-    inotify_log: str = ""
     container_logs: str = ""
-    artifacts_path: Optional[Path] = None
+    artifacts: Optional[ArtifactSet] = None
+    isolation: Optional[dict] = None
     error: Optional[str] = None
+
+    @property
+    def strace_log(self) -> str:
+        """Path to the syscall log, or "" when none was captured."""
+        if self.artifacts and self.artifacts.strace_log:
+            return str(self.artifacts.strace_log)
+        return ""
+
+    @property
+    def tcpdump_pcap(self) -> str:
+        if self.artifacts and self.artifacts.pcap:
+            return str(self.artifacts.pcap)
+        return ""
+
+    @property
+    def inotify_log(self) -> str:
+        if self.artifacts and self.artifacts.inotify_log:
+            return str(self.artifacts.inotify_log)
+        return ""
 
     def to_dict(self) -> dict:
         return {
@@ -86,8 +114,9 @@ class ContainerResult:
             "strace_log": self.strace_log,
             "tcpdump_pcap": self.tcpdump_pcap,
             "inotify_log": self.inotify_log,
-            "container_logs": self.container_logs[:5000],  # Cap log size
-            "artifacts_path": str(self.artifacts_path) if self.artifacts_path else None,
+            "container_logs": self.container_logs[:5000],
+            "artifacts": self.artifacts.to_dict() if self.artifacts else None,
+            "isolation": self.isolation,
             "error": self.error,
         }
 
@@ -95,13 +124,17 @@ class ContainerResult:
 class ContainerManager:
     """Manage Docker containers for malware sandboxing.
 
-    Handles the full lifecycle: build image → create container → execute
-    sample → enforce timeout → capture artifacts → cleanup.
+    Full lifecycle: probe isolation -> ensure network -> create container ->
+    copy sample in -> execute under the tracer -> enforce timeout -> pull
+    artifacts -> destroy container.
     """
 
     def __init__(self, config: Optional[ContainerConfig] = None) -> None:
         self.config = config or ContainerConfig()
         self._client: Optional[docker_sdk.DockerClient] = None
+        self._isolation: Optional[IsolationProbe] = None
+
+    # ------------------------------------------------------------------ setup
 
     @property
     def client(self) -> docker_sdk.DockerClient:
@@ -112,12 +145,73 @@ class ContainerManager:
             self._client = docker_sdk.from_env()
         return self._client
 
+    @property
+    def isolation(self) -> IsolationProbe:
+        """Cached isolation probe for this host."""
+        if self._isolation is None:
+            try:
+                self._isolation = probe_isolation(
+                    client=self.client,
+                    preferred_runtime=self.config.preferred_runtime,
+                )
+            except Exception as e:  # noqa: BLE001
+                probe = IsolationProbe(probed=True)
+                probe.errors.append(f"Isolation probe failed: {e}")
+                self._isolation = probe
+        return self._isolation
+
+    def readiness(self) -> tuple[bool, list[str]]:
+        """Check whether a detonation can actually run, and say why not.
+
+        This is deliberately stricter than "the image exists". Every previous
+        silent failure in this class started with a readiness check that
+        answered a narrower question than the one that mattered.
+        """
+        problems: list[str] = []
+
+        if not HAS_DOCKER:
+            return False, ["docker SDK is not installed (pip install docker)"]
+
+        try:
+            self.client.ping()
+        except Exception as e:  # noqa: BLE001
+            return False, [f"Docker daemon unreachable: {e}"]
+
+        try:
+            self.client.images.get(self.config.image)
+        except docker_sdk.errors.ImageNotFound:
+            problems.append(
+                f"Sandbox image {self.config.image!r} not built — run: hatchery build"
+            )
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"Could not inspect sandbox image: {e}")
+
+        probe = self.isolation
+        if probe.runtime is None:
+            problems.append("No usable container runtime reported by the daemon")
+
+        if not probe.is_security_boundary and probe.selected is not None:
+            # Not a blocker — but the operator must know.
+            logger.warning(
+                "Running at isolation tier %d (%s): %s",
+                int(probe.tier), probe.selected.name, probe.selected.boundary,
+            )
+
+        return (not problems), problems
+
+    def is_available(self) -> bool:
+        """True when a detonation can actually run end to end."""
+        ok, _ = self.readiness()
+        return ok
+
+    # ------------------------------------------------------------------- image
+
     def build_image(self, docker_dir: Optional[Path] = None) -> str:
         """Build the sandbox Docker image.
 
         Args:
             docker_dir: Directory containing the Dockerfile.
-                       Defaults to engine/sandbox/docker/.
+                Defaults to engine/sandbox/docker/.
 
         Returns:
             Image tag string.
@@ -147,29 +241,41 @@ class ContainerManager:
             logger.error("Docker API error: %s", e)
             raise
 
+    # -------------------------------------------------------------- internals
+
     def _load_seccomp(self) -> Optional[dict]:
-        """Load the seccomp profile for container isolation."""
-        seccomp_path = SECCOMP_PATH
-        if seccomp_path.exists():
+        """Load the seccomp profile.
+
+        Note: this profile is *guest hardening*, not the sample/host boundary.
+        At isolation tier 1 the boundary does not exist regardless of seccomp,
+        and the profile must permit ``ptrace`` or the tracer cannot attach.
+        """
+        if SECCOMP_PATH.exists():
             try:
-                return json.loads(seccomp_path.read_text())
+                return json.loads(SECCOMP_PATH.read_text())
             except json.JSONDecodeError as e:
-                logger.warning("Failed to parse seccomp profile: %s", e)
+                logger.error("Failed to parse seccomp profile: %s", e)
+                return None
         return None
+
+    def _ensure_network(self) -> None:
+        """Create the sandbox network if it is missing.
+
+        Previously the network was referenced but never created, so container
+        creation failed on every fresh install. The name comes from the config
+        so the network created and the network requested cannot drift apart.
+        """
+        from engine.sandbox.network import NetworkConfig, NetworkIsolator
+
+        isolator = NetworkIsolator(NetworkConfig(name=self.config.network_name))
+        isolator.ensure_network()
 
     def _prepare_sample_in_container(
         self, container: Container, sample_path: Path, target_name: str
     ) -> None:
-        """Copy the sample file into the container.
-
-        Args:
-            container: Running Docker container.
-            sample_path: Path to the sample on the host.
-            target_name: Filename inside the container.
-        """
+        """Copy the sample into the container as a non-executable-by-default blob."""
         sample_data = sample_path.read_bytes()
 
-        # Create a tar archive in memory (Docker API requires tar for put_archive)
         tar_stream = BytesIO()
         with tarfile.open(fileobj=tar_stream, mode="w") as tar:
             info = tarfile.TarInfo(name=target_name)
@@ -178,83 +284,12 @@ class ContainerManager:
             tar.addfile(info, BytesIO(sample_data))
         tar_stream.seek(0)
 
-        success = container.put_archive(
-            "/hatchery/sample/",
-            tar_stream,
-        )
-        if not success:
+        if not container.put_archive("/hatchery/sample/", tar_stream):
             raise RuntimeError(f"Failed to copy sample into container: {sample_path}")
 
         logger.info("Copied sample %s into container", target_name)
 
-    def _extract_artifacts(
-        self, container: Container, results_dir: Path
-    ) -> dict[str, str]:
-        """Extract behavioral artifacts from a completed container.
-
-        Pulls strace logs, pcap files, inotify logs, and dropped files.
-
-        Args:
-            container: The (stopped) container.
-            results_dir: Directory to store artifacts on the host.
-
-        Returns:
-            Dict mapping artifact type to file path.
-        """
-        artifacts: dict[str, str] = {}
-
-        for subdir in ARTIFACT_DIRS:
-            (results_dir / subdir).mkdir(parents=True, exist_ok=True)
-
-        # Extract strace log
-        try:
-            strm, stat = container.get_archive("/hatchery/output/strace.log")
-            if strm:
-                with open(results_dir / "strace" / "strace.log", "wb") as f:
-                    for chunk in strm:
-                        f.write(chunk)
-                artifacts["strace_log"] = str(results_dir / "strace" / "strace.log")
-                logger.info("Extracted strace log")
-        except Exception as e:
-            logger.warning("Failed to extract strace log: %s", e)
-
-        # Extract tcpdump pcap
-        try:
-            strm, stat = container.get_archive("/hatchery/output/capture.pcap")
-            if strm:
-                with open(results_dir / "tcpdump" / "capture.pcap", "wb") as f:
-                    for chunk in strm:
-                        f.write(chunk)
-                artifacts["tcpdump_pcap"] = str(results_dir / "tcpdump" / "capture.pcap")
-                logger.info("Extracted PCAP")
-        except Exception as e:
-            logger.warning("Failed to extract PCAP: %s", e)
-
-        # Extract inotify log
-        try:
-            strm, stat = container.get_archive("/hatchery/output/inotify.log")
-            if strm:
-                with open(results_dir / "inotify" / "inotify.log", "wb") as f:
-                    for chunk in strm:
-                        f.write(chunk)
-                artifacts["inotify_log"] = str(results_dir / "inotify" / "inotify.log")
-                logger.info("Extracted inotify log")
-        except Exception as e:
-            logger.warning("Failed to extract inotify log: %s", e)
-
-        # Extract dropped files directory
-        try:
-            strm, stat = container.get_archive("/hatchery/output/dropped/")
-            if strm:
-                with open(results_dir / "dropped" / "dropped.tar", "wb") as f:
-                    for chunk in strm:
-                        f.write(chunk)
-                artifacts["dropped_files"] = str(results_dir / "dropped" / "dropped.tar")
-                logger.info("Extracted dropped files")
-        except Exception as e:
-            logger.warning("Failed to extract dropped files: %s", e)
-
-        return artifacts
+    # ---------------------------------------------------------------- execute
 
     def execute(
         self,
@@ -262,158 +297,165 @@ class ContainerManager:
         results_dir: Path,
         sample_name: Optional[str] = None,
     ) -> ContainerResult:
-        """Execute a sample in the sandbox container.
-
-        Full lifecycle: create container → copy sample → run with strace
-        → enforce timeout → capture artifacts → cleanup.
+        """Detonate a sample in the sandbox container.
 
         Args:
-            sample_path: Path to the malware sample on the host.
-            results_dir: Directory to store behavioral artifacts.
-            sample_name: Override filename in container (defaults to original name).
+            sample_path: Path to the sample on the host.
+            results_dir: Directory to write behavioral artifacts into.
+            sample_name: Override filename in container.
 
         Returns:
-            ContainerResult with execution details and artifact paths.
+            ContainerResult, including the isolation tier used and a complete
+            account of which artifacts were and were not recovered.
         """
-        if not HAS_DOCKER:
-            return ContainerResult(
-                status="error",
-                error="docker SDK not installed — cannot run sandbox",
-            )
+        result = ContainerResult()
+
+        ready, problems = self.readiness()
+        result.isolation = self.isolation.to_dict()
+        if not ready:
+            result.status = "error"
+            result.error = "Sandbox not ready: " + "; ".join(problems)
+            return result
 
         if not sample_path.exists():
-            return ContainerResult(
-                status="error",
-                error=f"Sample not found: {sample_path}",
-            )
+            result.status = "error"
+            result.error = f"Sample not found: {sample_path}"
+            return result
 
         results_dir.mkdir(parents=True, exist_ok=True)
         target_name = sample_name or sample_path.name
-        result = ContainerResult()
 
-        # Load seccomp profile
+        probe = self.isolation
+        runtime = probe.runtime
         seccomp = self.config.seccomp_profile or self._load_seccomp()
 
-        # Anti-evasion environment variables
+        # docker-py dropped `seccomp=` as a create() kwarg; the profile now has to
+        # travel through `security_opt` as inline JSON, which is what the Docker
+        # API's SecurityOpt field expects.
+        security_opt = ["no-new-privileges:true"]
+        if seccomp is not None:
+            security_opt.append(f"seccomp={json.dumps(seccomp)}")
+
+        # A Linux guest gets a Linux-looking environment. Faking Windows
+        # artifacts inside a Linux kernel is a stronger tell than faking
+        # nothing: the sample sees uname/KVM and a Windows env in one breath.
         env_vars = {
-            "COMPUTERNAME": "DESKTOP-WIN10",
-            "USERNAME": "user",
-            "USERPROFILE": "C:\\Users\\user",
-            "HOMEPATH": "C:\\Users\\user",
-            "TEMP": "C:\\Users\\user\\AppData\\Local\\Temp",
-            "TMP": "C:\\Users\\user\\AppData\\Local\\Temp",
-            "PROGRAMFILES": "C:\\Program Files",
-            "PROGRAMFILES(X86)": "C:\\Program Files (x86)",
-            "SYSTEMROOT": "C:\\Windows",
-            "OS": "Windows_NT",
-            "NUMBER_OF_PROCESSORS": "4",
+            "HISTFILE": "/home/user/.bash_history",
+            "LANG": "en_US.UTF-8",
+            "TERM": "xterm-256color",
+            "HATCHERY_TIER": str(int(probe.tier)),
+            "HATCHERY_TIMEOUT": str(self.config.timeout),
         }
         env_vars.update(self.config.extra_env)
-
-        # Convert to Docker env format
         env_list = [f"{k}={v}" for k, v in env_vars.items()]
 
+        container: Optional[Container] = None
         try:
-            # Create and start container
-            logger.info("Creating sandbox container for %s", target_name)
+            self._ensure_network()
+
+            logger.info(
+                "Creating sandbox container for %s (runtime=%s, tier=%d)",
+                target_name, runtime, int(probe.tier),
+            )
             container = self.client.containers.create(
                 image=self.config.image,
-                command=f"/hatchery/entrypoint.sh /hatchery/sample/{target_name}",
+                command=f"/hatchery/sample/{target_name}",
                 hostname=self.config.hostname,
                 environment=env_list,
                 mem_limit=self.config.memory_limit,
                 nano_cpus=int(self.config.cpu_limit * 1e9),
+                pids_limit=self.config.pids_limit,
                 network=self.config.network_name,
-                seccomp=seccomp,
+                runtime=runtime,
+                # tcpdump needs a raw socket; nothing else here does.
+                cap_add=["NET_RAW"],
+                security_opt=security_opt,
                 detach=True,
                 stdin_open=False,
                 tty=False,
-                volumes={
-                    str(results_dir.resolve()): {
-                        "bind": "/hatchery/output",
-                        "mode": "rw",
-                    },
-                },
             )
 
             result.container_id = container.id
             result.start_time = datetime.now(timezone.utc)
 
-            # Copy sample into container
             self._prepare_sample_in_container(container, sample_path, target_name)
 
-            # Start the container
             container.start()
-            logger.info("Container %s started — detonating %s", container.id[:12], target_name)
+            logger.info(
+                "Container %s started — detonating %s", container.id[:12], target_name
+            )
 
-            # Wait for completion or timeout
             try:
                 return_code = container.wait(timeout=self.config.timeout)
-                # Docker SDK returns a dict with 'StatusCode'
-                if isinstance(return_code, dict):
-                    result.exit_code = return_code.get("StatusCode")
-                else:
-                    result.exit_code = return_code
-
+                result.exit_code = (
+                    return_code.get("StatusCode")
+                    if isinstance(return_code, dict)
+                    else return_code
+                )
                 result.status = "completed"
-                logger.info("Container %s exited with code %s", container.id[:12], result.exit_code)
-
-            except Exception:
-                # Timeout — kill the container
-                logger.warning("Container %s timed out after %ds — killing", container.id[:12], self.config.timeout)
+                logger.info(
+                    "Container %s exited with code %s",
+                    container.id[:12], result.exit_code,
+                )
+            except Exception:  # noqa: BLE001 - Docker raises on wait timeout
+                logger.warning(
+                    "Container %s timed out after %ds — killing",
+                    container.id[:12], self.config.timeout,
+                )
                 container.kill()
                 result.status = "timeout"
 
             result.end_time = datetime.now(timezone.utc)
             if result.start_time and result.end_time:
-                result.duration_seconds = (result.end_time - result.start_time).total_seconds()
+                result.duration_seconds = (
+                    result.end_time - result.start_time
+                ).total_seconds()
 
-            # Get container logs
             try:
                 result.container_logs = container.logs().decode("utf-8", errors="replace")
-            except Exception as e:
-                logger.warning("Failed to get container logs: %s", e)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to read container logs: %s", e)
 
-            # Extract artifacts
+            # Recover artifacts while the container still exists. A missing
+            # or empty behavioral source is a finding, not a warning to bury.
             try:
-                artifacts = self._extract_artifacts(container, results_dir)
-                result.strace_log = artifacts.get("strace_log", "")
-                result.tcpdump_pcap = artifacts.get("tcpdump_pcap", "")
-                result.inotify_log = artifacts.get("inotify_log", "")
-            except Exception as e:
-                logger.warning("Artifact extraction failed: %s", e)
-
-            result.artifacts_path = results_dir
+                result.artifacts = collect_artifacts(container, results_dir)
+                if result.artifacts.errors:
+                    for problem in result.artifacts.errors:
+                        logger.warning("Artifact problem: %s", problem)
+                            # Only fatal when we got nothing at all.
+                if not result.artifacts.has_any_behavior:
+                    result.error = (
+                        "No behavioral data was recovered from this run — "
+                        "treat the result as inconclusive, not clean."
+                    )
+            except Exception as e:  # noqa: BLE001
+                result.status = "error"
+                result.error = f"Artifact collection failed: {e}"
+                logger.exception("Artifact collection failed")
 
         except docker_sdk.errors.ImageNotFound:
             result.status = "error"
-            result.error = f"Sandbox image '{self.config.image}' not found — run build_image() first"
+            result.error = (
+                f"Sandbox image {self.config.image!r} not found — run: hatchery build"
+            )
         except docker_sdk.errors.APIError as e:
             result.status = "error"
             result.error = f"Docker API error: {e}"
-        except Exception as e:
+            logger.error("Docker API error during detonation: %s", e)
+        except Exception as e:  # noqa: BLE001
             result.status = "error"
             result.error = f"Unexpected error: {e}"
             logger.exception("Sandbox execution failed")
 
         finally:
-            # Always clean up the container
-            try:
-                container.remove(force=True)
-                logger.info("Container %s removed", container.id[:12])
-            except Exception:
-                pass
+            # `container` may still be None if creation itself failed. Guard it
+            # so cleanup can never mask the real exception.
+            if container is not None:
+                try:
+                    container.remove(force=True)
+                    logger.info("Container %s removed", container.id[:12])
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Container cleanup failed: %s", e)
 
         return result
-
-    def is_available(self) -> bool:
-        """Check if Docker is available and the sandbox image exists."""
-        if not HAS_DOCKER:
-            return False
-        try:
-            self.client.images.get(self.config.image)
-            return True
-        except docker_sdk.errors.ImageNotFound:
-            return False
-        except Exception:
-            return False

@@ -24,6 +24,15 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
+from engine.bundle import (
+    AnalysisBundle,
+    compute_limitations,
+    normalize_events,
+    render_limitations,
+    write_bundle,
+)
+from engine.static.yara_scanner import lint_rules
+
 console = Console()
 
 # Global analysis tasks (in-memory; production would use a database)
@@ -296,6 +305,10 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
 
     # Phase 2: Sandbox execution
     sandbox_result_dict: Optional[dict] = None
+    strace_result = None
+    net_result = None
+    inotify_log_path: Optional[Path] = None
+    sandbox_error: Optional[str] = None
     if not no_sandbox:
         console.print("\n[bold]▸ Phase 2: Sandbox Execution[/bold]")
         try:
@@ -304,8 +317,21 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
             config = ContainerConfig(timeout=timeout)
             manager = ContainerManager(config)
 
-            if manager.is_available():
-                console.print("  [green]Docker available — detonating sample[/green]")
+            ready, problems = manager.readiness()
+            probe = manager.isolation
+            tier_name = probe.selected.name if probe.selected else "unknown"
+            if probe.selected and probe.selected.is_security_boundary:
+                console.print(
+                    f"  Isolation: [green]tier {int(probe.tier)} ({tier_name}, runtime={probe.runtime})[/green]"
+                )
+            else:
+                console.print(
+                    f"  Isolation: [yellow]tier {int(probe.tier)} ({tier_name}, runtime={probe.runtime})[/yellow]"
+                )
+                console.print("  [yellow]⚠ No hardware boundary: the sample shares your host kernel.[/yellow]")
+
+            if ready:
+                console.print("  [green]Sandbox ready — detonating sample[/green]")
                 sandbox_result = manager.execute(file, results_dir / "sandbox")
                 sandbox_result_dict = sandbox_result.to_dict()
 
@@ -317,10 +343,10 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                 if sandbox_result.error:
                     console.print(f"  [red]Error: {sandbox_result.error}[/red]")
 
-                # Parse strace log if available
+                # Parse syscall log if available
                 if sandbox_result.strace_log:
                     from engine.monitor.strace_parser import StraceParser
-                    console.print("\n  [bold]Parsing strace log...[/bold]")
+                    console.print("\n  [bold]Parsing syscall log...[/bold]")
                     parser = StraceParser()
                     strace_path = Path(sandbox_result.strace_log)
                     if strace_path.exists():
@@ -328,6 +354,14 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                         console.print(f"  Events parsed: [cyan]{strace_result.parsed_events}[/cyan]")
                         console.print(f"  Network connections: [red]{len(strace_result.network_connections)}[/red]")
                         console.print(f"  Process operations: [red]{len(strace_result.process_operations)}[/red]")
+
+                # Filesystem events recorded by inotifywait
+                if sandbox_result.artifacts and sandbox_result.artifacts.inotify_log:
+                    inotify_log_path = sandbox_result.artifacts.inotify_log
+                    line_count = len(
+                        inotify_log_path.read_text(errors="replace").splitlines()
+                    )
+                    console.print(f"  Filesystem events: [red]{line_count}[/red]")
 
                 # Analyze network capture if available
                 if sandbox_result.tcpdump_pcap:
@@ -340,11 +374,16 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
                         console.print(f"  Connections: [cyan]{len(net_result.connections)}[/cyan]")
                         console.print(f"  DNS queries: [cyan]{len(net_result.dns_queries)}[/cyan]")
                         console.print(f"  C2 detections: [red]{len(net_result.c2_detections)}[/red]")
+
+                if sandbox_result.error:
+                    sandbox_error = sandbox_result.error
             else:
-                console.print("  [yellow]Docker not available — skipping sandbox execution[/yellow]")
-                console.print("  [dim]Run 'hatchery build' to create the sandbox image[/dim]")
+                console.print("  [yellow]Sandbox not ready — skipping detonation[/yellow]")
+                for problem in problems:
+                    console.print(f"    • [yellow]{problem}[/yellow]")
         except Exception as e:
             console.print(f"  [red]Sandbox error: {e}[/red]")
+            sandbox_error = str(e)
 
     # IOC Extraction
     console.print("\n[bold]▸ IOC Extraction[/bold]")
@@ -381,8 +420,50 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     else:
         console.print("[dim]No ATT&CK techniques mapped[/dim]")
 
-    # Generate reports
-    console.print("\n[bold]▸ Report Generation[/bold]")
+    # Unified behavioral event stream: syscalls + filesystem + network
+    events = normalize_events(
+        strace_result=strace_result,
+        inotify_log=inotify_log_path,
+        net_result=net_result,
+    )
+
+    # One bundle, one source of truth. Everything downstream — the API, the
+    # dashboard, future exporters — reads these two files.
+    console.print("\n[bold]▸ Result Bundle[/bold]")
+    limitations = compute_limitations(
+        isolation=sandbox_result_dict.get("isolation") if sandbox_result_dict else None,
+        sandbox=sandbox_result_dict,
+        artifacts=sandbox_result_dict.get("artifacts") if sandbox_result_dict else None,
+        events=events,
+    )
+    bundle = AnalysisBundle(
+        task_id=task_id,
+        sample={
+            "file_name": file.name,
+            "file_path": str(file),
+            "file_size": hash_result.file_size,
+            "file_type": metadata.file_type,
+            **hash_result.to_dict(),
+        },
+        isolation=sandbox_result_dict.get("isolation") if sandbox_result_dict else None,
+        static=static_data,
+        sandbox=sandbox_result_dict,
+        iocs=ioc_report.to_dict().get("iocs", []),
+        mitre=mitre_result.to_dict(),
+        events=events,
+        limitations=limitations,
+        errors=[sandbox_error] if sandbox_error else [],
+    )
+    analysis_path, events_path = write_bundle(results_dir / "bundle", bundle)
+    summary = bundle.summary()
+    console.print(f"  Events: [cyan]{summary['events_total']}[/cyan] {summary['events_by_category']}")
+    console.print(f"  IOCs: [cyan]{summary['iocs_total']}[/cyan] ({summary['iocs_high_or_critical']} high/critical)")
+    console.print(f"  analysis.json: [cyan]{analysis_path}[/cyan]")
+    console.print(f"  events.jsonl:  [cyan]{events_path}[/cyan]")
+    if summary["inconclusive"]:
+        console.print("  [red]INCONCLUSIVE: no behavioral events were recorded.[/red]")
+
+    # Human-readable report, generated from the same data
     report_gen = ReportGenerator()
     report_dir = report_gen.write_report(
         results_dir,
@@ -391,9 +472,10 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         static_results=static_data,
         sandbox_results=sandbox_result_dict,
         ioc_report=ioc_report.to_dict(),
+        limitations=limitations,
+        events=events,
     )
     console.print(f"  Markdown: [cyan]{report_dir / 'report.md'}[/cyan]")
-    console.print(f"  JSON: [cyan]{report_dir / 'report.json'}[/cyan]")
 
     # STIX export
     stix_exporter = STIXExporter()
@@ -407,6 +489,9 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     task_data["end_time"] = time.time()
     task_data["results_dir"] = str(results_dir)
     _tasks[task_id] = task_data
+
+    if limitations:
+        console.print(render_limitations(limitations), highlight=False)
 
     console.print(Panel(
         f"Task ID: [cyan]{task_id}[/cyan]\n"
@@ -551,6 +636,95 @@ def build() -> None:
     except Exception as e:
         console.print(f"[red]Build failed: {e}[/red]")
         console.print("[dim]Make sure Docker is running and you have permission[/dim]")
+
+
+@cli.command()
+def doctor() -> None:
+    """Check host readiness: isolation tier, sandbox image, and tooling.
+
+    Answers the question that matters before you detonate anything: what
+    boundary is actually in force on this machine, and what is missing.
+    """
+    from engine.sandbox.container import ContainerConfig, ContainerManager
+    from engine.sandbox.isolation import describe_tiers
+
+    console.print(Panel("Host readiness", title="\U0001fa7a HATCHERY Doctor"))
+    console.print(describe_tiers())
+    console.print()
+
+    manager = ContainerManager(ContainerConfig())
+    probe = manager.isolation
+
+    if probe.errors:
+        for note in probe.errors:
+            console.print(f"[yellow]• {note}[/yellow]")
+
+    if probe.selected:
+        console.print(
+            f"Selected: [cyan]tier {int(probe.tier)} ({probe.selected.name})[/cyan] "
+            f"via runtime [cyan]{probe.runtime}[/cyan]"
+        )
+        if probe.selected.is_security_boundary:
+            console.print(f"[green]Boundary: {probe.selected.boundary}[/green]")
+        else:
+            console.print(f"[red]No boundary: {probe.selected.boundary}[/red]")
+        console.print(f"Monitoring: {probe.selected.monitoring}")
+    else:
+        console.print("[red]No isolation tier available — dynamic analysis cannot run.[/red]")
+
+    console.print()
+    ready, problems = manager.readiness()
+    if ready:
+        console.print("[green]Sandbox ready — detonation can run.[/green]")
+    else:
+        console.print("[red]Sandbox NOT ready:[/red]")
+        for problem in problems:
+            console.print(f"  • [red]{problem}[/red]")
+
+    console.print()
+    lint = lint_rules()
+    if lint.ok:
+        console.print(
+            f"[green]Rules OK[/green]: {lint.files_checked} files, "
+            f"{len(lint.warnings)} unaccepted warning(s)"
+        )
+    else:
+        console.print(f"[red]Rules FAILED[/red]: {len(lint.errors)} error(s)")
+        for error in lint.errors:
+            console.print(f"  • [red]{error}[/red]")
+    for warning in lint.warnings:
+        console.print(f"  • [yellow]rule warning: {warning}[/yellow]")
+
+
+@cli.group()
+def rules() -> None:
+    """Inspect and validate the YARA rule sets."""
+
+
+@rules.command("lint")
+def rules_lint() -> None:
+    """Lint every YARA rule file. Exits non-zero on any error, so CI can gate on it."""
+    report = lint_rules()
+
+    console.print(
+        f"Checked [cyan]{report.files_checked}[/cyan] rule file(s) in {report.rules_dir}"
+    )
+
+    for error in report.errors:
+        console.print(f"[red]ERROR[/red] {error}")
+    for warning in report.warnings:
+        console.print(f"[yellow]WARN [/yellow] {warning}")
+    for key, reason in report.accepted_warnings.items():
+        console.print(f"[dim]ACCEPT {key} — {reason}[/dim]")
+    for missing in report.rules_without_attack_mapping:
+        console.print(f"[yellow]WARN [/yellow] {missing} has no mitre_attck mapping")
+
+    if report.ok:
+        console.print("[green]Rule lint passed[/green]")
+        return
+
+    console.print(f"[red]Rule lint failed: {len(report.errors)} error(s)[/red]")
+    raise SystemExit(1)
 
 
 def main() -> None:

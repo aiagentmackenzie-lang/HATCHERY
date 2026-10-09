@@ -10,7 +10,11 @@ import { analysisRoutes } from './routes/analysis.js';
 import { getDb } from './db/index.js';
 
 const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
-const HOST = process.env.HATCHERY_HOST ?? '0.0.0.0';
+// Bind to loopback by default. This API stores live malware samples and serves
+// their artefacts; exposing it on every interface by default is not a safe
+// default. Set HATCHERY_HOST=0.0.0.0 deliberately, and set HATCHERY_API_TOKEN.
+const HOST = process.env.HATCHERY_HOST ?? '127.0.0.1';
+const API_TOKEN = process.env.HATCHERY_API_TOKEN ?? '';
 
 const app = Fastify({ logger: false });
 
@@ -19,6 +23,21 @@ getDb();
 
 // CORS for dashboard
 app.register(cors, { origin: true });
+
+// Optional shared-secret auth. Off by default so the local dashboard keeps
+// working, but the operator is told plainly that the API is open.
+app.addHook('onRequest', async (request: any, reply: any) => {
+  if (!API_TOKEN) return;
+  if (request.url === '/api/health') return;
+  const header = request.headers['authorization'] ?? '';
+  const bearer = typeof header === 'string' && header.startsWith('Bearer ')
+    ? header.slice(7)
+    : '';
+  const provided = bearer || String(request.headers['x-hatchery-token'] ?? '');
+  if (provided !== API_TOKEN) {
+    return reply.code(401).send({ error: 'Unauthorized' });
+  }
+});
 
 // Multipart file uploads (e.g. PhishHawk attachment detonation)
 app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
@@ -92,4 +111,11 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   console.log(`🔥 HATCHERY API running on http://${HOST}:${PORT}`);
   console.log(`   WebSocket:    ws://${HOST}:${PORT}/ws`);
   console.log(`   Dashboard:    http://localhost:5173 (run: cd dashboard && npm run dev)`);
+  if (!API_TOKEN) {
+    console.warn(
+      '⚠  HATCHERY_API_TOKEN is not set: this API is unauthenticated. ' +
+      'It accepts sample submissions and serves sample artefacts. ' +
+      'Do not bind it to a non-loopback interface without setting a token.',
+    );
+  }
 });

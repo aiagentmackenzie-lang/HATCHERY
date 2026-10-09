@@ -1,91 +1,82 @@
 {
+    "_comment": [
+        "HATCHERY sandbox seccomp profile — guest hardening, NOT the sample/host boundary.",
+        "",
+        "Read this before changing anything:",
+        "  * This profile is a DENY-list. It is hardening. It is not an isolation boundary.",
+        "    The boundary comes from the isolation tier (see engine/sandbox/isolation.py).",
+        "    At tier 1 the sample shares the host kernel and this profile does not change that.",
+        "  * ptrace MUST stay allowed. The sandbox observes behaviour with strace, which",
+        "    requires ptrace. A profile that denies ptrace silently disables monitoring —",
+        "    which is how this file previously broke its own product.",
+        "  * Add rules here for things that are clearly never legitimate during a",
+        "    detonation. Do not add rules for anything the sample or tracer might need.",
+        "  * Validated by tests/test_seccomp.py, which asserts defaultAction, that ptrace,",
+        "    socket, clone and execve are permitted, and that every rule parses."
+    ],
     "defaultAction": "SCMP_ACT_ALLOW",
     "defaultErrnoRet": 1,
     "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
     "syscalls": [
         {
-            "names": ["mount", "umount2", "pivot_root", "chroot"],
-            "action": "SCMP_ACT_ERRNO",
-            "erronoRet": 1,
-            "comment": "Prevent filesystem escape"
-        },
-        {
-            "names": ["ptrace"],
+            "names": ["mount", "umount2", "pivot_root", "chroot", "setns", "unshare"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent container escape via ptrace"
+            "comment": "Namespace and filesystem escape primitives. A sample detonating in place has no reason to need these."
         },
         {
             "names": ["reboot", "kexec_load", "kexec_file_load"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent system reboot"
+            "comment": "Host reboot / kernel replacement."
+        },
+        {
+            "names": ["init_module", "finit_module", "delete_module", "create_module"],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1,
+            "comment": "Kernel module loading."
         },
         {
             "names": ["keyctl", "add_key", "request_key"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent keyring abuse"
+            "comment": "Kernel keyring abuse and host credential discovery."
         },
         {
-            "names": ["acct"],
+            "names": ["bpf", "perf_event_open", "io_uring_setup", "io_uring_enter", "io_uring_register"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent process accounting manipulation"
+            "comment": "Kernel instrumentation and async I/O rings. These are also how eBPF rootkits install themselves."
         },
         {
-            "names": ["bpf"],
+            "names": ["acct", "vhangup", "syslog"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent BPF program loading"
+            "comment": "Accounting, terminal and kernel log manipulation."
         },
         {
             "names": ["clock_adjtime", "clock_settime", "settimeofday", "stime"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent system clock manipulation"
-        },
-        {
-            "names": ["create_module", "delete_module", "finit_module", "init_module"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "comment": "Prevent kernel module loading"
-        },
-        {
-            "names": ["iopl", "ioperm"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "comment": "Prevent I/O port access"
+            "comment": "System clock manipulation."
         },
         {
             "names": ["swapon", "swapoff"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent swap manipulation"
+            "comment": "Swap manipulation."
         },
         {
-            "names": ["syslog"],
+            "names": ["iopl", "ioperm"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent kernel log access"
-        },
-        {
-            "names": ["vhangup"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "comment": "Prevent virtual terminal hangup"
-        },
-        {
-            "names": ["perf_event_open"],
-            "action": "SCMP_ACT_ERRNO",
-            "errnoRet": 1,
-            "comment": "Prevent performance counter access"
+            "comment": "Direct I/O port access."
         },
         {
             "names": ["process_vm_readv", "process_vm_writev"],
             "action": "SCMP_ACT_ERRNO",
             "errnoRet": 1,
-            "comment": "Prevent cross-process memory access"
+            "comment": "Cross-process memory access. Note this blocks reading another process's memory, not the sample's own."
         }
     ]
 }

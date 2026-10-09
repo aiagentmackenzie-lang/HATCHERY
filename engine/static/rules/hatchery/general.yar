@@ -22,7 +22,9 @@ rule HATCHERY_Suspicious_Base64_EncodedPayload {
         mitre_attck = "T1027: Obfuscated Files or Information"
 
     strings:
-        $b64 = /[A-Za-z0-9+\/]{80,}={0,2}/
+        // Upper bound the quantifier: an unbounded {80,} against a short
+        // alphabet is a quadratic scan on large files, which YARA-X flags.
+        $b64 = /[A-Za-z0-9+\/]{80,512}={0,2}/
 
     condition:
         #b64 > 3
@@ -34,10 +36,11 @@ rule HATCHERY_Suspicious_HexStrings {
         author = "HATCHERY"
         date = "2026-04-14"
         severity = "low"
+        mitre_attck = "T1027: Obfuscated Files or Information"
 
     strings:
-        $hex1 = { 4D 5A }  // MZ header inside non-PE file (embedded PE)
-        $hex2 = { 50 4B 03 04 }  // ZIP/PK header (embedded archive)
+        $mz = "MZ" ascii        // embedded PE header inside a non-PE file
+        $pk = { 50 4B 03 04 }   // embedded ZIP/archive header
 
     condition:
         any of them
