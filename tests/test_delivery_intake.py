@@ -315,12 +315,11 @@ def test_decode_js_escapes_is_best_effort_only():
 @pytest.mark.parametrize(
     "payload,fmt",
     [
-        (b"%PDF-1.7\n1 0 obj\n", "pdf"),
-        (bytes.fromhex("4c0000000114020000000000c000000000000046") + b"\x00" * 16, "lnk"),
         (bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 64, "ole"),
         (bytes.fromhex("377abcaf271c") + b"\x00" * 32, "7z"),
         (b"Rar!\x1a\x07\x00" + b"\x00" * 32, "rar"),
         (b"{\\rtf1\\ansi hello}", "rtf"),
+        (b"MSCF" + b"\x00" * 32, "cab"),
     ],
 )
 def test_unsupported_delivery_formats_are_reported(tmp_path: Path, payload: bytes, fmt: str):
@@ -332,21 +331,31 @@ def test_unsupported_delivery_formats_are_reported(tmp_path: Path, payload: byte
     assert all(item["reason"] for item in result.unsupported), "every refusal needs a reason"
 
 
-def test_iso_image_is_detected_but_loud(tmp_path: Path):
+def test_iso_with_no_directory_entries_is_reported_loudly(tmp_path: Path):
+    """An ISO that parses but lists no files is a finding, not a clean result."""
     path = tmp_path / "image.iso"
-    payload = bytearray(0x8010)
+    payload = bytearray(0x8800)
+    payload[0x8000] = 1              # primary volume descriptor
     payload[0x8001:0x8006] = b"CD001"
     path.write_bytes(bytes(payload))
     result = extract_delivery(path, tmp_path / "out")
     assert result.format is DeliveryFormat.ISO
-    assert any(item["format"] == "iso" for item in result.unsupported)
+    assert result.children == []
+    assert "iso-no-files" in result.flags
 
 
 def test_unsupported_format_nested_in_a_zip_is_still_reported(tmp_path: Path):
-    path = _write_zip(tmp_path / "bundle.zip", {"doc.pdf": b"%PDF-1.7\n1 0 obj\n"})
+    path = _write_zip(tmp_path / "bundle.zip", {"doc.7z": bytes.fromhex("377abcaf271c") + b"\x00" * 32})
     result = extract_delivery(path, tmp_path / "out")
-    assert any(c.name == "doc.pdf" for c in result.children)
-    assert any(item["format"] == "pdf" for item in result.unsupported)
+    assert any(c.name == "doc.7z" for c in result.children)
+    assert any(item["format"] == "7z" for item in result.unsupported)
+
+
+def test_pdf_nested_in_a_zip_is_now_extracted(tmp_path: Path):
+    path = _build_pdf(tmp_path, attachment=b"nested payload")
+    zipped = _write_zip(tmp_path / "bundle.zip", {"invoice.pdf": path.read_bytes()})
+    result = extract_delivery(zipped, tmp_path / "out")
+    assert any(child.path.read_bytes() == b"nested payload" for child in result.children)
 
 
 # ---------------------------------------------------------------------------
@@ -400,3 +409,184 @@ def test_extracted_children_get_a_coarse_type_not_unknown(tmp_path: Path):
     assert types["run.sh"] == "script"
     assert types["stub.exe"] == "pe"
     assert types["blob.bin"] == "bin"
+
+
+# ---------------------------------------------------------------------------
+# Shell link (LNK) — fixtures written by pylnk3, an independent implementation
+# ---------------------------------------------------------------------------
+
+
+def _build_lnk(tmp_path: Path, *, link_info: bool = True, target: str = r"C:\Windows\System32\cmd.exe",
+               arguments: str = "/c calc", work_dir: str = r"C:\Windows", description: str = "Invoice",
+               icon: str = r"C:\Windows\System32\shell32.dll") -> Path:
+    pylnk3 = pytest.importorskip("pylnk3")
+    lnk = pylnk3.for_file(target, arguments=arguments, description=description,
+                          work_dir=work_dir, icon_file=icon)
+    if link_info:
+        info = pylnk3.LinkInfo()
+        info.local = 1
+        info.remote = 0
+        info.drive_type = pylnk3.DRIVE_FIXED
+        info.drive_serial = 0x12345678
+        info.volume_label = "OS"
+        info.local_base_path = target
+        lnk._link_info = info
+        lnk.link_flags.HasLinkInfo = True
+        lnk.link_flags.ForceNoLinkInfo = False
+    path = tmp_path / "invoice.lnk"
+    buf = io.BytesIO()
+    lnk.save(buf)
+    path.write_bytes(buf.getvalue())
+    return path
+
+
+def test_lnk_link_info_target_arguments_and_workdir(tmp_path: Path):
+    path = _build_lnk(tmp_path, link_info=True)
+    result = extract_delivery(path, tmp_path / "out")
+    assert result.format is DeliveryFormat.LNK
+    link = result.details["link"]
+    assert link["target"] == r"C:\Windows\System32\cmd.exe"
+    assert link["arguments"] == "/c calc"
+    assert link["working_dir"] == r"C:\Windows"
+    assert "lnk-arguments" in result.flags
+    assert "lnk-executable-target" in result.flags
+    # The decoded fields must land in a file so YARA/strings can see them
+    # (the strings are UTF-16 on disk and would otherwise be missed).
+    assert any(b"/c calc" in child.path.read_bytes() for child in result.children)
+
+
+def test_lnk_idlist_only_target_is_recovered(tmp_path: Path):
+    path = _build_lnk(tmp_path, link_info=False)
+    result = extract_delivery(path, tmp_path / "out")
+    link = result.details["link"]
+    assert "cmd.exe" in (link.get("target_idlist") or link.get("target", ""))
+    assert link["arguments"] == "/c calc"
+
+
+def test_lnk_remote_target_is_flagged(tmp_path: Path):
+    path = _build_lnk(tmp_path, target=r"\\evil.example\share\payload.exe")
+    result = extract_delivery(path, tmp_path / "out")
+    assert "lnk-remote-target" in result.flags
+
+
+# ---------------------------------------------------------------------------
+# ISO9660 / IMG — fixtures written by pycdlib, an independent implementation
+# ---------------------------------------------------------------------------
+
+
+def _build_iso(tmp_path: Path, *, joliet: bool = False, members: dict[str, bytes] | None = None) -> Path:
+    pycdlib = pytest.importorskip("pycdlib")
+    members = members or {"note.txt": b"plain iso file"}
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=1, joliet=3 if joliet else None, vol_ident="HATCHERY")
+    for name, payload in members.items():
+        if joliet:
+            iso.add_fp(io.BytesIO(payload), len(payload),
+                       iso_path=f"/{name.upper()};1", joliet_path=f"/{name}")
+        else:
+            iso.add_fp(io.BytesIO(payload), len(payload), iso_path=f"/{name.upper()};1")
+    path = tmp_path / ("joliet.iso" if joliet else "plain.iso")
+    iso.write(str(path))
+    iso.close()
+    return path
+
+
+def test_iso_plain_extracts_files(tmp_path: Path):
+    path = _build_iso(tmp_path, joliet=False)
+    result = extract_delivery(path, tmp_path / "out")
+    assert result.format is DeliveryFormat.ISO
+    assert result.details["iso"]["joliet"] is False
+    assert any(child.name.upper().startswith("NOTE") for child in result.children)
+    assert any(child.path.read_bytes() == b"plain iso file" for child in result.children)
+
+
+def test_iso_joliet_names_are_decoded(tmp_path: Path):
+    path = _build_iso(tmp_path, joliet=True, members={"run.sh": b"#!/bin/sh\necho hi\n"})
+    result = extract_delivery(path, tmp_path / "out")
+    assert result.details["iso"]["joliet"] is True
+    names = [child.name for child in result.children]
+    assert any(name.endswith("run.sh") for name in names), names
+    assert "iso9660-joliet" in result.flags
+
+
+def test_iso_recurses_into_an_extracted_container(tmp_path: Path):
+    inner = _write_zip(tmp_path / "inner.zip", {"payload.js": b"alert(1)"})
+    path = _build_iso(tmp_path, joliet=True, members={"inner.zip": inner.read_bytes()})
+    result = extract_delivery(path, tmp_path / "out")
+    assert any(child.name.endswith("payload.js") for child in result.children)
+
+
+# ---------------------------------------------------------------------------
+# PDF — fixtures written by pypdf, an independent implementation
+# ---------------------------------------------------------------------------
+
+
+def _build_pdf(tmp_path: Path, *, attachment: bytes = b"evil embedded payload",
+               attachment_name: str = "payload.bin", javascript: str | None = None) -> Path:
+    pypdf = pytest.importorskip("pypdf")
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_attachment(attachment_name, attachment)
+    if javascript:
+        writer.add_js(javascript)
+    path = tmp_path / "invoice.pdf"
+    writer.write(str(path))
+    return path
+
+
+def test_pdf_embedded_file_is_extracted(tmp_path: Path):
+    path = _build_pdf(tmp_path)
+    result = extract_delivery(path, tmp_path / "out")
+    assert result.format is DeliveryFormat.PDF
+    assert "pdf-embedded-file" in result.flags
+    assert any(child.path.read_bytes() == b"evil embedded payload" for child in result.children)
+
+
+def test_pdf_javascript_is_extracted_and_flagged(tmp_path: Path):
+    path = _build_pdf(tmp_path, javascript="app.alert('hi')")
+    result = extract_delivery(path, tmp_path / "out")
+    assert "pdf-javascript" in result.flags
+    js_children = [c for c in result.children if c.extractor == "pdf-js"]
+    assert js_children, "a /JS blob must become an extracted child"
+    assert any(b"app.alert" in c.path.read_bytes() for c in js_children)
+
+
+def test_pdf_flate_compressed_embedded_file_is_decoded(tmp_path: Path):
+    import zlib
+
+    compressed = zlib.compress(b"compressed embedded payload")
+    filespec = b"<< /Type /Filespec /F (payload.bin) /EF << /F 2 0 R >> >>"
+    embedded = (
+        b"<< /Type /EmbeddedFile /Length " + str(len(compressed)).encode()
+        + b" /Filter /FlateDecode >>"
+    )
+    body = (
+        b"%PDF-1.4\n1 0 obj\n" + filespec + b"\nendobj\n"
+        b"2 0 obj\n" + embedded + b"\nstream\n" + compressed + b"\nendstream\nendobj\n"
+        b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+    )
+    path = tmp_path / "flate.pdf"
+    path.write_bytes(body)
+    result = extract_delivery(path, tmp_path / "out")
+    assert any(child.path.read_bytes() == b"compressed embedded payload" for child in result.children)
+
+
+def test_pdf_launch_and_uri_are_flagged(tmp_path: Path):
+    path = tmp_path / "action.pdf"
+    path.write_bytes(
+        b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /OpenAction 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /S /URI /URI (http://evil.example/x) >>\nendobj\n"
+        b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+    )
+    result = extract_delivery(path, tmp_path / "out")
+    assert "pdf-open-action" in result.flags
+    assert "pdf-uri-action" in result.flags
+
+
+def test_real_pdf_capture_when_present():
+    candidates = sorted(Path.home().glob("Downloads/*.pdf")) + sorted(Path.home().glob("*/*.pdf"))
+    if not candidates:
+        pytest.skip("no real PDF on this host")
+    result = extract_delivery(candidates[0], Path("/tmp/hatchery-real-pdf"))
+    assert result.format is DeliveryFormat.PDF
+    assert not result.errors, result.errors

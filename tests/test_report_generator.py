@@ -259,3 +259,32 @@ def test_markdown_renders_delivery_section_and_unsupported_list():
     assert "word/vbaProject.bin" in md
     assert "Detected but not extracted" in md
     assert "not implemented in this revision" in md
+
+
+def test_markdown_renders_shell_link_details():
+    static = {
+        "delivery": {
+            "format": "lnk",
+            "format_detail": "Windows shell link",
+            "flags": ["lnk", "lnk-arguments", "lnk-executable-target"],
+            "children": [],
+            "unsupported": [],
+            "errors": [],
+            "truncated": False,
+            "details": {
+                "link": {
+                    "target": r"C:\Windows\System32\cmd.exe",
+                    "arguments": "/c powershell -enc SGVsbG8=",
+                    "working_dir": r"C:\Users\Public",
+                }
+            },
+        }
+    }
+    md = ReportGenerator().generate_markdown(
+        sample_name="invoice.lnk",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 501},
+        static_results=static,
+    )
+    assert "**Shell link:**" in md
+    assert r"C:\Windows\System32\cmd.exe" in md
+    assert "powershell -enc SGVsbG8=" in md

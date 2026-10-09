@@ -32,6 +32,12 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.15",
     "mypy>=1.10",
+    # Test-only fixture builders: real LNK / ISO9660 / PDF bytes written by an
+    # independent implementation, so the extractors are validated against the
+    # formats and not against a hand-written string. The runtime stays stdlib.
+    "pylnk3>=0.4.3",
+    "pycdlib>=1.22.0",
+    "pypdf>=6.0",
 ]
 
 [tool.ruff.lint]

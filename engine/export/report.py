@@ -156,6 +156,31 @@ class ReportGenerator:
                             f" — {item.get('reason', '')}"
                         )
                     lines.append("")
+
+                # Format-specific facts the extractors decoded (a shell link's
+                # target and arguments, an ISO's volume identifier).
+                details = delivery.get("details") or {}
+                link = details.get("link") or {}
+                if link:
+                    lines.append("**Shell link:**")
+                    lines.append("")
+                    for key, label in (
+                        ("target", "target"), ("target_idlist", "target (ID list)"),
+                        ("network_share", "network share"), ("arguments", "arguments"),
+                        ("working_dir", "working dir"), ("description", "description"),
+                        ("icon_location", "icon"),
+                    ):
+                        if link.get(key):
+                            lines.append(f"- {label}: `{link[key]}`")
+                    for target in link.get("environment_target") or []:
+                        lines.append(f"- environment target: `{target}`")
+                    lines.append("")
+                iso = details.get("iso") or {}
+                if iso:
+                    volume = iso.get("volume_identifier") or ""
+                    flavor = " (Joliet)" if iso.get("joliet") else ""
+                    lines.append(f"**ISO9660:** volume `{volume}`{flavor}")
+                    lines.append("")
                 if delivery.get("truncated"):
                     lines.append(
                         "> **Note:** extraction stopped at a configured limit; the "

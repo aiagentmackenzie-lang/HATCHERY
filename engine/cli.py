@@ -205,6 +205,18 @@ def _print_delivery(result: Any) -> None:
     for problem in result.errors:
         console.print(f"  [red]delivery error: {problem}[/red]")
 
+    details = result.details or {}
+    link = details.get("link") or {}
+    if link.get("target") or link.get("arguments"):
+        target = link.get("target") or link.get("target_idlist") or ""
+        console.print(f"  LNK target: [cyan]{target}[/cyan]")
+        if link.get("arguments"):
+            console.print(f"  LNK arguments: [yellow]{link['arguments']}[/yellow]")
+    iso = details.get("iso") or {}
+    if iso:
+        flavor = " (Joliet)" if iso.get("joliet") else ""
+        console.print(f"  ISO volume: [cyan]{iso.get('volume_identifier', '')}[/cyan]{flavor}")
+
 
 def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:
     """Open a delivery container and statically analyse everything inside.

@@ -14,7 +14,7 @@ The seccomp profile in `engine/sandbox/seccomp.json` is a deny-list and is there
 
 ## Delivery-format intake
 
-A delivery container is untrusted input that HATCHERY deliberately parses. `engine/intake/delivery.py` is bounded: depth 3, at most 64 children, 64 MiB per member, 256 MiB uncompressed, a 200:1 compression-ratio guard, and refusal of symlink/device and encrypted members. Member names are flattened under `results/<task_id>/delivery/`, so an archive cannot write outside it. Extraction never executes anything. Formats that are detected but not extracted (OLE/CFB, PDF, LNK, ISO/IMG, RTF, 7z, RAR, CAB) are reported as unsupported with a reason instead of being silently ignored.
+A delivery container is untrusted input that HATCHERY deliberately parses. `engine/intake/delivery.py` is bounded: depth 3, at most 64 children, 64 MiB per member, 256 MiB uncompressed, a 200:1 compression-ratio guard, and refusal of symlink/device and encrypted members. Member names are flattened under `results/<task_id>/delivery/`, so an archive cannot write outside it. Extraction never executes anything. ZIP/OOXML, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG and PDF are parsed. Formats that are detected but not extracted (OLE/CFB, RTF, 7z, RAR, CAB) are reported as unsupported with a reason instead of being silently ignored. The LNK, ISO9660 and PDF parsers are exercised in tests against container bytes written by independent libraries (`pylnk3`, `pycdlib`, `pypdf`), which are dev-only dependencies; the runtime parses untrusted input with the standard library alone.
 
 ## Hardening checklist for operators
 

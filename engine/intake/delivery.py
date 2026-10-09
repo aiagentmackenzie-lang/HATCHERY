@@ -12,11 +12,12 @@ This is the single intake path for delivery formats. It is the one place the
 intake can fail, and it is *loud* about what it did and did not do:
 
 * Supported container extraction: ZIP (including OOXML Office / JAR / APK),
-  tar, gzip, bzip2, xz, HTML/HTA and SVG script blocks.
-* Formats that are *detected but deliberately not extracted* in this revision
-  (OLE/CFB legacy Office, PDF, shell-link, ISO/IMG, RTF, 7z, RAR, CAB) are
-  reported as unsupported, with a reason, and still reach the string extractor
-  as raw bytes. They never silently produce "no findings".
+  tar, gzip, bzip2, xz, HTML/HTA, SVG script blocks, Windows shell links
+  (MS-SHLLINK), ISO9660/IMG images and PDF embedded files + JavaScript.
+* Formats that are *detected but not extracted* in this revision (OLE/CFB
+  legacy Office, RTF, 7z, RAR, CAB) are reported as unsupported, with a
+  reason, and still reach the string extractor as raw bytes. They never
+  silently produce "no findings".
 * Every extracted child is hashed, classified, and (at a higher level) run
   through the static pipeline. Extraction is bounded: depth, child count,
   per-entry size, total size and compression ratio are all capped, names are
@@ -28,6 +29,7 @@ never executes anything.
 
 from __future__ import annotations
 
+import base64
 import bz2
 import gzip
 import hashlib
@@ -36,6 +38,7 @@ import lzma
 import re
 import tarfile
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from html.parser import HTMLParser
@@ -151,6 +154,7 @@ class DeliveryIntakeResult:
     flags: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     truncated: bool = False
+    details: dict = field(default_factory=dict)
 
     @property
     def format(self) -> DeliveryFormat:
@@ -166,6 +170,7 @@ class DeliveryIntakeResult:
             "flags": sorted(set(self.flags)),
             "errors": list(self.errors),
             "truncated": self.truncated,
+            "details": dict(self.details),
         }
 
 
@@ -371,6 +376,7 @@ class _State:
     errors: list[str] = field(default_factory=list)
     truncated: bool = False
     total_bytes: int = 0
+    details: dict = field(default_factory=dict)
 
     def add_flag(self, flag: str) -> None:
         if flag not in self.flags:
@@ -755,6 +761,544 @@ def _extract_markup(path: Path, state: _State, depth: int, kind: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shell link (LNK) — MS-SHLLINK
+# ---------------------------------------------------------------------------
+
+_LNK_ROOT = 0x1F
+_LNK_DRIVE = 0x2F
+_LNK_PATH_TYPES = {0x31, 0x32, 0x35, 0x36}
+_LNK_EXECUTABLE_SUFFIXES = (
+    ".exe", ".dll", ".scr", ".js", ".jse", ".vbs", ".vbe", ".ps1",
+    ".bat", ".cmd", ".hta", ".msi", ".iso", ".img", ".lnk",
+)
+
+
+def _u16le(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset:offset + 2], "little")
+
+
+def _u32le(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset:offset + 4], "little")
+
+
+def _cstring(data: bytes, offset: int, encoding: str = "utf-8") -> str:
+    if offset < 0 or offset >= len(data):
+        return ""
+    end = data.find(b"\x00", offset)
+    if end < 0:
+        end = len(data)
+    return data[offset:end].decode(encoding, "replace")
+
+
+def _lnk_string(data: bytes, offset: int, unicode: bool) -> tuple[str, int]:
+    """Read a counted-string from a shell link; return (text, next offset)."""
+    count = _u16le(data, offset)
+    offset += 2
+    if unicode:
+        raw = data[offset:offset + count * 2]
+        return raw.decode("utf-16-le", "replace"), offset + count * 2
+    raw = data[offset:offset + count]
+    return raw.decode("cp1252", "replace"), offset + count
+
+
+def _lnk_idlist_path(idlist: bytes) -> str:
+    """Best-effort target path from a LinkTargetIDList (shell item list).
+
+    The item list is the form ``WScript.Shell.CreateShortcut`` writes when only
+    ``TargetPath`` is set. Only the short (8.3) segment names are decoded here;
+    LinkInfo, when present, is authoritative and is preferred by the caller.
+    """
+    items: list[bytes] = []
+    pos = 0
+    while pos + 2 <= len(idlist):
+        size = _u16le(idlist, pos)
+        if size < 2:
+            break
+        items.append(idlist[pos + 2:pos + size])
+        pos += size
+
+    segments: list[str] = []
+    for item in items:
+        if len(item) < 2:
+            continue
+        if item[0] == _LNK_DRIVE and len(item) >= 4:
+            segments.append(item[1:3].decode("ascii", "replace"))
+            continue
+        if item[0] == _LNK_ROOT:
+            continue
+        item_type = _u16le(item, 0)
+        if item_type not in _LNK_PATH_TYPES or len(item) <= 12:
+            continue
+        if item_type in (0x35, 0x36):
+            end = 12
+            while end + 1 < len(item) and item[end:end + 2] != b"\x00\x00":
+                end += 2
+            name = item[12:end].decode("utf-16-le", "replace")
+        else:
+            end = item.find(b"\x00", 12)
+            if end < 0:
+                end = len(item)
+            name = item[12:end].decode("ascii", "replace")
+        if name:
+            segments.append(name)
+    return "\\".join(segments)
+
+
+def _lnk_link_info(data: bytes, pos: int) -> tuple[dict, int]:
+    """Parse a LinkInfo structure. Returns (fields, structure size)."""
+    size = _u32le(data, pos)
+    if size < 0x1C or pos + size > len(data):
+        return {}, max(size, 0x1C)
+    header_size = _u32le(data, pos + 4)
+    flags = _u32le(data, pos + 8)
+    volume_off = _u32le(data, pos + 12)
+    local_base_off = _u32le(data, pos + 16)
+    network_off = _u32le(data, pos + 20)
+    suffix_off = _u32le(data, pos + 24)
+
+    info: dict = {}
+    if flags & 1:  # VolumeIDAndLocalBasePath
+        base = _cstring(data, pos + local_base_off)
+        suffix = _cstring(data, pos + suffix_off) if header_size >= 0x24 and suffix_off else ""
+        if base:
+            info["target"] = base + suffix
+        if volume_off and pos + volume_off + 16 <= len(data):
+            label = _cstring(data, pos + volume_off + 16)
+            if label:
+                info["volume_label"] = label
+    if flags & 2 and network_off:  # CommonNetworkRelativeLink
+        share = _cstring(data, pos + network_off + 20)
+        if share:
+            info["network_share"] = share
+    return info, size
+
+
+def parse_lnk(path: Path) -> dict:
+    """Parse a Windows shell link into its meaningful fields (best effort)."""
+    data = path.read_bytes()
+    if len(data) < 0x4C or data[0:4] != b"L\x00\x00\x00":
+        raise ValueError("not a shell link")
+    flags = _u32le(data, 20)
+    is_unicode = bool(flags & 0x80)
+    pos = 0x4C
+
+    result: dict = {"flags": flags}
+    if flags & 0x1:  # HasLinkTargetIDList
+        idlist_size = _u16le(data, pos)
+        pos += 2
+        idlist = data[pos:pos + idlist_size]
+        pos += idlist_size
+        path_from_idlist = _lnk_idlist_path(idlist)
+        if path_from_idlist:
+            result["target_idlist"] = path_from_idlist
+    if flags & 0x2:  # HasLinkInfo
+        info, size = _lnk_link_info(data, pos)
+        pos += size
+        result.update(info)
+
+    for flag, key in (
+        (0x4, "description"),
+        (0x8, "relative_path"),
+        (0x10, "working_dir"),
+        (0x20, "arguments"),
+        (0x40, "icon_location"),
+    ):
+        if flags & flag and pos + 2 <= len(data):
+            text, pos = _lnk_string(data, pos, is_unicode)
+            result[key] = text
+
+    environment_targets: list[str] = []
+    while pos + 8 <= len(data):
+        block_size = _u32le(data, pos)
+        if block_size < 4 or pos + block_size > len(data):
+            break
+        signature = _u32le(data, pos + 4)
+        if signature == 0:
+            break
+        if signature in (0xA0000001, 0xA0000007):  # EnvironmentVariable / IconEnvironment blocks
+            block = data[pos:pos + block_size]
+            ansi = _cstring(block, 8)
+            unicode_target = block[8 + 260:8 + 260 + 520].decode("utf-16-le", "replace")
+            unicode_target = unicode_target.split("\x00", 1)[0]
+            target = unicode_target or ansi
+            if target:
+                environment_targets.append(target)
+        pos += block_size
+    if environment_targets:
+        result["environment_target"] = environment_targets
+    return result
+
+
+def _extract_lnk(path: Path, state: _State, depth: int, context: str) -> None:
+    try:
+        link = parse_lnk(path)
+    except (ValueError, OSError) as exc:
+        state.errors.append(f"{context}: shell-link parse failed: {exc}")
+        return
+    state.details["link"] = link
+
+    targets = [value for value in (link.get("target"), link.get("target_idlist")) if value]
+    if link.get("network_share"):
+        targets.append(link["network_share"])
+    targets.extend(link.get("environment_target") or [])
+
+    flags = ["lnk"]
+    if link.get("arguments"):
+        flags.append("lnk-arguments")
+    if any(target.startswith("\\\\") for target in targets):
+        flags.append("lnk-remote-target")
+    if any(target.lower().endswith(_LNK_EXECUTABLE_SUFFIXES) for target in targets):
+        flags.append("lnk-executable-target")
+
+    lines = ["HATCHERY shell-link dissection", ""]
+    for key in (
+        "target", "target_idlist", "network_share", "arguments", "working_dir",
+        "description", "icon_location", "relative_path", "volume_label",
+    ):
+        if link.get(key):
+            lines.append(f"{key}: {link[key]}")
+    for target in link.get("environment_target") or []:
+        lines.append(f"environment_target: {target}")
+    payload = "\n".join(lines).encode("utf-8")
+
+    _write_child(
+        state, len(state.children), f"{path.name}.txt", payload,
+        extractor="lnk", reason="decoded shell-link fields", depth=depth, flags=flags,
+    )
+    for flag in flags:
+        state.add_flag(flag)
+
+
+# ---------------------------------------------------------------------------
+# ISO 9660 / IMG
+# ---------------------------------------------------------------------------
+
+_ISO_SECTOR = 2048
+
+
+def _iso_descriptor(data: bytes, lba: int) -> Optional[bytes]:
+    offset = lba * _ISO_SECTOR
+    if offset + _ISO_SECTOR > len(data):
+        return None
+    descriptor = data[offset:offset + _ISO_SECTOR]
+    if descriptor[1:6] != b"CD001":
+        return None
+    return descriptor
+
+
+def _iso_entries(data: bytes, extent_lba: int, length: int, joliet: bool) -> list[tuple[str, bool, int, int]]:
+    entries: list[tuple[str, bool, int, int]] = []
+    start = extent_lba * _ISO_SECTOR
+    end = min(start + length, len(data))
+    pos = start
+    while pos < end:
+        record_len = data[pos]
+        if record_len == 0:
+            pos = ((pos // _ISO_SECTOR) + 1) * _ISO_SECTOR
+            continue
+        if record_len < 34 or pos + record_len > end:
+            break
+        record = data[pos:pos + record_len]
+        extent = _u32le(record, 2)
+        size = _u32le(record, 10)
+        flags = record[25]
+        name_len = record[32]
+        name_bytes = record[33:33 + name_len]
+        if name_len == 1 and name_bytes == b"\x00":
+            name = "."
+        elif name_len == 1 and name_bytes == b"\x01":
+            name = ".."
+        else:
+            name = name_bytes.decode("utf-16-be" if joliet else "ascii", "replace")
+        if name.endswith(";1"):
+            name = name[:-2]
+        entries.append((name, bool(flags & 0x2), extent, size))
+        pos += record_len
+    return entries
+
+
+def _extract_iso(path: Path, state: _State, depth: int, context: str) -> None:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        state.errors.append(f"{context}: read failed: {exc}")
+        return
+    if len(data) > MAX_ENTRY_BYTES:
+        data = data[:MAX_ENTRY_BYTES]
+        state.truncated = True
+        state.add_flag("iso-truncated-read")
+
+    pvd = _iso_descriptor(data, 16)
+    if pvd is None:
+        state.errors.append(f"{context}: no ISO9660 primary volume descriptor")
+        return
+    joliet = False
+    svd = _iso_descriptor(data, 17)
+    if svd is not None and svd[0] == 2 and svd[88:90] == b"%/":
+        joliet = True
+
+    state.details["iso"] = {
+        "volume_identifier": pvd[40:72].decode("ascii", "replace").strip(),
+        "volume_space_size": _u32le(pvd, 80),
+        "joliet": joliet,
+    }
+    state.add_flag("iso9660-joliet" if joliet else "iso9660")
+
+    # The root directory record must come from the descriptor that matches the
+    # name encoding, or Joliet (UCS-2) names get decoded against the ISO9660
+    # root and come out as mojibake.
+    root_descriptor = svd if joliet and svd is not None else pvd
+    root_extent = _u32le(root_descriptor, 156 + 2)
+    root_length = _u32le(root_descriptor, 156 + 10)
+    index = len(state.children)
+    seen_files = 0
+    visited: set[int] = set()
+    queue: list[tuple[int, int, str]] = [(root_extent, root_length, "")]
+    while queue:
+        extent_lba, length, prefix = queue.pop(0)
+        if extent_lba in visited:
+            continue
+        visited.add(extent_lba)
+        for name, is_dir, child_extent, child_size in _iso_entries(data, extent_lba, length, joliet):
+            if name in (".", ".."):
+                continue
+            relative = f"{prefix}/{name}" if prefix else name
+            if is_dir:
+                if len(queue) < MAX_CHILDREN:
+                    queue.append((child_extent, child_size, relative))
+                continue
+            if not state.budget_left():
+                state.truncated = True
+                state.add_flag("child-limit-reached")
+                break
+            if child_size > MAX_ENTRY_BYTES:
+                state.unsupported.append({
+                    "path": f"{context}!/{relative}", "format": "oversize",
+                    "reason": f"ISO extent of {child_size} bytes exceeds the cap",
+                })
+                continue
+            file_offset = child_extent * _ISO_SECTOR
+            payload = data[file_offset:file_offset + child_size]
+            child = _write_child(
+                state, index, relative, payload,
+                extractor="iso", reason="ISO9660 file", depth=depth,
+                flags=_member_flags(relative),
+            )
+            index += 1
+            seen_files += 1
+            if depth < state.max_depth and state.budget_left():
+                _recurse(child, state, depth)
+    if seen_files == 0:
+        state.add_flag("iso-no-files")
+
+
+# ---------------------------------------------------------------------------
+# PDF — targeted embedded-file and JavaScript extraction (best effort)
+# ---------------------------------------------------------------------------
+
+_PDF_OBJ_RE = re.compile(rb"(\d+)\s+(\d+)\s+obj\b")
+
+
+def _pdf_unescape(raw: bytes) -> bytes:
+    out = bytearray()
+    i = 0
+    escapes = {0x6E: 10, 0x72: 13, 0x74: 9, 0x62: 8, 0x66: 12, 0x28: 0x28, 0x29: 0x29, 0x5C: 0x5C}
+    while i < len(raw):
+        byte = raw[i]
+        if byte == 0x5C and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt in escapes:
+                out.append(escapes[nxt])
+                i += 2
+                continue
+            if 0x30 <= nxt <= 0x37:
+                j = i + 1
+                octal = 0
+                for _ in range(3):
+                    if j < len(raw) and 0x30 <= raw[j] <= 0x37:
+                        octal = octal * 8 + (raw[j] - 0x30)
+                        j += 1
+                    else:
+                        break
+                out.append(octal & 0xFF)
+                i = j
+                continue
+            i += 2
+            continue
+        out.append(byte)
+        i += 1
+    return bytes(out)
+
+
+def _pdf_read_literal(data: bytes, start: int) -> Optional[bytes]:
+    """Read a balanced ``(...)`` string starting at the opening paren."""
+    depth = 0
+    i = start
+    while i < len(data):
+        byte = data[i]
+        if byte == 0x5C:
+            i += 2
+            continue
+        if byte == 0x28:
+            depth += 1
+        elif byte == 0x29:
+            depth -= 1
+            if depth == 0:
+                return data[start + 1:i]
+        i += 1
+    return None
+
+
+def _pdf_filters(dict_text: bytes) -> list[str]:
+    match = re.search(rb"/Filter\s*(\[[^\]]*\]|/\w+)", dict_text)
+    if not match:
+        return []
+    return [name.decode("ascii", "replace") for name in re.findall(rb"/(\w+)", match.group(1))]
+
+
+def _pdf_decode_stream(
+    raw: bytes, filters: list[str], state: _State, context: str
+) -> Optional[bytes]:
+    for name in filters:
+        try:
+            if name == "FlateDecode":
+                raw = zlib.decompress(raw)
+            elif name == "ASCIIHexDecode":
+                payload = re.sub(rb"\s+", b"", raw.split(b">", 1)[0])
+                if len(payload) % 2:
+                    payload += b"0"
+                raw = bytes.fromhex(payload.decode("ascii"))
+            elif name == "ASCII85Decode":
+                raw = base64.a85decode(raw.split(b"~>", 1)[0].strip())
+            else:
+                state.unsupported.append({
+                    "path": context, "format": f"pdf-filter:{name}",
+                    "reason": f"PDF filter {name} is not decoded in this revision",
+                })
+                return None
+        except (zlib.error, ValueError, TypeError):
+            state.errors.append(f"{context}: PDF filter {name} failed")
+            return None
+    return raw
+
+
+def _extract_pdf(path: Path, state: _State, depth: int, context: str) -> None:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        state.errors.append(f"{context}: read failed: {exc}")
+        return
+    if len(data) > MAX_ENTRY_BYTES:
+        data = data[:MAX_ENTRY_BYTES]
+        state.truncated = True
+        state.add_flag("pdf-truncated-read")
+
+    for token, flag in (
+        (b"/JavaScript", "pdf-javascript"), (b"/JS", "pdf-javascript"),
+        (b"/Launch", "pdf-launch-action"), (b"/OpenAction", "pdf-open-action"),
+        (b"/URI", "pdf-uri-action"), (b"/EmbeddedFile", "pdf-embedded-file"),
+        (b"/RichMedia", "pdf-richmedia"),
+    ):
+        if token in data:
+            state.add_flag(flag)
+    state.add_flag("pdf")
+
+    objects: dict[int, tuple[bytes, Optional[bytes], bytes]] = {}
+    for match in _PDF_OBJ_RE.finditer(data):
+        number = int(match.group(1))
+        end = data.find(b"endobj", match.end())
+        if end < 0:
+            end = len(data)
+        body = data[match.end():end]
+        dict_text = body
+        stream: Optional[bytes] = None
+        stream_type = b""
+        stream_start = re.search(rb"\bstream\r?\n", body)
+        if stream_start:
+            dict_text = body[:stream_start.start()]
+            stop = body.find(b"endstream", stream_start.end())
+            raw = body[stream_start.end():stop if stop >= 0 else len(body)]
+            length_match = re.search(rb"/Length\s+(\d+)", dict_text)
+            if length_match:
+                raw = raw[:int(length_match.group(1))]
+            stream = _pdf_decode_stream(raw, _pdf_filters(dict_text), state, f"{context} obj {number}")
+            type_match = re.search(rb"/(?:Subtype|Type)\s*/(\w+)", dict_text)
+            if type_match:
+                stream_type = type_match.group(1)
+        objects[number] = (dict_text, stream, stream_type)
+
+    named: set[str] = set()
+    consumed: set[int] = set()
+    embedded: list[tuple[str, bytes]] = []
+    for number, (dict_text, _, _) in objects.items():
+        if b"/Filespec" not in dict_text:
+            continue
+        name_match = re.search(rb"/(?:UF|F)\s*\(([^)]*)\)", dict_text)
+        name = _pdf_unescape(name_match.group(1)).decode("utf-8", "replace") if name_match else f"file-{number}"
+        ref = re.search(rb"/EF\s*<<\s*/(?:UF|F)\s+(\d+)\s+\d+\s+R", dict_text)
+        if ref:
+            target = int(ref.group(1))
+            entry = objects.get(target)
+            if entry and entry[1] is not None:
+                embedded.append((name, entry[1]))
+                named.add(name)
+                consumed.add(target)
+    for number, (dict_text, stream, _) in objects.items():
+        if number in consumed or stream is None or b"/EmbeddedFile" not in dict_text:
+            continue
+        name_match = re.search(rb"/(?:UF|F)\s*\(([^)]*)\)", dict_text)
+        name = _pdf_unescape(name_match.group(1)).decode("utf-8", "replace") if name_match else f"embedded-{number}.bin"
+        if name not in named:
+            embedded.append((name, stream))
+            named.add(name)
+
+    index = len(state.children)
+    for name, payload in embedded:
+        if not state.budget_left():
+            state.truncated = True
+            state.add_flag("child-limit-reached")
+            break
+        safe = _safe_member_name(name) or f"embedded-{index}.bin"
+        child = _write_child(
+            state, index, safe, payload,
+            extractor="pdf", reason="PDF embedded file", depth=depth,
+            flags=["pdf-embedded-file"],
+        )
+        index += 1
+        if depth < state.max_depth and state.budget_left():
+            _recurse(child, state, depth)
+
+    js_blobs: list[bytes] = []
+    for match in re.finditer(rb"/JS\s*(\()", data):
+        literal = _pdf_read_literal(data, match.start(1))
+        if literal is not None:
+            js_blobs.append(decode_js_escapes(_pdf_unescape(literal)))
+    for match in re.finditer(rb"/JS\s*<([0-9A-Fa-f\s]*)>", data):
+        payload = re.sub(rb"\s+", b"", match.group(1))
+        if len(payload) % 2:
+            payload += b"0"
+        try:
+            js_blobs.append(bytes.fromhex(payload.decode("ascii")))
+        except ValueError:
+            continue
+    for number, (dict_text, stream, stream_type) in objects.items():
+        if stream is not None and (stream_type in (b"JavaScript",) or b"/S /JavaScript" in dict_text):
+            js_blobs.append(stream)
+
+    for i, blob in enumerate(js_blobs[:MAX_HTML_SCRIPTS]):
+        _write_child(
+            state, len(state.children), f"{path.name}.js-{i}.js", blob,
+            extractor="pdf-js", reason=f"PDF JavaScript blob #{i}", depth=depth,
+            flags=["pdf-javascript"],
+        )
+    if js_blobs:
+        state.add_flag("pdf-javascript")
+    if len(js_blobs) > MAX_HTML_SCRIPTS:
+        state.truncated = True
+        state.add_flag("script-limit-reached")
+
+
+# ---------------------------------------------------------------------------
 # Recursion
 # ---------------------------------------------------------------------------
 
@@ -767,6 +1311,9 @@ _EXTRACTORS = {
     DeliveryFormat.XZ: "xz",
     DeliveryFormat.HTML: "html",
     DeliveryFormat.SVG: "svg",
+    DeliveryFormat.LNK: "lnk",
+    DeliveryFormat.ISO: "iso",
+    DeliveryFormat.PDF: "pdf",
 }
 
 
@@ -797,6 +1344,12 @@ def _dispatch(path: Path, fmt: DeliveryFormat, state: _State, depth: int, contex
         _extract_markup(path, state, depth, "html")
     elif fmt is DeliveryFormat.SVG:
         _extract_markup(path, state, depth, "svg")
+    elif fmt is DeliveryFormat.LNK:
+        _extract_lnk(path, state, depth, context)
+    elif fmt is DeliveryFormat.ISO:
+        _extract_iso(path, state, depth, context)
+    elif fmt is DeliveryFormat.PDF:
+        _extract_pdf(path, state, depth, context)
 
 
 def _unsupported_reason(fmt: DeliveryFormat) -> str:
@@ -810,12 +1363,10 @@ def _unsupported_reason(fmt: DeliveryFormat) -> str:
             "this revision; the document is still scanned as raw bytes"
         ),
         DeliveryFormat.LNK: (
-            "shell-link target/argument parsing is not implemented in this "
-            "revision; the link is still scanned as raw bytes"
+            "shell-link target/argument parsing is not available"
         ),
         DeliveryFormat.ISO: (
-            "ISO9660 directory extraction is not implemented in this revision; "
-            "the image is still scanned as raw bytes"
+            "ISO9660 directory extraction is not available"
         ),
         DeliveryFormat.RTF: (
             "RTF embedded-object extraction is not implemented in this "
@@ -877,6 +1428,7 @@ def extract_delivery(
         flags=state.flags,
         errors=state.errors,
         truncated=state.truncated,
+        details=state.details,
     )
     logger.info(
         "Delivery intake %s: format=%s children=%d unsupported=%d flags=%s",
