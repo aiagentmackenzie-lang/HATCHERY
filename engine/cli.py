@@ -217,6 +217,16 @@ def _print_delivery(result: Any) -> None:
     if iso:
         flavor = " (Joliet)" if iso.get("joliet") else ""
         console.print(f"  ISO volume: [cyan]{iso.get('volume_identifier', '')}[/cyan]{flavor}")
+    ole_details = details.get("ole") or {}
+    embedded_packages = [
+        name
+        for info in ole_details.values()
+        for name in (info.get("embedded") or [])
+    ]
+    if embedded_packages:
+        console.print(
+            f"  OLE embedded packages: [cyan]{', '.join(embedded_packages)}[/cyan]"
+        )
 
 
 def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:

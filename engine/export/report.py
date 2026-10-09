@@ -181,6 +181,18 @@ class ReportGenerator:
                     flavor = " (Joliet)" if iso.get("joliet") else ""
                     lines.append(f"**ISO9660:** volume `{volume}`{flavor}")
                     lines.append("")
+                ole_details = details.get("ole") or {}
+                embedded_packages = [
+                    name
+                    for info in ole_details.values()
+                    for name in (info.get("embedded") or [])
+                ]
+                if embedded_packages:
+                    lines.append("**OLE embedded packages:**")
+                    lines.append("")
+                    for name in embedded_packages:
+                        lines.append(f"- `{name}`")
+                    lines.append("")
                 if delivery.get("truncated"):
                     lines.append(
                         "> **Note:** extraction stopped at a configured limit; the "

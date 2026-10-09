@@ -32,12 +32,15 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.15",
     "mypy>=1.10",
-    # Test-only fixture builders: real LNK / ISO9660 / PDF bytes written by an
-    # independent implementation, so the extractors are validated against the
-    # formats and not against a hand-written string. The runtime stays stdlib.
+    # Test-only fixture builders and cross-checks: real LNK / ISO9660 / PDF bytes
+    # written by an independent implementation, and an independent CFB reader
+    # (olefile) plus MS-OVBA/VBA extractor (oletools) so the OLE fixtures cannot
+    # be validated against HATCHERY's own writer. The runtime stays stdlib.
     "pylnk3>=0.4.3",
     "pycdlib>=1.22.0",
     "pypdf>=6.0",
+    "olefile>=0.47",
+    "oletools>=0.60",
 ]
 
 [tool.ruff.lint]

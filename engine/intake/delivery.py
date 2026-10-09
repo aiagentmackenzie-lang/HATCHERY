@@ -13,11 +13,13 @@ intake can fail, and it is *loud* about what it did and did not do:
 
 * Supported container extraction: ZIP (including OOXML Office / JAR / APK),
   tar, gzip, bzip2, xz, HTML/HTA, SVG script blocks, Windows shell links
-  (MS-SHLLINK), ISO9660/IMG images and PDF embedded files + JavaScript.
-* Formats that are *detected but not extracted* in this revision (OLE/CFB
-  legacy Office, RTF, 7z, RAR, CAB) are reported as unsupported, with a
-  reason, and still reach the string extractor as raw bytes. They never
-  silently produce "no findings".
+  (MS-SHLLINK), ISO9660/IMG images, PDF embedded files + JavaScript, and
+  legacy Office OLE/CFB compound files — whose streams are enumerated and
+  whose embedded VBA macros are decompressed to source and whose
+  ``\x01Ole10Native`` packages are carved out (see ``engine/intake/ole.py``).
+* Formats that are *detected but not extracted* in this revision (RTF, 7z,
+  RAR, CAB) are reported as unsupported, with a reason, and still reach the
+  string extractor as raw bytes. They never silently produce "no findings".
 * Every extracted child is hashed, classified, and (at a higher level) run
   through the static pipeline. Extraction is bounded: depth, child count,
   per-entry size, total size and compression ratio are all capped, names are
@@ -44,6 +46,8 @@ from enum import Enum
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional
+
+from engine.intake import ole
 
 logger = logging.getLogger(__name__)
 
@@ -1299,6 +1303,140 @@ def _extract_pdf(path: Path, state: _State, depth: int, context: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# OLE / CFB — legacy Office compound files
+# ---------------------------------------------------------------------------
+
+_OLE_OFFICE_STREAMS = {"worddocument", "workbook", "book", "powerpoint document"}
+
+
+def _ole_stream_flags(path: str) -> list[str]:
+    """Flags for one compound-file stream, keyed off its leaf and storages."""
+
+    leaf = path.rsplit("/", 1)[-1].lower()
+    parts = {part.lower() for part in path.split("/")}
+    flags = ["ole"]
+    if leaf in ("dir", "_vba_project") or "vba" in parts:
+        flags.append("ole-vba")
+    if "objectpool" in parts or leaf == "ole10native" or leaf == "package":
+        flags.append("ole-embedded-object")
+    if leaf in _OLE_OFFICE_STREAMS:
+        flags.append("ole-legacy-office")
+    return flags
+
+
+def _extract_ole(path: Path, state: _State, depth: int, context: str) -> None:
+    """Enumerate an OLE/CFB compound file and extract the parts that matter.
+
+    Order is deliberate: embedded VBA macro *source* and carved package
+    payloads are written first, so the shared child budget cannot starve the
+    security-relevant content; the raw streams follow so YARA and the string
+    extractor still see everything else. Nothing is executed.
+    """
+
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        state.errors.append(f"{context}: read failed: {exc}")
+        return
+    if len(data) > MAX_ENTRY_BYTES:
+        data = data[:MAX_ENTRY_BYTES]
+        state.truncated = True
+        state.add_flag("ole-truncated-read")
+    try:
+        cfb = ole.CompoundFile(
+            data,
+            max_streams=state.max_children * 4,
+            max_stream_bytes=MAX_ENTRY_BYTES,
+        )
+    except ole.OleError as exc:
+        state.errors.append(f"{context}: OLE/CFB parse failed: {exc}")
+        return
+
+    state.add_flag("ole")
+    state.details.setdefault("ole", {})
+    state.details["ole"][context] = {
+        "streams": [entry.path for entry in cfb.streams],
+        "storages": list(cfb.storages),
+    }
+
+    # 1. Embedded VBA projects — decompress the module source. The dir stream
+    #    and every module stream are MS-OVBA-compressed; without this step a
+    #    macro document only ever yields opaque compressed bytes.
+    for vba_root, project_path, dir_path in ole.find_vba_projects(cfb):
+        try:
+            modules = ole.parse_vba_modules(cfb, vba_root, project_path, dir_path)
+        except ole.OleError as exc:
+            state.errors.append(f"{context}: VBA project parse failed: {exc}")
+            continue
+        if not modules:
+            continue
+        state.add_flag("ole-vba-macro")
+        for module in modules:
+            if not state.budget_left():
+                state.truncated = True
+                state.add_flag("child-limit-reached")
+                break
+            extension = module.ext or ("cls" if module.kind == "class" else "bas")
+            _write_child(
+                state, len(state.children), f"{module.name}.{extension}",
+                (module.source or "").encode("utf-8"),
+                extractor="ole-vba", reason="decompressed VBA module source",
+                depth=depth, flags=["ole-vba-macro"],
+            )
+
+    # 2. \x01Ole10Native package streams — carve the embedded file out of the
+    #    MS-OLEDS wrapper. This is usually the executable a legacy document drops.
+    for entry in cfb.streams:
+        if entry.leaf_name.lower() != "ole10native":
+            continue
+        if not state.budget_left():
+            state.truncated = True
+            state.add_flag("child-limit-reached")
+            break
+        try:
+            native = ole.parse_ole10native(cfb.read_stream(entry))
+        except ole.OleError:
+            continue
+        if native is None or not native.payload:
+            continue
+        state.add_flag("ole-embedded-native")
+        name = _safe_member_name(native.filename) or "ole10native.bin"
+        child = _write_child(
+            state, len(state.children), name, native.payload,
+            extractor="ole-native",
+            reason="embedded file carved from an OLE package stream",
+            depth=depth, flags=["ole-embedded-native"],
+        )
+        entry_details = state.details["ole"].get(context)
+        if entry_details is not None:
+            entry_details.setdefault("embedded", []).append(native.filename or name)
+        if depth < state.max_depth and state.budget_left():
+            _recurse(child, state, depth)
+
+    # 3. Every remaining raw stream, so YARA/strings still see container-wide
+    #    content (WordDocument, _VBA_PROJECT, ObjectPool, ...).
+    for entry in cfb.streams:
+        if not state.budget_left():
+            state.truncated = True
+            state.add_flag("child-limit-reached")
+            break
+        flags = _ole_stream_flags(entry.path)
+        try:
+            payload = cfb.read_stream(entry)
+        except ole.OleError as exc:
+            state.errors.append(f"{context}!/{entry.path}: stream read failed: {exc}")
+            continue
+        child = _write_child(
+            state, len(state.children), entry.path, payload,
+            extractor="ole", reason="OLE/CFB stream", depth=depth, flags=flags,
+        )
+        for flag in flags:
+            state.add_flag(flag)
+        if depth < state.max_depth and state.budget_left():
+            _recurse(child, state, depth)
+
+
+# ---------------------------------------------------------------------------
 # Recursion
 # ---------------------------------------------------------------------------
 
@@ -1314,6 +1452,7 @@ _EXTRACTORS = {
     DeliveryFormat.LNK: "lnk",
     DeliveryFormat.ISO: "iso",
     DeliveryFormat.PDF: "pdf",
+    DeliveryFormat.OLE: "ole",
 }
 
 
@@ -1350,24 +1489,12 @@ def _dispatch(path: Path, fmt: DeliveryFormat, state: _State, depth: int, contex
         _extract_iso(path, state, depth, context)
     elif fmt is DeliveryFormat.PDF:
         _extract_pdf(path, state, depth, context)
+    elif fmt is DeliveryFormat.OLE:
+        _extract_ole(path, state, depth, context)
 
 
 def _unsupported_reason(fmt: DeliveryFormat) -> str:
     reasons = {
-        DeliveryFormat.OLE: (
-            "legacy Office/OLE stream extraction is not implemented in this "
-            "revision; the compound file is still scanned as raw bytes"
-        ),
-        DeliveryFormat.PDF: (
-            "PDF embedded-file and JavaScript extraction is not implemented in "
-            "this revision; the document is still scanned as raw bytes"
-        ),
-        DeliveryFormat.LNK: (
-            "shell-link target/argument parsing is not available"
-        ),
-        DeliveryFormat.ISO: (
-            "ISO9660 directory extraction is not available"
-        ),
         DeliveryFormat.RTF: (
             "RTF embedded-object extraction is not implemented in this "
             "revision; the document is still scanned as raw bytes"

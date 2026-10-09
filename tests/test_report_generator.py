@@ -288,3 +288,33 @@ def test_markdown_renders_shell_link_details():
     assert "**Shell link:**" in md
     assert r"C:\Windows\System32\cmd.exe" in md
     assert "powershell -enc SGVsbG8=" in md
+
+
+def test_markdown_renders_ole_embedded_package_details():
+    static = {
+        "delivery": {
+            "format": "ole",
+            "format_detail": "legacy Office (doc) compound file",
+            "flags": ["ole", "ole-vba-macro", "ole-embedded-native"],
+            "children": [],
+            "unsupported": [],
+            "errors": [],
+            "truncated": False,
+            "details": {
+                "ole": {
+                    "invoice.doc": {
+                        "streams": ["WordDocument", "Macros/VBA/dir"],
+                        "storages": ["Macros", "Macros/VBA"],
+                        "embedded": ["dropped.exe"],
+                    }
+                }
+            },
+        }
+    }
+    md = ReportGenerator().generate_markdown(
+        sample_name="invoice.doc",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 1024},
+        static_results=static,
+    )
+    assert "**OLE embedded packages:**" in md
+    assert "dropped.exe" in md
