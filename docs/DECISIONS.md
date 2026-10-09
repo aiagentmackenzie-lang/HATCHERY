@@ -259,11 +259,29 @@ Tier-2 in-guest artifacts (the in-guest strace, inotify, dropped files) are reco
 
 ---
 
+## D20 — MISP/OpenCTI push transports the one STIX bundle; credentials are never persisted
+
+**Decision.** `engine/export/push.py` sends the run's existing STIX 2.1 bundle to a threat-intelligence platform. It does **not** re-derive STIX — there is still exactly one producer per data path (D4). Two transports:
+
+* **MISP** — `POST {url}/events/upload_stix/2` (STIX 2.1 import) with the bundle JSON as the request body and `Authorization: <api key>`. The STIX 1 endpoint is `/events/upload_stix`; the trailing segment is load-bearing and the code has a constant for it.
+* **OpenCTI** — `POST {url}/taxii2/root/collections/{collection}/objects/` (the documented TAXII Push ingester) with a TAXII 2.1 envelope `{"objects": [...]}`, content type `application/taxii+json;version=2.1` and `Authorization: Bearer <token>`.
+
+The CLI is `hatchery push <run_dir> --target misp|opencti`, configured from `--url`/`--token`/`--collection` or the `HATCHERY_MISP_*` / `HATCHERY_OPENCTI_*` environment variables. It reads the `stix_bundle.json` the engine already wrote; it never regenerates the bundle.
+
+**Fail-closed.** A non-2xx response or a transport error returns `ok=False` with the status code and a bounded body snippet, and the command exits non-zero. There is no retry loop, no partial-success claim, and no silent success.
+
+**Secret hygiene.** The API token is never written to the result object, the log, or the `push-<target>.json` audit file, which records only `ok`, `status_code`, `url`, `objects` and a message. TLS verification is on by default; `--insecure` warns loudly. Tests assert the token does not appear in the serialized result.
+
+**Evidence, and what is not verified.** The wire format is pinned by a suite that stands up a real local HTTP server and records the method, path, headers and body for both targets: the STIX-2.1 path segment on MISP, the API-key header, the TAXII collection path, the Bearer token and the envelope shape on OpenCTI, plus fail-closed behaviour on 401/403 and on a refused connection. The endpoints and headers were verified against MISP's `tools/ingest_stix` and PyMISP's `upload_stix`, and the OpenCTI TAXII 2.1 push documentation. **No live MISP or OpenCTI instance was available on this host, so live-instance compatibility is untested** — only the documented wire format and fail-closed behaviour are. That limitation is written down here rather than left as an implied guarantee.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
 - **Sigma rules as validated detections.** D18 emits candidate drafts only. They are not backtested; promoting one is a human decision.
 - **Full delivery-format coverage.** D19 extracts ZIP/OOXML, tar/gzip/bzip2/xz, HTML/SVG, LNK, ISO9660 and PDF (targeted). OLE/CFB legacy Office, RTF, 7z, RAR and CAB are detected and reported as unsupported rather than half-parsed, and emulation-based Windows configuration extraction (D9) is still ahead.
+- **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** Phase 3, deliberately after the pipeline is trustworthy. When it lands it will use versioned prompt contracts, JSON-schema-validated output, grounding requirements and fail-closed suppression, in the shape Microsoft documented for DTDA. Critically, **sample-derived text is untrusted input**: Microsoft's Project Ire write-up notes a sample containing the literal string `BelievemeIamMustang-Panda`, explicitly flagged as *"adversarial input to LLM-driven analysis, biasing the verdict."* Any LLM layer here must treat malware strings as data, never instructions.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

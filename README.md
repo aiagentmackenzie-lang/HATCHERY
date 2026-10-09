@@ -108,6 +108,7 @@ Not aspirational. What is in the code today.
 | **Unpacking / config extraction (emulation)** | ❌ | planned; Speakeasy/Qiling for Windows PE config on a Linux host (D9) |
 | **AI triage** | ❌ | planned; prompt-contract design is in the roadmap |
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
+| **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
 ---
 
@@ -135,9 +136,21 @@ hatchery status <task_id>           Task status
 hatchery report <task_id>           Print a completed report
 hatchery iocs <task_id>             IOC summary
 hatchery rules lint                 Lint the YARA rules (exits 1 on error)
+hatchery push <run_dir> --target misp|opencti   Push the run's STIX bundle
 ```
 
 Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`.
+
+### Push to MISP / OpenCTI
+
+`hatchery push results/<task_id> --target misp` sends the **existing** `stix_bundle.json` to MISP's STIX 2.1 import endpoint; `--target opencti` sends the same objects as a TAXII 2.1 envelope to a TAXII Push collection. Configure either with flags (`--url`, `--token`, `--collection`) or the environment:
+
+```bash
+export HATCHERY_MISP_URL=https://misp.example   HATCHERY_MISP_API_KEY=...
+export HATCHERY_OPENCTI_URL=https://opencti.example   HATCHERY_OPENCTI_TOKEN=...   HATCHERY_OPENCTI_COLLECTION=<taxii-collection-id>
+```
+
+A non-2xx response or a transport error exits non-zero with the reason; the outcome is written to `push-<target>.json` next to the run, **without** the token. TLS verification is on by default (`--insecure` warns). See [`docs/DECISIONS.md`](docs/DECISIONS.md) D20 — the wire format is tested against a local server; live-instance compatibility is untested here.
 
 ---
 
@@ -168,7 +181,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 390 tests
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 402 tests
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 ```
@@ -211,7 +224,7 @@ sample ──► intake (hash / delivery unpack / PE / ELF / strings)
 
 **Phase 1 — an isolation boundary that holds.** ✅ *evasion instrumented as a first-class scored signal; a per-tier monitoring strategy named in every run; and the gVisor tier-2 boundary made real and wired — a runsc runtime, per-container OCI annotations that enable the Sentry trace, and a parser that turns it into `source="gvisor-sentry"` events and evasion scores. Verified end-to-end on a live gVisor detonation.* ⚠️ *host-side eBPF for tier 3 is designed and declared per run but not wired; `strace` remains the tier-3 fallback and the run says so.*
 
-**Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images and PDF embedded files/JavaScript are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically, while OLE/CFB legacy Office, RTF, 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. Emulation-based unpacking/config extraction and extraction of those remaining formats are still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts. MISP/OpenCTI push remains planned.
+**Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images and PDF embedded files/JavaScript are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically, while OLE/CFB legacy Office, RTF, 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. **MISP/OpenCTI push is done as D20**: the CLI transports the run's single STIX 2.1 bundle to MISP's STIX 2.1 import or an OpenCTI TAXII 2.1 push collection, fail-closed and without persisting the token (wire format pinned; live instance untested). Emulation-based unpacking/config extraction and extraction of the remaining formats are still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts.
 
 **Phase 3 — AI triage, done properly.** Local (Ollama) function-level behavioral reporting with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**. Sample-derived text is treated as hostile input: malware contains strings designed to steer an LLM's verdict.
 

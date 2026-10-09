@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -837,6 +838,77 @@ def iocs(task_id: str, fmt: str) -> None:
         _print_iocs(ioc_data)
     else:
         console.print(f"[red]No results found for task {task_id}[/red]")
+
+
+@cli.command()
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--target", "target_kind", type=click.Choice(["misp", "opencti"]), required=True)
+@click.option("--url", default=None, help="Platform base URL (else HATCHERY_<TARGET>_URL)")
+@click.option("--token", default=None, help="API token (else the environment)")
+@click.option("--collection", default=None, help="OpenCTI TAXII collection id")
+@click.option("--insecure", is_flag=True, help="Skip TLS verification (warns loudly)")
+def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[str],
+         collection: Optional[str], insecure: bool) -> None:
+    """Push a run's STIX bundle to MISP or OpenCTI.
+
+    Reads the ``stix_bundle.json`` the engine already wrote — it does not
+    re-derive STIX, so there is still exactly one producer. Fail-closed: a
+    non-2xx response or a transport error is reported and exits non-zero.
+    """
+    from engine.export.push import PushTarget, push_stix, write_push_result
+
+    bundle_path = run_dir / "stix_bundle.json"
+    if not bundle_path.exists():
+        console.print(f"[red]No stix_bundle.json in {run_dir} — run an analysis first.[/red]")
+        raise SystemExit(1)
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+
+    if url and token:
+        if target_kind == "opencti":
+            coll = collection or os.environ.get("HATCHERY_OPENCTI_COLLECTION", "").strip()
+            if not coll:
+                console.print(
+                    "[red]OpenCTI push needs --collection "
+                    "(or HATCHERY_OPENCTI_COLLECTION).[/red]"
+                )
+                raise SystemExit(1)
+            target: Optional[PushTarget] = PushTarget.opencti(
+                url, token, coll, verify_tls=not insecure
+            )
+        else:
+            target = PushTarget.misp(url, token, verify_tls=not insecure)
+    else:
+        env_target = PushTarget.from_env(target_kind)
+        if env_target is None:
+            console.print(
+                f"[red]No credentials for {target_kind}.[/red] Pass --url/--token"
+                + (" and --collection" if target_kind == "opencti" else "")
+                + f", or set the HATCHERY_{target_kind.upper()}_* environment variables."
+            )
+            raise SystemExit(1)
+        if insecure:
+            env_target.verify_tls = False
+        target = env_target
+
+    if target is None:  # unreachable; narrows the type for the checker
+        raise SystemExit(1)
+
+    if not target.verify_tls:
+        console.print("[yellow]⚠ TLS verification is disabled for this push.[/yellow]")
+
+    result = push_stix(bundle, target)
+    result_path = write_push_result(run_dir, target, result)
+    if result.ok:
+        console.print(
+            f"[green]✓ Pushed {result.objects} STIX object(s) to "
+            f"{target_kind}[/green] — {result.url}"
+        )
+        console.print(f"  Result recorded: [cyan]{result_path}[/cyan]")
+        return
+
+    console.print(f"[red]✗ Push to {target_kind} failed:[/red] {result.message}")
+    console.print(f"  Result recorded: [cyan]{result_path}[/cyan]")
+    raise SystemExit(1)
 
 
 @cli.command()

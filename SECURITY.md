@@ -16,6 +16,10 @@ The seccomp profile in `engine/sandbox/seccomp.json` is a deny-list and is there
 
 A delivery container is untrusted input that HATCHERY deliberately parses. `engine/intake/delivery.py` is bounded: depth 3, at most 64 children, 64 MiB per member, 256 MiB uncompressed, a 200:1 compression-ratio guard, and refusal of symlink/device and encrypted members. Member names are flattened under `results/<task_id>/delivery/`, so an archive cannot write outside it. Extraction never executes anything. ZIP/OOXML, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG and PDF are parsed. Formats that are detected but not extracted (OLE/CFB, RTF, 7z, RAR, CAB) are reported as unsupported with a reason instead of being silently ignored. The LNK, ISO9660 and PDF parsers are exercised in tests against container bytes written by independent libraries (`pylnk3`, `pycdlib`, `pypdf`), which are dev-only dependencies; the runtime parses untrusted input with the standard library alone.
 
+## Threat-intelligence push
+
+`hatchery push` sends the run's STIX bundle to MISP or OpenCTI. The API token is read from `--token` or the environment, is used only to build the request, and is never written to the result object, the log, or the `push-<target>.json` audit file. TLS verification is on by default; `--insecure` exists for self-signed lab instances and warns each time it is used. A push is fail-closed: a non-2xx response or a transport error is reported with the status and exits non-zero.
+
 ## Hardening checklist for operators
 
 - [ ] Run at tier 2 or 3 for anything untrusted. Verify with `hatchery doctor`.
