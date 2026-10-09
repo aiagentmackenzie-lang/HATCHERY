@@ -127,8 +127,8 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
     db.prepare(
       `INSERT INTO static_results
          (task_id, hashes_json, strings_json, pe_json, elf_json, yara_json,
-          capa_json, packer_json, ioc_json, mitre_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          capa_json, packer_json, delivery_json, ioc_json, mitre_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       taskId,
       JSON.stringify({
@@ -143,6 +143,7 @@ export function ingestBundle(db: Database.Database, taskId: string, resultsDir: 
       JSON.stringify(staticData.yara ?? null),
       JSON.stringify(staticData.capa ?? null),
       JSON.stringify(staticData.packer ?? null),
+      staticData.delivery ? JSON.stringify(staticData.delivery) : null,
       JSON.stringify(iocs),
       JSON.stringify(mitre),
     );

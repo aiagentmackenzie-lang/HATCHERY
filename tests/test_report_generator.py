@@ -231,3 +231,31 @@ class TestReportGenerator:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+def test_markdown_renders_delivery_section_and_unsupported_list():
+    static = {
+        "delivery": {
+            "format": "ooxml",
+            "format_detail": "OOXML package (docm)",
+            "flags": ["ooxml-macro", "ooxml-external-relationship"],
+            "children": [
+                {
+                    "name": "word/vbaProject.bin", "size": 388, "format": "bin",
+                    "sha256": "ab" * 32, "flags": ["ooxml-macro"],
+                }
+            ],
+            "unsupported": [
+                {"path": "doc.pdf", "format": "pdf", "reason": "not implemented in this revision"}
+            ],
+            "truncated": False,
+        }
+    }
+    md = ReportGenerator().generate_markdown(
+        sample_name="invoice.docm",
+        sample_hash={"md5": "a", "sha1": "b", "sha256": "c", "file_size": 1},
+        static_results=static,
+    )
+    assert "### Delivery Format" in md
+    assert "word/vbaProject.bin" in md
+    assert "Detected but not extracted" in md
+    assert "not implemented in this revision" in md

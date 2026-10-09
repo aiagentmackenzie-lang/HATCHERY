@@ -253,6 +253,7 @@ def compute_limitations(
     events: list[dict],
     egress_blocked: bool = True,
     evasion: Optional[dict] = None,
+    delivery: Optional[dict] = None,
 ) -> list[str]:
     """State plainly what this run does not establish.
 
@@ -302,6 +303,45 @@ def compute_limitations(
             "This run produced no behavioral events at all. Treat it as "
             "INCONCLUSIVE, not as evidence of benign behavior."
         )
+
+    # Delivery-format intake. A container that was detected but not unpacked is
+    # a finding, not a clean run: the silent "no findings" this project exists
+    # to eliminate (D19). Extracted children are analysed statically and are
+    # not detonated, and the run says so.
+    if delivery and delivery.get("format") not in (None, "unknown", "macho"):
+        fmt = delivery.get("format")
+        children = delivery.get("children") or []
+        unsupported = delivery.get("unsupported") or []
+        if children:
+            if sandbox:
+                limits.append(
+                    f"Delivery container ({fmt}) was unpacked: {len(children)} "
+                    "file(s) extracted and analysed statically. Only the top-level "
+                    "sample was detonated; extracted children were not executed."
+                )
+            else:
+                limits.append(
+                    f"Delivery container ({fmt}) was unpacked: {len(children)} "
+                    "file(s) extracted and analysed statically. Nothing was "
+                    "executed."
+                )
+        elif unsupported:
+            limits.append(
+                f"Delivery container ({fmt}) was detected but not unpacked. Its "
+                "contents were not inspected beyond a raw byte/string scan."
+            )
+        for item in unsupported:
+            limits.append(
+                f"Delivery format {item.get('format')} at {item.get('path')} "
+                f"was not extracted: {item.get('reason')}"
+            )
+        if delivery.get("truncated"):
+            limits.append(
+                "Delivery extraction stopped at a configured limit; the "
+                "extracted file list is incomplete."
+            )
+        for problem in delivery.get("errors") or []:
+            limits.append(f"Delivery intake problem: {problem}")
 
     # Evasion is a finding in its own right, and an evasive run that produced
     # no impact is inconclusive rather than clean. This is the difference the
@@ -425,6 +465,7 @@ class AnalysisBundle:
 
         yara_count = len((self.static.get("yara") or {}).get("matches") or [])
         capa_count = len((self.static.get("capa") or {}).get("capabilities") or [])
+        delivery = self.static.get("delivery") or {}
         high_iocs = [
             i for i in self.iocs if i.get("severity") in ("high", "critical")
         ]
@@ -439,6 +480,9 @@ class AnalysisBundle:
             "iocs_high_or_critical": len(high_iocs),
             "techniques": (self.mitre or {}).get("technique_count", 0),
             "dynamic_analysis_performed": bool(self.sandbox),
+            "delivery_format": delivery.get("format"),
+            "delivery_children": len(delivery.get("children") or []),
+            "delivery_unsupported": len(delivery.get("unsupported") or []),
             "inconclusive": not self.events,
             "evasion_score": int((self.evasion or {}).get("score", 0)),
             "evasion_verdict": (self.evasion or {}).get("verdict", "none"),

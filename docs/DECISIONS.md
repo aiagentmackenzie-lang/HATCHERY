@@ -243,10 +243,25 @@ Tier-2 in-guest artifacts (the in-guest strace, inotify, dropped files) are reco
 
 ---
 
+## D19 — Delivery-format intake is one bounded path, and unsupported formats are loud
+
+**Decision.** `engine/intake/delivery.py` is the single intake path for delivery formats. It classifies by magic bytes (the extension only disambiguates), extracts **ZIP/OOXML** (including Office macro-enabled packages, JAR and APK), **tar/gzip/bzip2/xz**, and **HTML/SVG** script blocks, hashes and classifies every child, and feeds those children into the same static pipeline as the top-level sample. Formats it detects but deliberately does **not** extract in this revision — OLE/CFB legacy Office, PDF, shell-link, ISO/IMG, RTF, 7z, RAR, CAB — are returned as `unsupported` with a reason, and surfaced in the terminal, in `static.delivery` in the bundle, in the Markdown/JSON report, through the API (`delivery_json`, additive migration) and in the run's limitations. A document can no longer render as an empty static section.
+
+**Why.** Before this, a ZIP or an Office document classified as `Unknown` and produced only a byte-level string/YARA scan over the whole container — the silent "no findings" D3 exists to forbid. Delivery formats are where most real-world malware arrives; the 2025–2026 record cited elsewhere in this document includes HijackLoader delivered in an SVG and the broad shift to ISO/IMG and LNK phishing attachments.
+
+**Bounds, all enforced and all recorded.** Maximum depth 3; 64 extracted children; 64 MiB per member; 256 MiB uncompressed per run; a 200:1 compression-ratio guard above 1 MiB; symlink and device members refused; encrypted ZIP members refused (no password support); and every member name flattened under the extraction directory so path traversal (`../../etc/passwd`) cannot escape it. Reaching any limit sets `truncated` and adds a limitation rather than silently returning a short list.
+
+**Honesty.** Extracted children are analysed statically and are **not** detonated; the run says so. The child type is coarse and honest (`pe`/`elf`/`script`/`text`/`bin`/container), never a malware-family guess. The unsupported list names the format *and* the reason; nothing is dropped without a line explaining why.
+
+**Evidence.** Verified against a real Office document on this host and against fixtures built with the standard library's own writers, so the extractor is exercised on real container bytes rather than hand-written strings: a macro-enabled OOXML package carrying `vbaProject.bin`, an embedded OLE object and an external relationship; a zip bomb; a symlink member; a nested zip-inside-gzip-inside-tar; and a corrupt ZIP header that must produce an error rather than an empty result. 35 unit tests plus bundle/IOC/report/ingest integration tests.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
 - **Sigma rules as validated detections.** D18 emits candidate drafts only. They are not backtested; promoting one is a human decision.
+- **Full delivery-format coverage.** D19 extracts ZIP/OOXML, tar/gzip/bzip2/xz and HTML/SVG. OLE/CFB legacy Office, PDF, LNK, ISO/IMG, RTF, 7z, RAR and CAB are detected and reported as unsupported rather than half-parsed, and emulation-based Windows configuration extraction (D9) is still ahead.
 - **AI triage.** Phase 3, deliberately after the pipeline is trustworthy. When it lands it will use versioned prompt contracts, JSON-schema-validated output, grounding requirements and fail-closed suppression, in the shape Microsoft documented for DTDA. Critically, **sample-derived text is untrusted input**: Microsoft's Project Ire write-up notes a sample containing the literal string `BelievemeIamMustang-Panda`, explicitly flagged as *"adversarial input to LLM-driven analysis, biasing the verdict."* Any LLM layer here must treat malware strings as data, never instructions.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

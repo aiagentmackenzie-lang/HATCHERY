@@ -61,12 +61,18 @@ export function getDb(): Database.Database {
  * naming the column would fail at runtime. Check, then ALTER.
  */
 function migrate(database: Database.Database): void {
-  const columns = database
+  const sandboxColumns = database
     .prepare('PRAGMA table_info(sandbox_results)')
     .all() as Array<{ name: string }>;
-  const hasEvasion = columns.some((c) => c.name === 'evasion_json');
-  if (!hasEvasion) {
+  if (!sandboxColumns.some((c) => c.name === 'evasion_json')) {
     database.exec('ALTER TABLE sandbox_results ADD COLUMN evasion_json TEXT');
+  }
+
+  const staticColumns = database
+    .prepare('PRAGMA table_info(static_results)')
+    .all() as Array<{ name: string }>;
+  if (!staticColumns.some((c) => c.name === 'delivery_json')) {
+    database.exec('ALTER TABLE static_results ADD COLUMN delivery_json TEXT');
   }
 }
 

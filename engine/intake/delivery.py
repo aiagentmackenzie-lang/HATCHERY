@@ -1,0 +1,886 @@
+"""Delivery-format intake — open the container before static analysis.
+
+Most malware does not arrive as a bare ELF. It arrives as a delivery format:
+a ZIP, an Office document (OOXML or OLE/CFB), a PDF, a shell-link, an
+ISO/IMG, a one-file archive, or an HTML/SVG page. Before this module existed
+HATCHERY classified those as ``Unknown``, ran YARA and a string scan over the
+raw bytes, and reported nothing else. A document that contained an embedded
+executable therefore looked like a clean run — the exact silent "no findings"
+the rest of this project exists to eliminate (D3).
+
+This is the single intake path for delivery formats. It is the one place the
+intake can fail, and it is *loud* about what it did and did not do:
+
+* Supported container extraction: ZIP (including OOXML Office / JAR / APK),
+  tar, gzip, bzip2, xz, HTML/HTA and SVG script blocks.
+* Formats that are *detected but deliberately not extracted* in this revision
+  (OLE/CFB legacy Office, PDF, shell-link, ISO/IMG, RTF, 7z, RAR, CAB) are
+  reported as unsupported, with a reason, and still reach the string extractor
+  as raw bytes. They never silently produce "no findings".
+* Every extracted child is hashed, classified, and (at a higher level) run
+  through the static pipeline. Extraction is bounded: depth, child count,
+  per-entry size, total size and compression ratio are all capped, names are
+  flattened under the output directory, and symlinks/devices are refused.
+
+Stdlib only. Nothing here parses a file *and* decides it is safe: extraction
+never executes anything.
+"""
+
+from __future__ import annotations
+
+import bz2
+import gzip
+import hashlib
+import logging
+import lzma
+import re
+import tarfile
+import zipfile
+from dataclasses import dataclass, field
+from enum import Enum
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Bounds — bounded everything. A delivery format is untrusted input.
+# ---------------------------------------------------------------------------
+
+MAX_DEPTH = 3
+MAX_CHILDREN = 64
+MAX_ENTRY_BYTES = 64 * 1024 * 1024          # 64 MiB per extracted member
+MAX_TOTAL_BYTES = 256 * 1024 * 1024         # 256 MiB uncompressed per run
+MAX_COMPRESSION_RATIO = 200                 # declared/stored; zip-bomb guard
+MIN_ZIP_BOMB_BYTES = 1024 * 1024            # ratio applies only above 1 MiB
+MAX_HTML_SCRIPTS = 32
+
+# ISO9660 places the "CD001" identifier at byte 0x8001 of the image.
+ISO_PRIMARY_VOLUME_OFFSET = 0x8001
+
+LINK_MAGIC = bytes.fromhex("4c0000000114020000000000c000000000000046")
+OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
+SEVEN_ZIP_MAGIC = bytes.fromhex("377abcaf271c")
+RAR4_MAGIC = b"Rar!\x1a\x07\x00"
+RAR5_MAGIC = b"Rar!\x1a\x07\x01\x00"
+CAB_MAGIC = b"MSCF"
+
+# Formats that are delivered to a victim and may carry another file.
+DELIVERY_FORMATS: set[str] = {
+    "zip", "ooxml", "ole", "pdf", "lnk", "iso", "gzip", "bzip2", "xz", "tar",
+    "7z", "rar", "rtf", "html", "svg", "cab",
+}
+
+
+class DeliveryFormat(str, Enum):
+    """Coarse classification of the delivery container."""
+
+    ZIP = "zip"
+    OOXML = "ooxml"
+    OLE = "ole"
+    PDF = "pdf"
+    LNK = "lnk"
+    ISO = "iso"
+    GZIP = "gzip"
+    BZIP2 = "bzip2"
+    XZ = "xz"
+    TAR = "tar"
+    SEVEN_ZIP = "7z"
+    RAR = "rar"
+    RTF = "rtf"
+    HTML = "html"
+    SVG = "svg"
+    CAB = "cab"
+    MACHO = "macho"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class DeliveryClassification:
+    """What a file *is*, as far as its delivery format goes."""
+
+    format: DeliveryFormat
+    detail: str = ""
+    is_container: bool = False
+
+    @property
+    def label(self) -> str:
+        return self.format.value
+
+
+@dataclass
+class ExtractedChild:
+    """One file recovered from a delivery container."""
+
+    name: str                       # original member name inside the container
+    path: Path                      # where it landed on disk
+    rel_path: str                   # run-relative path, for the bundle
+    size: int
+    sha256: str
+    format: str                     # classified child format
+    extractor: str                  # which extractor produced it
+    reason: str                     # why it was kept
+    depth: int
+    flags: list[str] = field(default_factory=list)
+    static: dict = field(default_factory=dict)   # filled by the caller
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "rel_path": self.rel_path,
+            "size": self.size,
+            "sha256": self.sha256,
+            "format": self.format,
+            "extractor": self.extractor,
+            "reason": self.reason,
+            "depth": self.depth,
+            "flags": list(self.flags),
+            "static": self.static,
+        }
+
+
+@dataclass
+class DeliveryIntakeResult:
+    """The outcome of one delivery-intake pass, successful or not."""
+
+    classification: DeliveryClassification
+    children: list[ExtractedChild] = field(default_factory=list)
+    unsupported: list[dict] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    truncated: bool = False
+
+    @property
+    def format(self) -> DeliveryFormat:
+        return self.classification.format
+
+    def to_dict(self) -> dict:
+        return {
+            "format": self.classification.format.value,
+            "format_detail": self.classification.detail,
+            "is_container": self.classification.is_container,
+            "children": [child.to_dict() for child in self.children],
+            "unsupported": list(self.unsupported),
+            "flags": sorted(set(self.flags)),
+            "errors": list(self.errors),
+            "truncated": self.truncated,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+
+
+def _head(path: Path, size: int = 0x9000) -> bytes:
+    """Read a bounded prefix for magic sniffing (ISO needs 0x8002 bytes)."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(size)
+    except OSError as exc:  # pragma: no cover - unreadable file
+        logger.warning("Could not read %s for classification: %s", path, exc)
+        return b""
+
+
+def _extension(path: Path) -> str:
+    return path.suffix.lower()
+
+
+def _looks_like_text_html(head: bytes, ext: str) -> Optional[DeliveryFormat]:
+    """Distinguish HTML from SVG from arbitrary text, cheaply and bounded."""
+    if ext in (".svg",):
+        return DeliveryFormat.SVG
+    if ext in (".htm", ".html", ".hta", ".xht", ".xhtml"):
+        return DeliveryFormat.HTML
+
+    sample = head[:4096].lstrip()
+    lowered = sample.lower()
+    if lowered.startswith(b"<?xml") or b"<svg" in lowered[:2048]:
+        # An XML prolog alone is ambiguous; require an SVG root element.
+        if b"<svg" in lowered[:4096]:
+            return DeliveryFormat.SVG
+        return None
+    if lowered.startswith(b"<!doctype html") or lowered.startswith(b"<html"):
+        return DeliveryFormat.HTML
+    if b"<html" in lowered[:2048] or b"<script" in lowered[:2048]:
+        return DeliveryFormat.HTML
+    return None
+
+
+def _is_ooxml(path: Path) -> bool:
+    """True when a ZIP is an OOXML package ([Content_Types].xml present)."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = {name.replace("\\", "/") for name in archive.namelist()}
+            return "[Content_Types].xml" in names
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def classify_delivery(path: Path) -> DeliveryClassification:
+    """Classify a file by delivery format, magic first and extension second.
+
+    Extension is only consulted to disambiguate formats whose magic bytes are
+    shared (OOXML vs plain ZIP, HTML vs SVG) or absent (plain tar has a header
+    checksum, not a true magic). A file's bytes always win.
+    """
+    ext = _extension(path)
+    head = _head(path)
+
+    if head.startswith(b"%PDF-"):
+        return DeliveryClassification(DeliveryFormat.PDF, "PDF document", True)
+    if head.startswith(LINK_MAGIC):
+        return DeliveryClassification(DeliveryFormat.LNK, "Windows shell link", True)
+    if head.startswith(OLE_MAGIC):
+        detail = "OLE/CFB compound file"
+        if ext in (".doc", ".xls", ".ppt"):
+            detail = f"legacy Office ({ext.lstrip('.')}) compound file"
+        return DeliveryClassification(DeliveryFormat.OLE, detail, True)
+    if head.startswith(SEVEN_ZIP_MAGIC):
+        return DeliveryClassification(DeliveryFormat.SEVEN_ZIP, "7-Zip archive", True)
+    if head.startswith(RAR4_MAGIC) or head.startswith(RAR5_MAGIC):
+        return DeliveryClassification(DeliveryFormat.RAR, "RAR archive", True)
+    if head.startswith(CAB_MAGIC):
+        return DeliveryClassification(DeliveryFormat.CAB, "Microsoft Cabinet archive", True)
+    if head.startswith(b"{\\rtf"):
+        return DeliveryClassification(DeliveryFormat.RTF, "Rich Text Format", True)
+    if head.startswith(b"\x1f\x8b"):
+        return DeliveryClassification(DeliveryFormat.GZIP, "gzip stream", True)
+    if head.startswith(b"BZh"):
+        return DeliveryClassification(DeliveryFormat.BZIP2, "bzip2 stream", True)
+    if head.startswith(b"\xfd7zXZ\x00"):
+        return DeliveryClassification(DeliveryFormat.XZ, "xz stream", True)
+    if head.startswith(b"\xfe\xed\xfa\xce") or head.startswith(b"\xfe\xed\xfa\xcf") \
+            or head.startswith(b"\xce\xfa\xed\xfe") or head.startswith(b"\xcf\xfa\xed\xfe") \
+            or head.startswith(b"\xca\xfe\xba\xbe"):
+        return DeliveryClassification(DeliveryFormat.MACHO, "Mach-O binary", False)
+
+    # ZIP is a family: plain archive, OOXML Office, JAR, APK. zipfile is the
+    # authoritative check because the local-header magic can appear mid-file.
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08") or zipfile.is_zipfile(path):
+        if _is_ooxml(path):
+            suffix = f" ({ext.lstrip('.')})" if ext else ""
+            return DeliveryClassification(
+                DeliveryFormat.OOXML, f"OOXML package{suffix}", True
+            )
+        return DeliveryClassification(DeliveryFormat.ZIP, "ZIP archive", True)
+
+    if len(head) >= ISO_PRIMARY_VOLUME_OFFSET + 5 and \
+            head[ISO_PRIMARY_VOLUME_OFFSET:ISO_PRIMARY_VOLUME_OFFSET + 5] == b"CD001":
+        return DeliveryClassification(DeliveryFormat.ISO, "ISO 9660 / IMG image", True)
+
+    if head[257:262] == b"ustar":
+        return DeliveryClassification(DeliveryFormat.TAR, "tar archive", True)
+
+    text_format = _looks_like_text_html(head, ext)
+    if text_format is not None:
+        return DeliveryClassification(
+            text_format, f"{text_format.value.upper()} document", True
+        )
+
+    return DeliveryClassification(DeliveryFormat.UNKNOWN, "", False)
+
+
+# ---------------------------------------------------------------------------
+# Name safety — never trust a member name from an untrusted archive
+# ---------------------------------------------------------------------------
+
+
+def _safe_member_name(name: str) -> Optional[str]:
+    """Reduce an archive member name to a safe relative path.
+
+    Backslashes become slashes, drive letters and UNC prefixes are dropped,
+    and ``.``/``..``/empty components are removed. The result is therefore
+    always below the extraction root, even for ``../../etc/passwd``.
+    """
+    name = name.replace("\\", "/").replace("\x00", "")
+    if name.startswith("//"):
+        name = name.lstrip("/")
+    if len(name) >= 2 and name[1] == ":":
+        name = name[2:]
+    parts = []
+    for part in name.split("/"):
+        if part in ("", ".", ".."):
+            continue
+        cleaned = "".join(ch for ch in part if ch >= " ")
+        if cleaned:
+            parts.append(cleaned)
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
+def _flatten(rel_name: str) -> str:
+    """Turn a member path into a single filesystem component."""
+    flat = rel_name.replace("/", "__")
+    return flat[:160] or "member"
+
+
+_SCRIPT_EXTS = {
+    ".js", ".jse", ".vbs", ".vbe", ".ps1", ".psm1", ".bat", ".cmd",
+    ".hta", ".sh", ".py", ".rb", ".pl", ".scr", ".wsf", ".lnk",
+}
+_TEXT_EXTS = {
+    ".txt", ".xml", ".rels", ".json", ".csv", ".ini", ".cfg", ".log",
+    ".html", ".htm", ".css", ".md",
+}
+
+
+def _coarse_label(data: bytes, path: Path) -> str:
+    """A coarse, honest type for a child that is not a delivery container.
+
+    The delivery classifier only knows delivery formats; an extracted
+    ``vbaProject.bin`` or ``document.xml`` would otherwise read as ``unknown``.
+    This does not guess a malware family — only whether the bytes are an
+    executable, a script or text.
+    """
+    if data[:2] == b"MZ":
+        return "pe"
+    if data[:4] == b"\x7fELF":
+        return "elf"
+    if data[:2] == b"#!":
+        return "script"
+    ext = path.suffix.lower()
+    if ext in _SCRIPT_EXTS:
+        return "script"
+    if ext in _TEXT_EXTS:
+        return "text"
+    sample = data[:2048]
+    if sample:
+        printable = sum(1 for byte in sample if 32 <= byte < 127 or byte in (9, 10, 13))
+        if printable / len(sample) > 0.9:
+            return "text"
+    return "bin"
+
+
+# ---------------------------------------------------------------------------
+# Extraction state
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _State:
+    out_root: Path
+    max_depth: int = MAX_DEPTH
+    max_children: int = MAX_CHILDREN
+    children: list[ExtractedChild] = field(default_factory=list)
+    unsupported: list[dict] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    truncated: bool = False
+    total_bytes: int = 0
+
+    def add_flag(self, flag: str) -> None:
+        if flag not in self.flags:
+            self.flags.append(flag)
+
+    def budget_left(self) -> bool:
+        return len(self.children) < self.max_children and self.total_bytes <= MAX_TOTAL_BYTES
+
+    def place(self, index: int, rel_name: str) -> Path:
+        target = self.out_root / f"{index:04d}_{_flatten(rel_name)}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+
+def _write_child(
+    state: _State,
+    index: int,
+    member_name: str,
+    data: bytes,
+    *,
+    extractor: str,
+    reason: str,
+    depth: int,
+    child_format: Optional[DeliveryClassification] = None,
+    flags: Optional[list[str]] = None,
+) -> ExtractedChild:
+    target = state.place(index, member_name)
+    target.write_bytes(data)
+    sha256 = hashlib.sha256(data).hexdigest()
+    classification = child_format or classify_delivery(target)
+    child_type = classification.format.value
+    if child_type == "unknown":
+        child_type = _coarse_label(data, target)
+    try:
+        rel_path = str(target.relative_to(state.out_root.parent))
+    except ValueError:  # pragma: no cover - defensive
+        rel_path = target.name
+    child = ExtractedChild(
+        name=member_name,
+        path=target,
+        rel_path=rel_path,
+        size=len(data),
+        sha256=sha256,
+        format=child_type,
+        extractor=extractor,
+        reason=reason,
+        depth=depth,
+        flags=list(flags or []),
+    )
+    state.children.append(child)
+    state.total_bytes += len(data)
+    return child
+
+
+# ---------------------------------------------------------------------------
+# ZIP / OOXML
+# ---------------------------------------------------------------------------
+
+
+def _extract_zip(path: Path, state: _State, depth: int, context: str) -> None:
+    try:
+        archive = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        state.errors.append(f"{context}: could not open ZIP: {exc}")
+        return
+
+    with archive:
+        members = archive.infolist()
+        if len(members) > state.max_children * 4:
+            state.add_flag("zip-many-members")
+        names = {m.filename.replace("\\", "/"): m for m in members}
+
+        if "[Content_Types].xml" in names:
+            state.add_flag("ooxml-package")
+            _inspect_ooxml(archive, names, state)
+
+        index = len(state.children)
+        for info in members:
+            if not state.budget_left():
+                state.truncated = True
+                state.add_flag("child-limit-reached")
+                break
+            safe = _safe_member_name(info.filename)
+            if safe is None:
+                continue
+            if info.is_dir():
+                continue
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "symlink",
+                    "reason": "symlink member refused; not extracted",
+                })
+                continue
+            if info.flag_bits & 0x1:
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "encrypted",
+                    "reason": "encrypted ZIP member; no password support",
+                })
+                continue
+            if info.file_size > MAX_ENTRY_BYTES:
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "oversize",
+                    "reason": f"declared size {info.file_size} exceeds {MAX_ENTRY_BYTES} byte cap",
+                })
+                state.add_flag("oversize-member")
+                continue
+            if (
+                info.compress_size > 0
+                and info.file_size >= MIN_ZIP_BOMB_BYTES
+                and info.file_size / info.compress_size > MAX_COMPRESSION_RATIO
+            ):
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "compression-ratio",
+                    "reason": (
+                        f"compression ratio {info.file_size // max(info.compress_size, 1)}:1 "
+                        "exceeds the zip-bomb guard"
+                    ),
+                })
+                state.add_flag("zip-suspicious-ratio")
+                continue
+
+            try:
+                with archive.open(info) as handle:
+                    data = handle.read(MAX_ENTRY_BYTES + 1)
+            except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+                state.errors.append(f"{context}!/{safe}: read failed: {exc}")
+                continue
+            if len(data) > MAX_ENTRY_BYTES:
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "oversize",
+                    "reason": "member grew past the size cap while reading; truncated",
+                })
+                state.truncated = True
+                continue
+
+            child_flags = _member_flags(safe)
+            child = _write_child(
+                state, index, safe, data,
+                extractor="zip", reason="ZIP member", depth=depth,
+                flags=child_flags,
+            )
+            index += 1
+            for flag in child_flags:
+                state.add_flag(flag)
+            if depth < state.max_depth and state.budget_left():
+                _recurse(child, state, depth)
+
+
+def _member_flags(safe_name: str) -> list[str]:
+    lowered = safe_name.lower()
+    flags: list[str] = []
+    if lowered.endswith("vbaproject.bin"):
+        flags.append("ooxml-macro")
+    if "/embeddings/" in f"/{lowered}":
+        flags.append("ooxml-embedded-object")
+    if lowered.endswith((".exe", ".dll", ".scr", ".lnk", ".js", ".vbs", ".ps1", ".bat", ".cmd", ".hta", ".iso", ".img")):
+        flags.append("risky-member-extension")
+    return flags
+
+
+def _inspect_ooxml(archive: zipfile.ZipFile, names: dict, state: _State) -> None:
+    """Detect macro-enabled parts and external relationships in an OOXML zip."""
+    for member_name in names:
+        lowered = member_name.lower()
+        if lowered.endswith("vbaproject.bin"):
+            state.add_flag("ooxml-macro")
+        if "/embeddings/" in f"/{lowered}":
+            state.add_flag("ooxml-embedded-object")
+        if lowered.endswith(".rels"):
+            try:
+                with archive.open(names[member_name]) as handle:
+                    payload = handle.read(256 * 1024)
+            except (zipfile.BadZipFile, RuntimeError, OSError):
+                continue
+            if b'TargetMode="External"' in payload or b"TargetMode='External'" in payload:
+                state.add_flag("ooxml-external-relationship")
+    content_types = names.get("[Content_Types].xml")
+    if content_types is not None:
+        try:
+            with archive.open(content_types) as handle:
+                payload = handle.read(256 * 1024)
+            if b"macroEnabled" in payload:
+                state.add_flag("ooxml-macro-enabled")
+        except (zipfile.BadZipFile, RuntimeError, OSError):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Single-stream compression and tar
+# ---------------------------------------------------------------------------
+
+
+def _decompress_stream(path: Path, opener) -> bytes:
+    with opener(path, "rb") as handle:
+        return handle.read(MAX_ENTRY_BYTES + 1)
+
+
+def _extract_stream(path: Path, state: _State, depth: int, context: str, kind: str) -> None:
+    opener = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}[kind]
+    try:
+        data = _decompress_stream(path, opener)
+    except (OSError, EOFError, lzma.LZMAError) as exc:
+        state.errors.append(f"{context}: {kind} decompression failed: {exc}")
+        return
+    if len(data) > MAX_ENTRY_BYTES:
+        state.unsupported.append({
+            "path": context,
+            "format": kind,
+            "reason": "decompressed past the size cap; output truncated",
+        })
+        state.truncated = True
+        return
+    inner_name = path.name
+    for suffix in (".gz", ".gzip", ".bz2", ".xz", ".tgz", ".txz"):
+        if inner_name.lower().endswith(suffix):
+            inner_name = inner_name[: -len(suffix)]
+            break
+    if not inner_name:
+        inner_name = f"{path.name}.out"
+    child = _write_child(
+        state, len(state.children), inner_name, data,
+        extractor=kind, reason=f"{kind}-compressed member", depth=depth,
+    )
+    state.add_flag(f"{kind}-stream")
+    if depth < state.max_depth and state.budget_left():
+        _recurse(child, state, depth)
+
+
+def _extract_tar(path: Path, state: _State, depth: int, context: str) -> None:
+    try:
+        archive = tarfile.open(path, mode="r:*")
+    except (tarfile.TarError, OSError) as exc:
+        state.errors.append(f"{context}: could not open tar: {exc}")
+        return
+
+    index = len(state.children)
+    with archive:
+        for member in archive.getmembers():
+            if not state.budget_left():
+                state.truncated = True
+                state.add_flag("child-limit-reached")
+                break
+            if not member.isfile():
+                if member.issym() or member.islnk() or member.isdev():
+                    state.unsupported.append({
+                        "path": f"{context}!/{member.name}",
+                        "format": "special-member",
+                        "reason": f"tar member is {member.type!r}; refused",
+                    })
+                continue
+            safe = _safe_member_name(member.name)
+            if safe is None:
+                continue
+            if member.size > MAX_ENTRY_BYTES:
+                state.unsupported.append({
+                    "path": f"{context}!/{safe}",
+                    "format": "oversize",
+                    "reason": f"declared size {member.size} exceeds the cap",
+                })
+                continue
+            try:
+                extracted = archive.extractfile(member)
+                data = extracted.read(MAX_ENTRY_BYTES + 1) if extracted else b""
+            except (tarfile.TarError, OSError) as exc:
+                state.errors.append(f"{context}!/{safe}: read failed: {exc}")
+                continue
+            if len(data) > MAX_ENTRY_BYTES:
+                state.truncated = True
+                continue
+            child = _write_child(
+                state, index, safe, data,
+                extractor="tar", reason="tar member", depth=depth,
+                flags=_member_flags(safe),
+            )
+            index += 1
+            if depth < state.max_depth and state.budget_left():
+                _recurse(child, state, depth)
+
+
+# ---------------------------------------------------------------------------
+# HTML / SVG — extract script blocks so YARA and strings can see them
+# ---------------------------------------------------------------------------
+
+_JS_ESCAPE = re.compile(rb"\\x([0-9a-fA-F]{2})")
+_JS_UNICODE = re.compile(rb"\\u([0-9a-fA-F]{4})")
+
+
+def decode_js_escapes(data: bytes) -> bytes:
+    """Decode simple JS hex/unicode escapes so obfuscated script is scannable.
+
+    This is a best-effort de-obfuscation, not a JavaScript interpreter: it
+    turns ``\\x41`` and ``\\u0041`` into their bytes. It cannot and does not
+    resolve string concatenation, ``atob``, or runtime decoding.
+    """
+    def _hex(match: "re.Match[bytes]") -> bytes:
+        return bytes([int(match.group(1), 16)])
+
+    out = _JS_ESCAPE.sub(_hex, data)
+    return _JS_UNICODE.sub(_hex, out)
+
+
+class _ScriptCollector(HTMLParser):
+    """Collect script text, inline handlers and remote references."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.scripts: list[str] = []
+        self.handlers: list[str] = []
+        self.references: list[str] = []
+        self._in_script = False
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        attrs_map = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "script":
+            self._in_script = True
+            self._buf = []
+            if attrs_map.get("src"):
+                self.references.append(attrs_map["src"])
+        for name, value in attrs:
+            if name.lower().startswith("on") and value:
+                self.handlers.append(f"{name}={value}")
+        if tag in ("iframe", "embed", "object", "image", "use") and attrs_map.get("src"):
+            self.references.append(attrs_map["src"])
+        if tag == "object" and attrs_map.get("data"):
+            self.references.append(attrs_map["data"])
+        if tag == "meta" and attrs_map.get("http-equiv", "").lower() == "refresh":
+            self.references.append(attrs_map.get("content", ""))
+
+    def handle_data(self, data: str) -> None:
+        if self._in_script:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._in_script:
+            self._in_script = False
+            text = "".join(self._buf).strip()
+            if text:
+                self.scripts.append(text)
+            self._buf = []
+
+
+def _extract_markup(path: Path, state: _State, depth: int, kind: str) -> None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        state.errors.append(f"{path.name}: could not read markup: {exc}")
+        return
+
+    collector = _ScriptCollector()
+    try:
+        collector.feed(text)
+        collector.close()
+    except Exception as exc:  # HTMLParser raises on malformed input
+        state.errors.append(f"{path.name}: HTML parse error: {exc}")
+
+    flag = "svg-script" if kind == "svg" else "html-script"
+    for i, script in enumerate(collector.scripts[:MAX_HTML_SCRIPTS]):
+        decoded = decode_js_escapes(script.encode("utf-8", errors="replace"))
+        member = f"{path.name}.script-{i}.js"
+        _write_child(
+            state, len(state.children), member, decoded,
+            extractor=f"{kind}-script",
+            reason=f"<script> block #{i} from {kind.upper()}",
+            depth=depth,
+            flags=[flag, "decoded-escapes"] if decoded != script.encode("utf-8", errors="replace") else [flag],
+        )
+        state.add_flag(flag)
+    if len(collector.scripts) > MAX_HTML_SCRIPTS:
+        state.truncated = True
+        state.add_flag("script-limit-reached")
+    if collector.handlers:
+        state.add_flag(f"{kind}-inline-handler")
+    if collector.references:
+        state.add_flag(f"{kind}-remote-reference")
+
+
+# ---------------------------------------------------------------------------
+# Recursion
+# ---------------------------------------------------------------------------
+
+_EXTRACTORS = {
+    DeliveryFormat.ZIP: "zip",
+    DeliveryFormat.OOXML: "zip",
+    DeliveryFormat.TAR: "tar",
+    DeliveryFormat.GZIP: "gzip",
+    DeliveryFormat.BZIP2: "bzip2",
+    DeliveryFormat.XZ: "xz",
+    DeliveryFormat.HTML: "html",
+    DeliveryFormat.SVG: "svg",
+}
+
+
+def _recurse(child: ExtractedChild, state: _State, depth: int) -> None:
+    """Recurse into a freshly extracted child when it is itself a container."""
+    classification = classify_delivery(child.path)
+    if classification.format is not DeliveryFormat.UNKNOWN:
+        child.format = classification.format.value
+    if classification.format not in _EXTRACTORS:
+        if classification.format.value in DELIVERY_FORMATS:
+            state.unsupported.append({
+                "path": f"{child.name} ({child.rel_path})",
+                "format": classification.format.value,
+                "reason": _unsupported_reason(classification.format),
+            })
+        return
+    _dispatch(child.path, classification.format, state, depth + 1, child.name)
+
+
+def _dispatch(path: Path, fmt: DeliveryFormat, state: _State, depth: int, context: str) -> None:
+    if fmt in (DeliveryFormat.ZIP, DeliveryFormat.OOXML):
+        _extract_zip(path, state, depth, context)
+    elif fmt is DeliveryFormat.TAR:
+        _extract_tar(path, state, depth, context)
+    elif fmt in (DeliveryFormat.GZIP, DeliveryFormat.BZIP2, DeliveryFormat.XZ):
+        _extract_stream(path, state, depth, context, fmt.value)
+    elif fmt is DeliveryFormat.HTML:
+        _extract_markup(path, state, depth, "html")
+    elif fmt is DeliveryFormat.SVG:
+        _extract_markup(path, state, depth, "svg")
+
+
+def _unsupported_reason(fmt: DeliveryFormat) -> str:
+    reasons = {
+        DeliveryFormat.OLE: (
+            "legacy Office/OLE stream extraction is not implemented in this "
+            "revision; the compound file is still scanned as raw bytes"
+        ),
+        DeliveryFormat.PDF: (
+            "PDF embedded-file and JavaScript extraction is not implemented in "
+            "this revision; the document is still scanned as raw bytes"
+        ),
+        DeliveryFormat.LNK: (
+            "shell-link target/argument parsing is not implemented in this "
+            "revision; the link is still scanned as raw bytes"
+        ),
+        DeliveryFormat.ISO: (
+            "ISO9660 directory extraction is not implemented in this revision; "
+            "the image is still scanned as raw bytes"
+        ),
+        DeliveryFormat.RTF: (
+            "RTF embedded-object extraction is not implemented in this "
+            "revision; the document is still scanned as raw bytes"
+        ),
+        DeliveryFormat.SEVEN_ZIP: "7-Zip extraction requires an external library; not extracted",
+        DeliveryFormat.RAR: "RAR extraction requires an external library; not extracted",
+        DeliveryFormat.CAB: "CAB extraction is not implemented in this revision",
+        DeliveryFormat.MACHO: "Mach-O is a binary, not a container",
+    }
+    return reasons.get(fmt, "extraction not implemented in this revision")
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+def extract_delivery(
+    path: Path,
+    output_dir: Path,
+    *,
+    max_depth: int = MAX_DEPTH,
+    max_children: int = MAX_CHILDREN,
+) -> DeliveryIntakeResult:
+    """Extract a delivery container's contents into ``output_dir``.
+
+    This is the single intake path. It never raises for a malformed container:
+    every failure is recorded in ``errors`` and returned, so a caller cannot
+    mistake "extraction failed" for "container was empty". A detected-but-
+    unsupported format is recorded in ``unsupported`` with a reason.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state = _State(
+        out_root=output_dir,
+        max_depth=max(1, min(max_depth, MAX_DEPTH)),
+        max_children=max(1, min(max_children, MAX_CHILDREN)),
+    )
+    classification = DeliveryClassification(DeliveryFormat.UNKNOWN)
+
+    try:
+        classification = classify_delivery(path)
+        if classification.format in _EXTRACTORS:
+            _dispatch(path, classification.format, state, 1, path.name)
+        elif classification.format.value in DELIVERY_FORMATS:
+            state.unsupported.append({
+                "path": path.name,
+                "format": classification.format.value,
+                "reason": _unsupported_reason(classification.format),
+            })
+    except Exception as exc:  # never let a bad container abort the analysis
+        logger.exception("Delivery intake failed for %s", path)
+        state.errors.append(f"{path.name}: delivery intake failed: {exc}")
+
+    result = DeliveryIntakeResult(
+        classification=classification,
+        children=state.children,
+        unsupported=state.unsupported,
+        flags=state.flags,
+        errors=state.errors,
+        truncated=state.truncated,
+    )
+    logger.info(
+        "Delivery intake %s: format=%s children=%d unsupported=%d flags=%s",
+        path.name, result.format.value, len(result.children),
+        len(result.unsupported), result.flags,
+    )
+    return result

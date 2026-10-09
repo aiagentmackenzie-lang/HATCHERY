@@ -48,6 +48,7 @@ export async function reportRoutes(app: FastifyInstance) {
         yara: safeJsonParse(staticResults.yara_json),
         capa: safeJsonParse(staticResults.capa_json),
         packer: safeJsonParse(staticResults.packer_json),
+        delivery: safeJsonParse(staticResults.delivery_json),
         mitre: safeJsonParse(staticResults.mitre_json),
       };
     }
@@ -140,6 +141,38 @@ function generateMarkdown(report: any): string {
     lines.push(``);
     for (const c of report.static_analysis.capa.capabilities) {
       lines.push(`- **${c.name}** (${c.namespace})`);
+    }
+    lines.push(``);
+  }
+
+  if (report.static_analysis?.delivery?.format && report.static_analysis.delivery.format !== 'unknown') {
+    const d = report.static_analysis.delivery;
+    lines.push(`## Delivery Format`);
+    lines.push(``);
+    lines.push(`**Format:** \`${d.format}\`${d.format_detail ? ` — ${d.format_detail}` : ''}`);
+    if (d.flags?.length) {
+      lines.push(`**Flags:** ${d.flags.map((f: string) => `\`${f}\``).join(', ')}`);
+    }
+    if (d.children?.length) {
+      lines.push(``);
+      lines.push(`### Extracted files (${d.children.length})`);
+      lines.push(``);
+      lines.push(`| File | Size | Format | Flags |`);
+      lines.push(`|---|---:|---|---|`);
+      for (const child of d.children) {
+        lines.push(
+          `| \`${child.name}\` | ${child.size} | ${child.format} | ` +
+          `${(child.flags ?? []).join(', ') || '-'} |`,
+        );
+      }
+    }
+    if (d.unsupported?.length) {
+      lines.push(``);
+      lines.push(`**Detected but not extracted:**`);
+      lines.push(``);
+      for (const item of d.unsupported) {
+        lines.push(`- \`${item.path}\` (${item.format}) — ${item.reason}`);
+      }
     }
     lines.push(``);
   }

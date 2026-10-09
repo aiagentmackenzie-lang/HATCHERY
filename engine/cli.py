@@ -174,6 +174,72 @@ def _print_iocs(ioc_report: dict) -> None:
             )
 
 
+def _print_delivery(result: Any) -> None:
+    """Print what a delivery container yielded, and what it refused."""
+    detail = f" — {result.classification.detail}" if result.classification.detail else ""
+    console.print(f"  Delivery format: [cyan]{result.format.value}{detail}[/cyan]")
+    if result.flags:
+        console.print(f"  Flags: [yellow]{', '.join(result.flags)}[/yellow]")
+
+    children = result.children
+    if children:
+        table = Table(title="Extracted from delivery container", show_header=True)
+        table.add_column("File", style="green")
+        table.add_column("Size", style="cyan")
+        table.add_column("Format", style="magenta")
+        table.add_column("Flags", style="yellow")
+        for child in children[:20]:
+            table.add_row(
+                child.name, f"{child.size:,}", child.format,
+                ", ".join(child.flags) or "-",
+            )
+        console.print(table)
+        if len(children) > 20:
+            console.print(f"  [dim]... {len(children) - 20} more[/dim]")
+
+    for item in result.unsupported:
+        console.print(
+            f"  [yellow]not extracted:[/yellow] {item.get('path', '')} "
+            f"({item.get('format', '')}) — {item.get('reason', '')}"
+        )
+    for problem in result.errors:
+        console.print(f"  [red]delivery error: {problem}[/red]")
+
+
+def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:
+    """Open a delivery container and statically analyse everything inside.
+
+    The single intake path (``extract_delivery``) is called exactly here. Every
+    extracted child is hashed and run through the cheap static stages (YARA,
+    strings, packer detection) so its own IOCs reach the IOC extractor. The
+    children are **not** detonated, and the run says so in its limitations.
+    """
+    from engine.intake.delivery import extract_delivery
+    from engine.intake.hasher import MultiHasher
+    from engine.intake.strings import StringExtractor
+    from engine.static.yara_scanner import YARAScanner
+    from engine.static.packer_detect import PackerDetector
+
+    result = extract_delivery(file, results_dir / "delivery")
+
+    hasher = MultiHasher()
+    string_extractor = StringExtractor()
+    yara_scanner = YARAScanner()
+    packer_detector = PackerDetector()
+    for child in result.children:
+        try:
+            child.static = {
+                "hashes": hasher.hash_file(child.path).to_dict(),
+                "strings": string_extractor.extract(child.path).to_dict(),
+                "yara": yara_scanner.scan(child.path).to_dict(),
+                "packer": packer_detector.detect(child.path).to_dict(),
+            }
+        except Exception as exc:  # a child must never abort the run
+            result.errors.append(f"{child.name}: static analysis failed: {exc}")
+
+    return result, result.to_dict()
+
+
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose/debug logging")
 def cli(verbose: bool) -> None:
@@ -212,6 +278,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     from engine.intake.strings import StringExtractor
     from engine.intake.pe_analyzer import PEAnalyzer
     from engine.intake.elf_analyzer import ELFAnalyzer
+    from engine.intake.delivery import DeliveryFormat
     from engine.static.yara_scanner import YARAScanner
     from engine.static.capa_scanner import CapaScanner
     from engine.static.packer_detect import PackerDetector
@@ -232,8 +299,20 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
 
     uploader = SampleUploader()
     metadata = uploader.upload(file)
+
+    # Delivery-format intake runs before static analysis: a ZIP, Office
+    # document, archive or HTML/SVG page is opened once, and its children join
+    # the same static pipeline. A container that is detected but not unpacked
+    # is reported in the terminal, the bundle, the report and the limitations
+    # — never silently treated as an empty file (D19).
+    delivery_result, delivery_dict = _run_delivery_intake(file, results_dir)
+    if delivery_result.format is not DeliveryFormat.UNKNOWN:
+        metadata.file_type = delivery_result.format.value.upper()
+
     console.print(f"  File type: [cyan]{metadata.file_type}[/cyan]")
     console.print(f"  Size: [cyan]{metadata.file_size:,} bytes[/cyan]")
+    if delivery_result.format is not DeliveryFormat.UNKNOWN:
+        _print_delivery(delivery_result)
 
     # Hash computation
     hasher = MultiHasher()
@@ -472,6 +551,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         "yara": yara_result.to_dict(),
         "capa": capa_result.to_dict(),
         "packer": packer_result.to_dict(),
+        "delivery": delivery_dict,
     }
 
     ioc_report = extractor.extract(static_data=static_data)
@@ -533,6 +613,7 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
         artifacts=sandbox_result_dict.get("artifacts") if sandbox_result_dict else None,
         events=events,
         evasion=evasion_dict,
+        delivery=delivery_dict,
     )
     bundle = AnalysisBundle(
         task_id=task_id,
@@ -557,6 +638,12 @@ def submit(file: Path, timeout: int, output: Optional[Path], no_sandbox: bool) -
     summary = bundle.summary()
     console.print(f"  Events: [cyan]{summary['events_total']}[/cyan] {summary['events_by_category']}")
     console.print(f"  IOCs: [cyan]{summary['iocs_total']}[/cyan] ({summary['iocs_high_or_critical']} high/critical)")
+    if summary.get("delivery_format") and summary["delivery_format"] != "unknown":
+        console.print(
+            f"  Delivery: [cyan]{summary['delivery_format']}[/cyan] "
+            f"({summary['delivery_children']} extracted, "
+            f"{summary['delivery_unsupported']} unsupported)"
+        )
     if summary["evasive"]:
         console.print(
             f"  [red]Evasion: score {summary['evasion_score']}/100 "
@@ -754,6 +841,18 @@ def static(file: Path) -> None:
     from engine.static.packer_detect import PackerDetector
 
     console.print(f"\n[bold]Static Analysis: {file.name}[/bold]\n")
+
+    # Same delivery-intake path as `submit`: a container's contents are opened
+    # before the static stages, so a document is never an empty result. This
+    # command writes nothing, so the extraction lands in a temporary directory.
+    import tempfile
+    from engine.intake.delivery import DeliveryFormat
+
+    delivery_result, _ = _run_delivery_intake(
+        file, Path(tempfile.mkdtemp(prefix="hatchery-delivery-"))
+    )
+    if delivery_result.format is not DeliveryFormat.UNKNOWN:
+        _print_delivery(delivery_result)
 
     # Hashes
     hasher = MultiHasher()

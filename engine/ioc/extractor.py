@@ -202,6 +202,48 @@ class IOCExtractor:
                 context=f"capa: {cap.get('name', '')} ({cap.get('namespace', '')})",
             ), seen, results)
 
+        # Delivery-format children. A payload recovered from a ZIP or Office
+        # document is the same static source, not a second pipeline; the
+        # context names the member so the origin is never lost.
+        delivery = data.get("delivery", {}) or {}
+        for child in delivery.get("children", []) or []:
+            child_static = child.get("static", {}) or {}
+            child_name = child.get("name", "member")
+            child_strings = child_static.get("strings", {}) or {}
+            for url in child_strings.get("urls", []) or []:
+                self._dedup_add(IOC(
+                    type="url", value=url, source="delivery",
+                    severity="high",
+                    context=f"URL in extracted file: {child_name}",
+                ), seen, results)
+            for ip in child_strings.get("ips", []) or []:
+                self._dedup_add(IOC(
+                    type="ip", value=ip, source="delivery",
+                    severity="medium",
+                    context=f"IP in extracted file: {child_name}",
+                ), seen, results)
+            for domain in child_strings.get("domains", []) or []:
+                self._dedup_add(IOC(
+                    type="domain", value=domain, source="delivery",
+                    severity="medium",
+                    context=f"Domain in extracted file: {child_name}",
+                ), seen, results)
+            for email in child_strings.get("emails", []) or []:
+                self._dedup_add(IOC(
+                    type="email", value=email, source="delivery",
+                    severity="medium",
+                    context=f"Email in extracted file: {child_name}",
+                ), seen, results)
+            for match in (child_static.get("yara") or {}).get("matches", []) or []:
+                self._dedup_add(IOC(
+                    type="yara_match", value=match.get("rule", "unknown"),
+                    source="yara", severity="high",
+                    context=(
+                        f"YARA rule: {match.get('rule', '')} in extracted "
+                        f"file {child_name}"
+                    ),
+                ), seen, results)
+
         return results
 
     def _extract_from_strace(

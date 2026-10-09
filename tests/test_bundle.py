@@ -363,3 +363,83 @@ def test_artifact_recovery_errors_surface_as_limitations():
         events=[{"severity": "info"}],
     )
     assert any("could not read the tier-2 output volume" in item for item in limits)
+
+
+# ---------------------------------------------------------------------------
+# Delivery-format intake (D19)
+# ---------------------------------------------------------------------------
+
+
+def test_delivery_extraction_is_stated_as_a_limitation():
+    limits = compute_limitations(
+        None, None, None,
+        [{"severity": "info"}],
+        delivery={
+            "format": "ooxml",
+            "children": [{"name": "word/vbaProject.bin"}],
+            "unsupported": [], "flags": ["ooxml-macro"],
+            "truncated": False, "errors": [],
+        },
+    )
+    joined = "\n".join(limits)
+    assert "Delivery container (ooxml) was unpacked" in joined
+    assert "Nothing was executed" in joined
+
+
+def test_delivery_detonated_wording_when_a_sandbox_ran():
+    limits = compute_limitations(
+        None,
+        {"status": "completed", "monitoring": {}, "artifacts": {"found": {}}},
+        {"found": {}},
+        [{"severity": "info"}],
+        delivery={
+            "format": "zip",
+            "children": [{"name": "a.sh"}],
+            "unsupported": [], "flags": [],
+            "truncated": False, "errors": [],
+        },
+    )
+    joined = "\n".join(limits)
+    assert "Only the top-level sample was detonated" in joined
+
+
+def test_delivery_unsupported_is_loud_not_silent():
+    limits = compute_limitations(
+        None, None, None,
+        [{"severity": "info"}],
+        delivery={
+            "format": "pdf",
+            "children": [],
+            "unsupported": [
+                {"path": "doc.pdf", "format": "pdf", "reason": "not implemented in this revision"}
+            ],
+            "flags": [], "truncated": True, "errors": ["bad stream"],
+        },
+    )
+    joined = "\n".join(limits)
+    assert "detected but not unpacked" in joined
+    assert "not implemented in this revision" in joined
+    assert "stopped at a configured limit" in joined
+    assert "Delivery intake problem: bad stream" in joined
+
+
+def test_no_delivery_means_no_delivery_lines():
+    limits = compute_limitations(None, None, None, [{"severity": "info"}])
+    assert not any(line.startswith("Delivery") for line in limits)
+
+
+def test_summary_reports_delivery_counts():
+    bundle = AnalysisBundle(
+        task_id="d1",
+        static={
+            "delivery": {
+                "format": "zip",
+                "children": [{"name": "a"}, {"name": "b"}],
+                "unsupported": [{"path": "x"}],
+            }
+        },
+    )
+    summary = bundle.summary()
+    assert summary["delivery_format"] == "zip"
+    assert summary["delivery_children"] == 2
+    assert summary["delivery_unsupported"] == 1

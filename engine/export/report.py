@@ -118,6 +118,51 @@ class ReportGenerator:
                     lines.append(f"- **{p.get('name', 'Unknown')}** (confidence: {p.get('confidence', 'N/A')})")
                 lines.append("")
 
+            # Delivery-format intake. The container and every file extracted
+            # from it, plus anything detected but deliberately not unpacked —
+            # so a document can never render as an empty static section.
+            delivery = static_results.get("delivery") or {}
+            if delivery.get("format") and delivery.get("format") != "unknown":
+                lines.append("### Delivery Format")
+                lines.append("")
+                detail = delivery.get("format_detail") or ""
+                lines.append(f"- **Format:** `{delivery['format']}`{' — ' + detail if detail else ''}")
+                if delivery.get("flags"):
+                    lines.append(
+                        "- **Flags:** "
+                        + ", ".join(f"`{flag}`" for flag in delivery["flags"])
+                    )
+                children = delivery.get("children") or []
+                if children:
+                    lines.append(f"- **Extracted files:** {len(children)}")
+                    lines.append("")
+                    lines.append("| Extracted file | Size | Format | SHA256 | Flags |")
+                    lines.append("|---|---:|---|---|---|")
+                    for child in children[:40]:
+                        digest = str(child.get("sha256", ""))
+                        lines.append(
+                            f"| `{child.get('name', '')}` | {child.get('size', 0)} "
+                            f"| {child.get('format', '')} | `{digest[:16]}…` "
+                            f"| {', '.join(child.get('flags') or [])} |"
+                        )
+                    lines.append("")
+                unsupported = delivery.get("unsupported") or []
+                if unsupported:
+                    lines.append("**Detected but not extracted:**")
+                    lines.append("")
+                    for item in unsupported:
+                        lines.append(
+                            f"- `{item.get('path', '')}` ({item.get('format', '')})"
+                            f" — {item.get('reason', '')}"
+                        )
+                    lines.append("")
+                if delivery.get("truncated"):
+                    lines.append(
+                        "> **Note:** extraction stopped at a configured limit; the "
+                        "file list above is incomplete."
+                    )
+                    lines.append("")
+
         # Behavioral analysis
         if sandbox_results:
             lines.append("## Behavioral Analysis")
@@ -329,6 +374,7 @@ class ReportGenerator:
                 "hashes": sample_hash,
             },
             "static_analysis": static_results,
+            "delivery": (static_results or {}).get("delivery"),
             "behavioral_analysis": sandbox_results,
             "evasion": evasion,
             "ioc_report": ioc_report,

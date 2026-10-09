@@ -12,6 +12,10 @@ The isolation boundary comes from the host, not from this code, and `hatchery do
 
 The seccomp profile in `engine/sandbox/seccomp.json` is a deny-list and is therefore **hardening, not isolation**. It must permit `ptrace`, because the sandbox observes behavior with `strace`; a profile that denies `ptrace` silently disables monitoring. `tests/test_seccomp.py` enforces that contract.
 
+## Delivery-format intake
+
+A delivery container is untrusted input that HATCHERY deliberately parses. `engine/intake/delivery.py` is bounded: depth 3, at most 64 children, 64 MiB per member, 256 MiB uncompressed, a 200:1 compression-ratio guard, and refusal of symlink/device and encrypted members. Member names are flattened under `results/<task_id>/delivery/`, so an archive cannot write outside it. Extraction never executes anything. Formats that are detected but not extracted (OLE/CFB, PDF, LNK, ISO/IMG, RTF, 7z, RAR, CAB) are reported as unsupported with a reason instead of being silently ignored.
+
 ## Hardening checklist for operators
 
 - [ ] Run at tier 2 or 3 for anything untrusted. Verify with `hatchery doctor`.

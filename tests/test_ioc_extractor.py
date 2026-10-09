@@ -99,3 +99,34 @@ class TestIOCExtractor:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+def test_iocs_come_from_extracted_delivery_children():
+    """A payload recovered from a container is the same static source."""
+    static_data = {
+        "strings": {},
+        "yara": {"matches": []},
+        "capa": {"capabilities": []},
+        "delivery": {
+            "format": "zip",
+            "children": [
+                {
+                    "name": "payload.js",
+                    "static": {
+                        "strings": {
+                            "urls": ["http://evil.example/c2"],
+                            "ips": [], "domains": [], "emails": [], "registry_keys": [],
+                        },
+                        "yara": {"matches": [{"rule": "HATCHERY_Test_Rule", "meta": {}}]},
+                    },
+                }
+            ],
+        },
+    }
+
+    report = IOCExtractor().extract(static_data=static_data)
+
+    urls = report.get_by_type("url")
+    assert len(urls) == 1
+    assert urls[0].source == "delivery"
+    assert "payload.js" in urls[0].context
+    assert report.get_by_type("yara_match")
