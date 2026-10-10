@@ -1202,6 +1202,110 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
 
 
 @cli.command()
+@click.argument("path", type=click.Path(path_type=Path), default=Path("results"), required=False)
+@click.option("--threshold", default=0.5, type=float, help="Minimum similarity to group two runs (0-1)")
+@click.option("--min-size", default=2, type=int, help="Smallest cluster to report")
+@click.option("--limit", default=None, type=int, help="Cap the number of runs scanned")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+@click.option("--output", "-o", type=click.Path(path_type=Path), help="Write clusters.json to this path")
+def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
+            as_json: bool, output: Optional[Path]) -> None:
+    """Group analysed runs that look like the same campaign.
+
+    Reads every `analysis.json` under PATH (default `results/`), fingerprints each
+    run from what the engine already recorded, and groups runs whose similarity
+    is at least --threshold. Similarity is not attribution: a cluster is a lead to
+    investigate, never a family name.
+    """
+    from engine.cluster.cluster import build_clusters
+
+    root = Path(path)
+    if not root.exists():
+        console.print(f"[red]No such path: {root}[/red]")
+        raise SystemExit(1)
+
+    try:
+        clusters, fingerprints, stats = build_clusters(
+            root, threshold=threshold, min_size=min_size, limit=limit
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
+
+    payload = {
+        "root": str(root),
+        "stats": stats,
+        "clusters": [cluster_obj.to_dict() for cluster_obj in clusters],
+        "runs": [fingerprint.to_dict() for fingerprint in fingerprints],
+    }
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+    if as_json:
+        console.print_json(json.dumps(payload, default=str))
+        return
+
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Campaign clustering\n"
+            f"Root: [cyan]{root}[/cyan]\n"
+            f"Runs: {stats['runs_scanned']}  ·  Clusters: {stats['clusters']}  ·  "
+            f"Grouped: {stats['clustered_runs']}  ·  Ungrouped: {stats['unclustered_runs']}",
+            title="🔗 Clusters",
+        )
+    )
+    if not fingerprints:
+        console.print("[yellow]No analysed runs found under this path.[/yellow]")
+        return
+    if not clusters:
+        console.print(
+            f"[dim]No cluster at or above {threshold:.2f} similarity. "
+            "Lower --threshold to widen the net.[/dim]"
+        )
+        return
+
+    for cluster_obj in clusters:
+        if cluster_obj.identical_bytes:
+            score_text = "byte-identical sample"
+        else:
+            score_text = (
+                f"score {cluster_obj.min_score:.2f}\u2013{cluster_obj.max_score:.2f}"
+            )
+        console.print(
+            f"\n[bold]Cluster {cluster_obj.cluster_id}[/bold] "
+            f"({cluster_obj.size} run(s), {score_text}, "
+            f"representative [cyan]{cluster_obj.representative[:12]}[/cyan])"
+        )
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Task", style="cyan")
+        table.add_column("Sample")
+        table.add_column("Type", style="dim")
+        table.add_column("SHA256", style="dim")
+        for member in cluster_obj.members:
+            table.add_row(
+                member.task_id[:12] or "-",
+                member.file_name or "-",
+                member.file_type or "-",
+                (member.sha256[:16] + "\u2026") if member.sha256 else "-",
+            )
+        console.print(table)
+        if cluster_obj.shared:
+            top = cluster_obj.shared[:8]
+            console.print(
+                "  shared: "
+                + ", ".join(
+                    f"[yellow]{entry['feature']}[/yellow] ({entry['count']})"
+                    for entry in top
+                )
+            )
+    console.print(
+        "\n[dim]Similarity is a lead, not attribution: shared features occur in "
+        "benign software too. HATCHERY does not name families.[/dim]"
+    )
+
+
+@cli.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 def static(file: Path) -> None:
     """Run static analysis only (no sandbox execution)."""

@@ -319,6 +319,23 @@ The CLI is `hatchery push <run_dir> --target misp|opencti`, configured from `--u
 
 ---
 
+## D23 — Campaign clustering is derived, weighted and never names a family
+
+**Decision.** `engine/cluster/` fingerprints each analysed run from what the engine already recorded and groups similar runs, so a pile of analyses answers "which of these are the same campaign?" without any new state. The CLI is `hatchery cluster [path] --threshold 0.5 --min-size 2`.
+
+- **Derived, not produced.** A fingerprint is computed from the bundle on demand; nothing is written back into `analysis.json`. There is one producer of analysis data (D4), and the fingerprint cannot disagree with the analysis it was computed from. `fingerprint_from_bundle` reads the static section, IOCs, ATT&CK mapping and emulation config the engine already wrote.
+- **Weighted, because not every shared feature means the same thing.** Categories are weighted by how strong a lineage signal they are: an exact **import hash** (2.5) or import set (2.0) is strong; a shared generic capability such as *create process* (1.5) is weak; a shared section name (0.5) is nearly noise. The score is the weighted mean of per-category **Jaccard** over the categories at least one side has tokens in. A token **simhash** (Charikar, 64-bit, blake2b, deduplicated) is reported alongside as a near-duplicate cross-check, not as the primary measure — for small discrete sets Jaccard is the honest measure.
+- **Similarity is not attribution.** A cluster is a lead to investigate. The output lists the shared features and their member counts so the grouping is justified, and it **never names a family** — that is attribution, and attribution is analyst work. This is the D15 rule ("validating an id is not proving the association") applied to malware families.
+- **Identical bytes are reported as such.** A cluster held together only by an identical SHA256 is labelled `grouped_by: identical-sha256` and shown as *byte-identical sample* rather than a similarity score — otherwise two byte-identical runs with few recorded features read as "grouped at 0.00", which is confusing but not wrong. When the members differ, the reason is `feature-similarity`.
+- **Single-link, and it says so.** Clustering is union-find over the pairwise score, so it can chain. Each cluster reports `min_score` and `max_score`; a cluster whose `min_score` sits at the threshold is held together by one marginal pair, and the operator can see that instead of trusting the grouping blindly.
+- **Members are runs, not content addresses.** The fingerprint's `id` is content-addressed (two identical samples share it), but clustering keys members by run, so analysing the same bytes twice yields two members of one cluster rather than one silently replacing the other. A regression test pins this.
+
+**Evidence — real runs, not fixtures.** Clustering three real runs produced by `hatchery submit` on this host (two copies of the same OLE fixture plus `eicar.com`) grouped the two byte-identical runs and left the unrelated one ungrouped, with the identical-bytes label. 34 tests cover fingerprint extraction (including a zeroed compile timestamp not becoming a shared feature), similarity (weighting, Jaccard, simhash, Hamming) and grouping (threshold, min-size, transitive chaining, the content-address collision, medoid representative).
+
+**Not done, deliberately.** No API endpoint or dashboard panel for clusters yet — clustering is a corpus-wide operator command, and the engine-written `clusters.json` (`--output`) is the hook a later surface would read. No fuzzy hashing (ssdeep/TLSH) or true code-reuse lineage extraction from disassembly; the import hash and feature overlap are the lineage evidence available from the bundle. No family naming, by design.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
