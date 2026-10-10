@@ -1307,6 +1307,138 @@ def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
 
 
 @cli.command()
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--output", "-o", type=click.Path(path_type=Path), help="Directory for the replayed run")
+@click.option("--no-sandbox", "force_no_sandbox", is_flag=True, help="Replay the static stage only, even if the original detonated")
+@click.option("--allow-host-emulation", is_flag=True, help="Escape hatch: emulate on the bare host (loudly unsupported)")
+@click.option("--sample", "sample_override", type=click.Path(path_type=Path), default=None, help="Use this copy of the sample (its sha256 must match the bundle)")
+@click.option("--timeout", default=1800.0, help="Submit timeout in seconds")
+@click.option("--json", "as_json", is_flag=True, help="Emit the replay section as JSON")
+def replay(
+    run_dir: Path,
+    output: Optional[Path],
+    force_no_sandbox: bool,
+    allow_host_emulation: bool,
+    sample_override: Optional[Path],
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """Re-analyse a run and report whether its static findings reproduce.
+
+    Locates the sample the bundle recorded, re-runs the existing submit pipeline
+    with the reproduced settings, and classifies every signal: deterministic
+    static facts must be identical or the replay is a loud static-mismatch;
+    dynamic observations are reported as drift and never failed on. A replay
+    that could not run, or could not reproduce the settings, is INCONCLUSIVE —
+    never a silent pass. Exit codes: 0 reproducible/dynamic-drift, 2
+    static-mismatch, 1 inconclusive.
+    """
+    from engine.replay import DETERMINISTIC_KINDS, ReplayError, run_replay
+
+    try:
+        result = run_replay(
+            run_dir,
+            output_dir=output,
+            force_no_sandbox=force_no_sandbox,
+            allow_host_emulation=allow_host_emulation,
+            sample_override=sample_override,
+            submit_timeout=timeout,
+        )
+    except ReplayError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(2)
+
+    section = result.section
+    if as_json:
+        console.print_json(json.dumps(section, default=str))
+        raise SystemExit(result.exit_code)
+
+    color = {
+        "reproducible": "green",
+        "dynamic-drift": "yellow",
+        "static-mismatch": "red",
+        "inconclusive": "yellow",
+    }.get(result.verdict, "white")
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Deterministic replay\n"
+            f"Original: [cyan]{section.get('original_task_id') or '(unknown)'}[/cyan]\n"
+            f"Replay:   [cyan]{section.get('replay_task_id') or '(did not complete)'}[/cyan]\n"
+            f"Verdict:  [{color}]{result.verdict}[/{color}]",
+            title="♻ Replay",
+        )
+    )
+
+    console.print(
+        f"  Sample: {section['sample']['path']} "
+        f"[dim]({section['sample']['resolution']})"
+        + (" [green]hash verified[/green]" if section["sample"]["hash_verified"] else " [red]hash NOT verified[/red]")
+    )
+
+    settings = section.get("settings") or {}
+    original_settings = settings.get("original") or {}
+    replay_settings = settings.get("replay") or {}
+    if original_settings and replay_settings:
+        table = Table(title="Settings", show_header=True)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Original")
+        table.add_column("Replay")
+        table.add_column("Match")
+        match = settings.get("match") or {}
+        for key in ("dynamic", "emulation", "isolation_tier", "collector"):
+            same = match.get(key)
+            mark = "[green]✓[/green]" if same else "[red]✗[/red]"
+            table.add_row(
+                key,
+                str(original_settings.get(key)),
+                str(replay_settings.get(key)),
+                mark,
+            )
+        console.print(table)
+
+    table = Table(title="Deterministic signs (must be identical)", show_header=True)
+    table.add_column("Signal", style="cyan")
+    table.add_column("Identical")
+    for name in DETERMINISTIC_KINDS:
+        same = section.get("identical", {}).get(name)
+        if same is True:
+            mark = "[green]✓[/green]"
+        elif same is False:
+            mark = "[red]✗[/red]"
+        else:
+            mark = "[yellow]? unknown[/yellow]"
+        table.add_row(name, mark)
+    console.print(table)
+
+    diff = section.get("diff") or {}
+    if diff:
+        console.print("[bold]Differences[/bold]")
+        for name, detail in diff.items():
+            if "only_original" in detail:
+                console.print(
+                    f"  [red]{name}[/red] only-in-original={detail['only_original']} "
+                    f"only-in-replay={detail['only_replay']}"
+                )
+            else:
+                console.print(
+                    f"  [yellow]{name}[/yellow] original={detail['original']} "
+                    f"replay={detail['replay']}"
+                )
+
+    if section.get("not_replayed"):
+        console.print(f"  [dim]not replayed: {', '.join(section['not_replayed'])}[/dim]")
+
+    console.print(render_limitations(section.get("limitations") or []), highlight=False)
+    console.print(
+        f"  replay.json: [cyan]{Path(str(section.get('replay_run_dir', ''))) / 'replay.json'}[/cyan]"
+    )
+
+    if result.verdict == "static-mismatch":
+        console.print("[red]Deterministic static findings did NOT reproduce.[/red]")
+    raise SystemExit(result.exit_code)
+
+
+@cli.command()
 @click.option(
     "--root",
     type=click.Path(path_type=Path),

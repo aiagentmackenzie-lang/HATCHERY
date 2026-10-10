@@ -112,6 +112,7 @@ Not aspirational. What is in the code today.
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
 | **Campaign clustering** | ⚠️ | `hatchery cluster [path]` fingerprints each run from what the engine already recorded (import hash, imports, capa, YARA, ATT&CK, IOCs, emulated APIs, sections, classified strings) and groups similar runs by a weighted Jaccard score with a token simhash cross-check. Derived on demand — never a second producer. Lists the shared features that justify each group and **never names a family**: similarity is a lead, not attribution. 34 tests |
 | **MCP server** | ⚠️ | `hatchery mcp` exposes `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs` over newline-delimited JSON-RPC 2.0 on **stdio**, so an agent can call HATCHERY as a tool. Stdlib only, no SDK. Local stdio only — never expose it on a socket; the `triage_run` tool cannot be told to use a remote model |
+| **Deterministic replay** | ⚠️ | `hatchery replay <run_dir>` re-analyses the same sample under the settings the bundle recorded and classifies every signal. Deterministic static facts (hashes, file type, delivery format + child hashes, YARA rule set, capa capability set, ATT&CK id set, static IOC set) must be identical or the replay is a loud `static-mismatch`; dynamic observations (event counts, durations, IOC order, evasion score) are reported as drift and never failed on. A missing/changed sample, an unreproduced tier/collector, or a bundle missing a section is INCONCLUSIVE, never a silent pass. The old bundle is never mutated — see D26 |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
 ---
@@ -147,9 +148,12 @@ hatchery push <run_dir> --target misp|opencti   Push the run's STIX bundle
 hatchery triage <run_dir>           Local LLM triage over an existing run (advisory)
 hatchery cluster [path]             Group analysed runs that look like the same campaign
 hatchery mcp                        Run the MCP server on stdio (for an agent to call)
+hatchery replay <run_dir>           Re-analyse a run and report whether its static findings reproduce
 ```
 
 Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`, `--triage`, `--triage-model NAME`, `--allow-remote-model`.
+
+Options for `replay`: `--output/-o DIR`, `--no-sandbox`, `--allow-host-emulation`, `--sample PATH`, `--timeout SECONDS`, `--json`.
 
 ### Emulation (Windows PE)
 
@@ -207,6 +211,24 @@ Wire it into an MCP client as a stdio server, e.g.:
 
 stdout is the protocol channel, so the command prints nothing else. **Local stdio only — never expose it on a socket.** The `triage_run` tool uses a local Ollama model and cannot be told to use a remote one: permitting a remote model stays an explicit operator decision at the CLI, never something an agent can switch on. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D24.
 
+### Reproducibility check (replay)
+
+`hatchery replay results/<task>/bundle` re-analyses the same sample under the settings the bundle recorded and answers the question a finding has to survive: *re-run it and do you get the same static result?*
+
+- **Deterministic must match, or it fails loudly.** sha256/md5/sha1, file type, delivery format and extracted child hashes, the YARA rule-name set, the capa capability set, the ATT&CK technique-id set and the static IOC set are compared for exact equality. Any difference is a `static-mismatch` (exit 2) — the original finding does not reproduce.
+- **Dynamic is drift, not failure.** Event counts by category/severity, durations, collected-IOC ordering, evasion score and emulation counters are reported when they move, but a sandbox is not bit-for-bit reproducible and the tool does not pretend it is. Only dynamic movement is a `dynamic-drift` (exit 0).
+- **The honest failure is INCONCLUSIVE (exit 1).** The sample is gone or its bytes changed, the replay ran at a weaker isolation tier or without detonation the original had, the emulation image was unavailable, or the bundle predates a stage so a deterministic signal cannot be re-established. A replay never silently passes over a setting it could not reproduce.
+- **The sample is located and hash-verified** from the recorded path or the content-addressed store (`samples/<sha256>.sample`); `--sample PATH` points at a kept copy. A candidate with different bytes is refused rather than replayed.
+- **The original bundle is never modified.** The `replay` section and `replay.json` are written beside the **new** run (and a failed replay still writes `replay.json` with the reason). The pipeline is re-run by shelling out to `hatchery submit`, so there is one producer of analysis data.
+
+```bash
+hatchery submit sample.elf --timeout 120          # original run
+hatchery replay results/<task_id>/bundle          # same static findings? exit 0 = yes
+hatchery replay results/<task_id>/bundle --json    # machine-readable replay section
+```
+
+See [`docs/DECISIONS.md`](docs/DECISIONS.md) D26 for the signal classes and the verdict precedence.
+
 ---
 
 ## API
@@ -241,7 +263,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 622 tests (+ emulation tests when the extra is installed)
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 654 tests (+ emulation tests when the extra is installed)
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 HATCHERY_EMULATION_E2E=1 pytest tests/test_emulate_e2e.py -v  # really emulates (needs the emulation image)
@@ -281,6 +303,8 @@ When emulation is enabled, a Windows PE additionally goes through `engine/emulat
 
 When triage is enabled, `engine/triage/` builds a **bounded, citable evidence set** from the bundle (stable `event:N` / `rule:...` / `ioc:...` / `capa:...` / `emulation:...` ids, sample text wrapped in an untrusted-data boundary), asks a local Ollama model under a versioned JSON-schema contract, grounds every citation against that evidence set, and writes a top-level `triage` section. The bundle is the single source of truth: triage patches `analysis.json` rather than living in a side file the API never reads.
 
+When a run is replayed, `engine/replay/` locates and hash-verifies the original sample, shells out to the existing `submit` pipeline with the settings the bundle recorded (tier, detonation, emulation), and writes a `replay` section with the verdict, the deterministic/volatile signal diff and the reasons the replay is weaker than the original. Static signals are compared for equality; dynamic observations are reported as drift. The original bundle is never modified.
+
 ---
 
 ## Roadmap
@@ -293,7 +317,7 @@ When triage is enabled, `engine/triage/` builds a **bounded, citable evidence se
 
 **Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ✅ *(MCP)* `hatchery mcp` exposes the engine as an MCP tool an agent can call (`submit_sample`, `get_report`, `get_iocs`, `triage_run`, `cluster_runs`), stdlib only over stdio. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
 
-**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25). Still ahead: queue and workers, a sample store with TTL and encryption at rest, remote/cloud detonation, shareable analysis URLs, and per-analysis reproducibility (deterministic replay, the VMRay idea).
+**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25), and **deterministic replay** is built (D26): `hatchery replay <run_dir>` re-analyses a run and returns a reproducibility verdict, failing loudly when a deterministic static signal changed and reporting dynamic drift without failing. Still ahead: queue and workers, a sample store with TTL and encryption at rest, remote/cloud detonation, and shareable analysis URLs.
 
 ---
 

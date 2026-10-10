@@ -370,6 +370,43 @@ The CLI is `hatchery push <run_dir> --target misp|opencti`, configured from `--u
 
 ---
 
+## D26 — A run can be replayed, and the replay says exactly what it does and does not reproduce (2026-10-10)
+
+**Decision.** `hatchery replay <run_dir>` re-analyses the same sample under the settings the original bundle recorded and returns a reproducibility verdict, so a static finding can be defended later ("re-run it and the YARA/capa/IOC set is the same") and a failure is loud rather than silent. New package `engine/replay/`; CLI `hatchery replay <run_dir> [--output DIR] [--no-sandbox] [--allow-host-emulation] [--sample PATH] [--json]`; a top-level `replay` section in the **replayed** bundle plus `replay.json` beside it.
+
+- **Every signal has a class, because only some of them can be deterministic.**
+
+| Class | Signals | Behaviour on change |
+|:--|:--|:--|
+| **Deterministic** | sha256/md5/sha1, file type, delivery format + extracted child hashes, the YARA rule-name **set**, the capa capability **set**, the ATT&CK technique-id **set**, the static IOC **set** | **FAIL LOUDLY** — verdict `static-mismatch`, CLI exit 2 |
+| **Volatile** | dynamic event total / by category / by severity, collected-IOC ordering, sandbox status + duration, evasion score, emulation API/event counters | report drift, **do not fail** — verdict `dynamic-drift`, exit 0 |
+| **Unknown** | a deterministic signal whose source section is absent from the bundle (an older bundle that predates a stage) | verdict `inconclusive`, with the signal named |
+
+A sandbox is not bit-for-bit reproducible: a run that reconnoiters for 12.5 s and one that takes 90 s are the same run, and a replay tool that failed on that would be useless. A changed YARA match is not the same run at all, and a replay tool that passed on that would be dishonest. The two are kept apart on purpose.
+
+- **Settings are reproduced from the bundle, not guessed.** `settings_from_bundle` reads what the original actually recorded: whether it detonated (a `sandbox` section exists), the isolation tier in force, the collector (`strace-ptrace` vs `gvisor-sentry-strace`), and whether emulation ran (`emulation.available`). The replay shells out to the existing `hatchery submit` pipeline with the matched flags (`--no-sandbox` when the original was static-only, `--emulate` when it emulated), so there is still one producer of analysis data (D4). A setting that could not be reproduced — a weaker isolation tier, `--no-sandbox` over an original that detonated, an unavailable emulation image, a different collector — forces `inconclusive` and names the mismatch. A replay that silently ran weaker than the original is not a replay.
+- **The sample is verified, never assumed.** Replay tries the recorded `sample.file_path`, then the content-addressed store the uploader already writes (`samples/<sha256>.sample`), and an explicit `--sample` override. Every candidate's sha256 is checked against the bundle; a candidate with different bytes is refused (comparing a different file would manufacture a false `static-mismatch`). Gone sample, changed bytes, or a submit that produced no bundle → `inconclusive` with the reason, and a `replay.json` recording the failure.
+- **Verdict precedence, in one function.** `static-mismatch` (a deterministic fact changed) beats everything; otherwise `inconclusive` when a setting was not reproduced or a deterministic signal is unknown; otherwise `dynamic-drift` when only volatile signals moved; otherwise `reproducible`. The CLI mirrors it: exit 0 for `reproducible`/`dynamic-drift`, 2 for `static-mismatch`, 1 for `inconclusive`.
+- **The original bundle is never mutated.** The `replay` section and `replay.json` live with the **new** run, following the triage pattern (D22). A reproducibility record must not overwrite the run it is trying to reproduce.
+
+**Evidence — a real run, not a fixture.** On this host: `hatchery submit tests/fixtures/eicar.com --no-sandbox -o /tmp/replay-probe/run1` produced task `a589335d9dc2`; `hatchery replay /tmp/replay-probe/run1 --no-sandbox -o /tmp/replay-probe/run1-replay` produced task `ae3182c6dcbd` with every deterministic signal identical and every setting reproduced:
+
+```
+Verdict:  reproducible
+  Sample: .../tests/fixtures/eicar.com (recorded sample path) hash verified
+  Settings: dynamic False/False ✓ · emulation False/False ✓ · isolation_tier 0/0 ✓
+  Deterministic signals: sha256 ✓ md5 ✓ sha1 ✓ file_type ✓ delivery_format ✓
+    delivery_children ✓ yara_rules ✓ capa_capabilities ✓ attack_techniques ✓ static_iocs ✓
+  Sample resolved via recorded sample path; its sha256 was verified against the bundle
+  Every deterministic static signal is identical and the run's settings were reproduced.
+```
+
+32 new tests, all Docker- and Ollama-free: signal extraction (including an old bundle with a missing section becoming UNKNOWN, and IOC-order sensitivity), the comparison (added/lost set members, dynamic-only drift), the verdict precedence, settings comparison (tier, collector, skipped detonation, emulation), sample recovery from the content-addressed store, refusal of different bytes, a clean `ReplayError` on a malformed bundle, and one integration test that really runs `hatchery submit --no-sandbox` and then `hatchery replay` and asserts `reproducible`. The submit runner is injectable, so the orchestration tests never start a subprocess. Full gate: ruff clean, mypy 71 files, **654 passed / 16 skipped** (was 622/16), rules lint, server typecheck + build + 31 node tests, dashboard build.
+
+**Not done, deliberately.** Dynamic behaviour is compared as counts/categories, not event-by-event — a syscall stream is not something a sandbox can reproduce, and pretending otherwise is the lie this project exists to avoid. Emulation output (Speakeasy is a pre-release whose report schema is versioned per run) is reported as drift, never as a deterministic signal. AI triage is not replayed: it is model-generated and non-deterministic, so it is listed under `not_replayed`. Replay shells out rather than re-implementing the pipeline (D4). There is no signed or tamper-evident replay attestation, and replay does not itself provide remote/cloud detonation — it re-runs where the engine runs.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
