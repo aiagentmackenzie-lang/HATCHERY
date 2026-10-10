@@ -51,7 +51,8 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 
 - [ ] Run at tier 2 or 3 for anything untrusted. Verify with `hatchery doctor`.
 - [ ] Keep the sandbox network `internal` (the default). It has no route off the host.
-- [ ] Set `HATCHERY_API_TOKEN`. Without it the API is unauthenticated and says so at startup.
+- [ ] Set `HATCHERY_ADMIN_TOKEN`. Without it the API is unauthenticated and says so at startup. Give integrations a `HATCHERY_READ_TOKEN` (viewer) instead of the admin token.
+- [ ] Read the audit log (`GET /api/audit`) after an incident — it records who did what, without storing the credential itself.
 - [ ] Keep `HATCHERY_HOST=127.0.0.1` unless you have a specific reason and a token set.
 - [ ] Restrict `HATCHERY_ALLOWED_SAMPLE_ROOTS` to your real intake directory.
 - [ ] Never point the API at a directory containing credentials or backups.
@@ -65,7 +66,9 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 | Control | Default |
 |:--|:--|
 | Bind address | `127.0.0.1` |
-| Authentication | off, with a startup warning; set `HATCHERY_API_TOKEN` |
+| Authentication | off, with a startup warning; set `HATCHERY_ADMIN_TOKEN` (full) and `HATCHERY_READ_TOKEN` (read-only). `HATCHERY_API_TOKEN` is still accepted as a back-compatible admin token |
+| Authorization | per-request role: reads need `viewer`, state changes need `admin`, `GET /api/audit` needs `admin`. Tokens compared in constant time |
+| Audit log | every answered request is recorded in `audit_log` (actor, role, authenticated, method, path minus query, status). No token, header, body or sample byte is stored. `GET /api/audit` is admin-only |
 | CORS | permissive (`origin: true`) — tighten before exposing |
 | Sample path submissions | restricted to `samples/` and `uploads/` |
 | Upload filenames | reduced to a bare name; traversal segments stripped |

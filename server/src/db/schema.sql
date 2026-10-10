@@ -81,3 +81,22 @@ CREATE TABLE IF NOT EXISTS iocs (
 
 CREATE INDEX IF NOT EXISTS idx_iocs_task ON iocs(task_id);
 CREATE INDEX IF NOT EXISTS idx_iocs_type ON iocs(ioc_type);
+
+-- Access audit log (D25). Every API request the server answers is recorded here:
+-- who (actor + role), what (method + path), and the outcome (status). No token, no
+-- sample bytes and no request body is ever stored.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL DEFAULT 'anonymous',
+    role TEXT NOT NULL DEFAULT 'anonymous',
+    authenticated INTEGER NOT NULL DEFAULT 0,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    status_code INTEGER,
+    action TEXT,               -- auth.denied | request.forbidden | request.allowed
+    detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);

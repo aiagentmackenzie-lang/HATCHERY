@@ -354,6 +354,22 @@ The CLI is `hatchery push <run_dir> --target misp|opencti`, configured from `--u
 
 ---
 
+## D25 — The API has roles and an audit log, not one shared secret
+
+**Decision.** The API resolves an **actor and role** for every request and records every answered request in an append-only `audit_log`. The previous model was a single optional shared secret: hold it and do anything, or the API was open and everyone could. That is not a permission model, and it left no record of what happened.
+
+- **Roles.** `admin` (state changes) and `viewer` (reads). `requiredRole(method, path)` says what each endpoint needs: `GET`/`HEAD`/`OPTIONS` need `viewer`; anything else needs `admin`; `/api/health` is `anonymous`; and `GET /api/audit` is `admin` even though it is a read, because the audit log names who did what — a viewer must not be able to enumerate the operator's actions. `roleSatisfies` is a monotonic rank check.
+- **Tokens.** `HATCHERY_ADMIN_TOKEN` and `HATCHERY_READ_TOKEN`; `HATCHERY_API_TOKEN` is still accepted as a back-compatible **admin** token so existing deployments do not break. Tokens are compared with `crypto.timingSafeEqual` (with a length guard), not `===`. Presented via `Authorization: Bearer …` or `X-HATCHERY-Token`.
+- **Open by default, loudly.** With no token configured the API keeps working for the local dashboard, but the actor is recorded as unauthenticated `anonymous` and the server warns at every start (twice: once for the auth config, once at listen). An unauthenticated action is never recorded as if it were verified.
+- **The audit log stores access, not secrets.** Columns are actor, role, authenticated, method, path (query string **dropped** — it can carry identifiers), status code, action (`auth.denied` / `request.forbidden` / `request.allowed` / `request.failed`) and a truncated detail. There is deliberately no column for a token, an `Authorization` header, a request body or sample bytes; an audit log that leaks the credential it audits is worse than none. `recordAudit` never throws — a locked database must not turn a completed analysis into a 500.
+- **Health stays public.** `/api/health` is `anonymous` even when tokens are set (and is not audited), so a supervisor or container probe can still liveness-check the service.
+
+**Evidence.** 18 new server tests. Unit tests cover role resolution (open mode, admin, viewer, wrong/missing token, both headers), `requiredRole` per method and path (including the admin-only audit GET), and role ranking. `audit_log.test.mjs` pins the table shape — including a test that asserts the table has **no** column that could hold a credential or a body — and the writer's behaviour. `api_security_e2e.test.mjs` boots the **real built server** as a subprocess with both tokens and a throwaway database, then asserts over HTTP: health is public, no token is 401, a viewer is 403 on `/api/audit` and on `POST /api/submit`, an admin reads the log, the refusals are recorded, and neither token string appears anywhere in the response. Server tests: 13 → 31.
+
+**Not done, deliberately.** No per-user accounts, no token rotation or expiry, no TTL sweeper (Phase 4 continues). CORS is still `origin: true` and is documented as needing to be tightened before the API is exposed beyond loopback. The audit log is not itself tamper-evident (no hash chain) — that is a bigger piece.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.

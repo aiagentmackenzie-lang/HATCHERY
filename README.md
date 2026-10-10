@@ -227,9 +227,14 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 | GET | `/api/tasks/:id/filesystem` | Filesystem events |
 | GET | `/api/tasks/:id/report` | Full report (json/markdown) |
 | GET | `/api/tasks/:id/iocs` | IOCs (json/stix/text) |
+| GET | `/api/audit` | Access audit log (**admin only**) |
 | WS | `/ws` | Real-time event stream |
 
-**Security defaults.** Binds `127.0.0.1`. Set `HATCHERY_API_TOKEN` to require `Authorization: Bearer <token>`; without it the API is unauthenticated and logs a warning at startup. `filePath` submissions are restricted to `samples/` and `uploads/` (override with `HATCHERY_ALLOWED_SAMPLE_ROOTS`), and uploaded filenames are reduced to a bare name. See [`SECURITY.md`](SECURITY.md).
+**Auth and roles.** The API resolves an **actor and role** per request (D25): reads need the `viewer` role, anything that changes state needs `admin`, and `/api/audit` is `admin` even though it is a GET. Set `HATCHERY_ADMIN_TOKEN` and `HATCHERY_READ_TOKEN` (`HATCHERY_API_TOKEN` is still accepted as a backward-compatible admin token). With no token configured the API is open and says so at startup. Tokens are compared in constant time.
+
+**Audit log.** Every request the API answers is recorded in the `audit_log` table — actor, role, whether they authenticated, method, path (query string dropped) and status — and readable at `GET /api/audit` by an admin. No token, header, request body or sample byte is ever stored.
+
+**Other defaults.** Binds `127.0.0.1`. `filePath` submissions are restricted to `samples/` and `uploads/` (override with `HATCHERY_ALLOWED_SAMPLE_ROOTS`), and uploaded filenames are reduced to a bare name. See [`SECURITY.md`](SECURITY.md).
 
 ---
 
@@ -288,7 +293,7 @@ When triage is enabled, `engine/triage/` builds a **bounded, citable evidence se
 
 **Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ✅ *(MCP)* `hatchery mcp` exposes the engine as an MCP tool an agent can call (`submit_sample`, `get_report`, `get_iocs`, `triage_run`, `cluster_runs`), stdlib only over stdio. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
 
-**Phase 4 — product.** Queue and workers, RBAC and audit log, sample store with TTL, reproducible runs.
+**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25). Still ahead: queue and workers, a sample store with TTL and encryption at rest, remote/cloud detonation, shareable analysis URLs, and per-analysis reproducibility (deterministic replay, the VMRay idea).
 
 ---
 

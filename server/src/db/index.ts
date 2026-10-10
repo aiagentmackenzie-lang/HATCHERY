@@ -5,7 +5,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const DB_PATH = path.join(__dirname, '..', '..', '..', 'data', 'hatchery.db');
+const DB_PATH =
+  process.env.HATCHERY_DB_PATH ?? path.join(__dirname, '..', '..', '..', 'data', 'hatchery.db');
 
 /**
  * Locate schema.sql.
