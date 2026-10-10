@@ -1,13 +1,74 @@
 import { FastifyInstance } from 'fastify';
+import path from 'path';
 import { getDb, TaskRow } from '../db/index.js';
+import { ingestBundle } from '../db/ingest.js';
+import { RESULTS_ROOT, readQueueJob, type QueueJob } from '../db/queue.js';
+
+/** Terminal task states: once here, the queue has nothing more to say. */
+const TERMINAL = new Set(['completed', 'failed']);
+
+/**
+ * Mirror a queued job's state onto its task row.
+ *
+ * The queue is the single producer of job state; this is the API projecting it
+ * onto its own `tasks` table so the existing dashboard queries keep working. It
+ * is idempotent (ingest replaces a task's rows), and it runs lazily on read, so
+ * no background timer is needed. A job that completed causes the bundle to be
+ * ingested; a job that failed records the job's real error, never a silent pass.
+ */
+function reconcileTask(db: ReturnType<typeof getDb>, task: TaskRow | any): QueueJob | null {
+  if (!task?.queue_job_id) return null;
+  const job = readQueueJob(String(task.queue_job_id));
+  if (!job) return null;
+
+  if (job.status === 'completed' && task.status !== 'completed') {
+    const result = ingestBundle(db, task.task_id, path.join(RESULTS_ROOT, task.task_id));
+    if (!result.ok) {
+      db.prepare(
+        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+         WHERE task_id = ?`,
+      ).run(result.error ?? 'Bundle ingest failed', task.task_id);
+    } else {
+      console.log(
+        `[hatchery] task ${task.task_id}: job ${job.job_id} completed, ingested ` +
+          `${result.events} event(s), ${result.iocs} IOC(s)`,
+      );
+    }
+  } else if (job.status === 'failed' && task.status !== 'failed') {
+    db.prepare(
+      `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+       WHERE task_id = ?`,
+    ).run(job.error ?? 'the queued job failed', task.task_id);
+  } else if (job.status === 'running' && task.status !== 'running') {
+    db.prepare(
+      "UPDATE tasks SET status = 'running', updated_at = datetime('now') WHERE task_id = ?",
+    ).run(task.task_id);
+  }
+  return job;
+}
 
 export async function statusRoutes(app: FastifyInstance) {
   // Get all tasks
   app.get('/api/tasks', async (request: any, reply: any) => {
     const db = getDb();
+    const initial = db.prepare(`
+      SELECT task_id, file_name, file_size, md5, sha256, status, static_done, sandbox_done,
+             created_at, completed_at, error_message, queue_job_id
+      FROM tasks ORDER BY created_at DESC LIMIT 100
+    `).all() as any[];
+
+    // Reflect queue state for any task that is not yet terminal. This is the
+    // projection, not a second producer: the queue owns job state, the API owns
+    // this table (D27).
+    for (const task of initial) {
+      if (task.queue_job_id && !TERMINAL.has(String(task.status))) {
+        reconcileTask(db, task);
+      }
+    }
+
     const tasks = db.prepare(`
       SELECT task_id, file_name, file_size, md5, sha256, status, static_done, sandbox_done,
-             created_at, completed_at, error_message
+             created_at, completed_at, error_message, queue_job_id
       FROM tasks ORDER BY created_at DESC LIMIT 100
     `).all();
     return reply.send({ tasks });
@@ -17,10 +78,16 @@ export async function statusRoutes(app: FastifyInstance) {
   app.get('/api/tasks/:taskId', async (request: any, reply: any) => {
     const { taskId } = request.params as { taskId: string };
     const db = getDb();
-    const task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as TaskRow | undefined;
+    let task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as TaskRow | undefined;
 
     if (!task) {
       return reply.code(404).send({ error: 'Task not found' });
+    }
+
+    // Reflect the queue's state, and ingest the bundle if the job completed.
+    const queue = reconcileTask(db, task);
+    if (queue) {
+      task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as TaskRow;
     }
 
     // Get static results if available
@@ -40,6 +107,7 @@ export async function statusRoutes(app: FastifyInstance) {
 
     return reply.send({
       task,
+      queue: queue ?? null,
       static_results: staticResults ?? null,
       sandbox_results: sandboxResults ?? null,
       ioc_summary: iocCount,

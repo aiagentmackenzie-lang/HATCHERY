@@ -38,7 +38,7 @@ export default function SampleUpload({ onSubmitted, apiBase }: Props) {
         file_size: data.file_size,
         md5: null,
         sha256: null,
-        status: 'running',
+        status: data.status ?? 'queued',
         static_done: 0,
         sandbox_done: 0,
         created_at: new Date().toISOString(),

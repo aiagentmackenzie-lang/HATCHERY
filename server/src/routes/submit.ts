@@ -1,7 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
-import { ingestBundle } from '../db/ingest.js';
-import { spawn } from 'child_process';
+import { enqueueJob, RESULTS_ROOT } from '../db/queue.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -10,9 +9,7 @@ import { pipeline } from 'stream/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
-const VENV_PYTHON = path.join(ENGINE_ROOT, '.venv', 'bin', 'python3');
 const UPLOADS_DIR = path.join(ENGINE_ROOT, 'uploads');
-const RESULTS_ROOT = path.join(ENGINE_ROOT, 'results');
 
 /**
  * Roots a caller may point `filePath` at.
@@ -129,16 +126,38 @@ export async function submitRoutes(app: FastifyInstance) {
     }
 
     const db = getDb();
+    // The task row is the API's projection; the queue is the source of job
+    // state. The job id is aligned with the task id so GET /api/tasks/:id can
+    // map one to the other directly.
     db.prepare(`
-      INSERT INTO tasks (task_id, file_name, file_path, file_size, status)
-      VALUES (?, ?, ?, ?, 'running')
-    `).run(taskId, fileName, filePath, fileSize);
+      INSERT INTO tasks (task_id, file_name, file_path, file_size, status, queue_job_id)
+      VALUES (?, ?, ?, ?, 'queued', ?)
+    `).run(taskId, fileName, filePath, fileSize, taskId);
 
-    runAnalysis(taskId, filePath, timeout, noSandbox);
+    const enqueued = enqueueJob({
+      jobId: taskId,
+      filePath,
+      outputDir: path.join(RESULTS_ROOT, taskId),
+      timeout,
+      noSandbox,
+    });
+    if (!enqueued.ok) {
+      // Fail loudly: a task that was not queued is not "running".
+      db.prepare(
+        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+         WHERE task_id = ?`,
+      ).run(enqueued.error ?? 'could not enqueue the job', taskId);
+      return reply.code(503).send({
+        task_id: taskId,
+        status: 'failed',
+        error: enqueued.error ?? 'could not enqueue the job',
+      });
+    }
 
     return reply.send({
       task_id: taskId,
-      status: 'running',
+      queue_job_id: enqueued.jobId ?? taskId,
+      status: 'queued',
       file_name: fileName,
       file_size: fileSize,
       timeout,
@@ -156,73 +175,26 @@ export async function submitRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: 'Task not found' });
     }
 
-    db.prepare("UPDATE tasks SET status = 'running', error_message = NULL, updated_at = datetime('now') WHERE task_id = ?")
-      .run(taskId);
+    // Re-queue rather than spawn: the queue refuses to touch a job that is
+    // still running under a live lease.
+    const enqueued = enqueueJob({
+      jobId: taskId,
+      filePath: task.file_path,
+      outputDir: path.join(RESULTS_ROOT, taskId),
+      timeout: 120,
+      noSandbox: false,
+      requeue: true,
+    });
+    if (!enqueued.ok) {
+      return reply.code(409).send({ error: enqueued.error ?? 'could not re-queue the job' });
+    }
 
-    runAnalysis(taskId, task.file_path, 120, false);
-
-    return reply.send({ task_id: taskId, status: 'running' });
-  });
-}
-
-/**
- * Spawn the engine, then ingest the bundle it produced.
- *
- * Exit code 0 alone does not mean the analysis succeeded — the engine can
- * complete while its sandbox produced nothing. The bundle is the authority, so
- * a failed or missing bundle marks the task failed rather than "completed".
- */
-function runAnalysis(taskId: string, filePath: string, timeout: number, noSandbox: boolean) {
-  const resultsDir = path.join(RESULTS_ROOT, taskId);
-  const args = [
-    '-m', 'engine.cli', 'submit', filePath,
-    '--timeout', String(timeout),
-    '-o', resultsDir,
-  ];
-  if (noSandbox) args.push('--no-sandbox');
-
-  const proc = spawn(VENV_PYTHON, args, {
-    cwd: ENGINE_ROOT,
-    env: {
-      ...process.env,
-      PYTHONPATH: ENGINE_ROOT,
-      HATCHERY_TASK_ID: taskId,
-    },
-  });
-
-  let stderr = '';
-  proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-  proc.on('error', (err: Error) => {
-    const db = getDb();
     db.prepare(
-      `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
+      `UPDATE tasks SET status = 'queued', error_message = NULL, updated_at = datetime('now'),
+                        queue_job_id = ?
        WHERE task_id = ?`,
-    ).run(`Could not start the analysis engine: ${err.message}`, taskId);
-  });
+    ).run(enqueued.jobId ?? taskId, taskId);
 
-  proc.on('close', (code: number) => {
-    const db = getDb();
-
-    if (code !== 0) {
-      db.prepare(
-        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
-         WHERE task_id = ?`,
-      ).run(stderr.slice(0, 2000) || `engine exited with code ${code}`, taskId);
-      return;
-    }
-
-    const result = ingestBundle(db, taskId, resultsDir);
-    if (!result.ok) {
-      db.prepare(
-        `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
-         WHERE task_id = ?`,
-      ).run(result.error ?? 'Bundle ingest failed', taskId);
-      return;
-    }
-
-    console.log(
-      `[hatchery] task ${taskId}: ingested ${result.events} event(s), ${result.iocs} IOC(s)`,
-    );
+    return reply.send({ task_id: taskId, status: 'queued', queue_job_id: enqueued.jobId ?? taskId });
   });
 }

@@ -189,6 +189,7 @@ function App() {
             <span className={`px-2 py-0.5 rounded text-xs font-bold ${
               activeTask.status === 'completed' ? 'bg-[#00ff9f]/20 text-[#00ff9f]' :
               activeTask.status === 'running' ? 'bg-[#ff6b35]/20 text-[#ff6b35]' :
+              activeTask.status === 'queued' ? 'bg-[#00aaff]/20 text-[#00aaff]' :
               activeTask.status === 'failed' ? 'bg-[#ff3366]/20 text-[#ff3366]' :
               'bg-[#13131a] text-[#6a6a7a]'
             }`}>
@@ -315,6 +316,7 @@ function TaskList({ activeTaskId, onSelect, apiBase }: {
             <span className={`text-xs px-1.5 py-0.5 rounded ${
               task.status === 'completed' ? 'bg-[#00ff9f]/10 text-[#00ff9f]' :
               task.status === 'running' ? 'bg-[#ff6b35]/10 text-[#ff6b35]' :
+              task.status === 'queued' ? 'bg-[#00aaff]/10 text-[#00aaff]' :
               task.status === 'failed' ? 'bg-[#ff3366]/10 text-[#ff3366]' :
               'text-[#6a6a7a]'
             }`}>

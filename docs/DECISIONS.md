@@ -407,6 +407,61 @@ Verdict:  reproducible
 
 ---
 
+## D27 — Submissions are durable jobs; a worker executes them and a dead worker's job is recovered (2026-10-10)
+
+**Decision.** A submission can be written to a durable, SQLite-backed job queue in the engine and executed later by a worker. New package `engine/queue/` (pure stdlib: `sqlite3`); CLI `hatchery submit --enqueue`, `hatchery worker [--once] [--concurrency N] [--queue PATH]` and `hatchery queue [JOB_ID] [--json] [--recover]`. Before this, `POST /api/submit` spawned `hatchery submit` and held nothing: there was no concurrency limit, and if the server died mid-analysis the task row stayed `running` forever. Both problems are the same problem — job state lived in a process's memory instead of in a record.
+
+- **The queue is the single producer of job state (D4).** `engine/queue/store.py::JobStore` is the only writer of the `jobs` table. The API enqueues by shelling out to `hatchery submit --enqueue` and otherwise only **reads** the queue database (read-only). A worker executes the *existing* `hatchery submit` pipeline as a subprocess, exactly as the MCP server's `submit_sample` and `replay` do; no analysis is duplicated. The engine does not need the Node server to queue or run a job — `hatchery worker` is headless.
+- **States and leases.** `queued → running → completed | failed`. A claim moves a job to `running`, increments `attempts`, records a `worker_id` and sets `lease_expires_at`. While the job runs, a monitor thread renews the lease. Completion and failure are **owner-checked**, so a worker whose lease was taken over cannot overwrite the new owner's result.
+- **Fail-closed recovery (D3).** An expired lease means a worker died. `recover_expired()` requeues the job while it has attempts left and, once `attempts` reaches `max_attempts` (default 3), marks it **failed with the reason** — never left `running`, never silently lost, and not retried forever. Recovery runs at every worker start and before every claim.
+- **Atomic claiming.** Every mutation takes the SQLite write lock with `BEGIN IMMEDIATE`; the claim re-checks `status='queued'` in its `UPDATE`, so two workers never run the same job. Concurrency is bounded by `--concurrency` (default 1) — no unbounded spawn.
+- **The bundle is the authority.** A job is `completed` only when the submit process exited 0 **and** `bundle/analysis.json` exists. Exit 0 without a bundle is a failure (the submit completed but produced nothing to defend), and a non-zero exit is a failure even if a partial bundle was left behind. `worker --once` exits non-zero if any job it drained did not complete.
+- **The API reflects the queue; it does not compete with it.** `tasks` gains an additive `queue_job_id` column (schema declaration + `ALTER TABLE` migration for existing databases, created only after the column exists so an old database does not fail at schema load). `POST /api/submit` enqueues and returns `status: "queued"`; `POST /api/submit/:id/retry` re-queues; `GET /api/tasks/:id` returns a live `queue` object and reconciles the job's terminal state onto the task row — ingesting the bundle when the job completed, recording the job's error when it failed. Reconciliation is lazy, on read, so no background timer is needed; `ingestBundle` is already idempotent. The server remains the only writer of the `tasks` table, the queue the only writer of `jobs`.
+- **The CLI enqueue output is a single JSON object** (`job_id`, `status`, `sample_path`, `output_dir`, `queue_db`) so a server can read the job id without parsing human-facing output. Paths are resolved to absolute at enqueue time, because a worker may run in a different working directory; the worker runs `submit` with the working directory set to the engine root so the content-addressed sample store (`samples/<sha256>.sample`) that replay depends on lands where replay looks for it.
+
+**Evidence — real commands, no Docker.**
+
+```
+$ hatchery submit tests/fixtures/eicar.com --no-sandbox --enqueue --queue /tmp/d27/q.db --job-id demo -o /tmp/d27/run
+{"job_id": "demo", "status": "queued", "sample_path": ".../tests/fixtures/eicar.com", "output_dir": "/private/tmp/d27/run", "queue_db": "/tmp/d27/q.db"}
+
+$ hatchery queue --queue /tmp/d27/q.db
+queued 1 · running 0 · completed 0 · failed 0 (total 1)
+
+$ hatchery worker --once --queue /tmp/d27/q.db
+INFO     Job demo: .../python3.14 -m engine.cli submit .../eicar.com -o /private/tmp/d27/run --no-sandbox --timeout 120
+INFO     Job demo completed: bundle /private/tmp/d27/run/bundle
+completed job demo — submit exit 0
+
+$ hatchery queue --queue /tmp/d27/q.db
+queued 0 · running 0 · completed 1 · failed 0 (total 1)
+
+$ hatchery replay /tmp/d27/run/bundle --no-sandbox -o /tmp/d27/replay
+Verdict:  reproducible
+```
+
+A dead worker's job is recovered, not stranded — a job claimed by `dead-worker` with a 1 s lease and never completed was picked up by the next worker:
+
+```
+claimed crash worker=dead-worker attempts=1
+$ hatchery worker --once --queue /tmp/d27/crash.db
+WARNING  Recovered 1 job(s) with an expired lease: crash
+INFO     Job crash completed: bundle /private/tmp/d27/crashrun/bundle
+completed job crash — submit exit 0
+$ hatchery queue crash --json | ...
+status=completed attempts=2/3 task_id=f761da436f31 error=None
+```
+
+And a job that cannot produce a bundle fails loudly: the sample was deleted after enqueue, so `submit` exited 2 without a bundle, the job was recorded `failed` with the click error as the reason, and `worker --once` exited 1.
+
+**Tests — 27 new, all Docker- and Ollama-free.** `test_queue_store.py` (13): enqueue/claim/complete, duplicate and requeue rules, owner-checked heartbeat/complete/fail, FIFO claim, counts, and **two separate store instances on the same file claiming concurrently — exactly one wins**. `test_queue_worker.py` (11): completion records the bundle, exit 0 without a bundle is a failure, non-zero with a bundle is a failure, a runner exception fails the job with the reason, **bounded concurrency with every job still run**, **a crashed worker's job is recovered and finishes**, **the heartbeat keeps the lease alive under a competing recovery attempt**, the flag whitelist translates only understood options. `test_queue_e2e.py` (3): real `--enqueue` → real `worker --once` → real `submit` → **`replay` on the worker-produced run is `reproducible`**, an empty queue exits 0, and a failed job exits 1. Server: `queue_e2e.test.mjs` (2) boots the real built server with throwaway server/queue databases and asserts a submission is `queued`, a real worker completes it and the next read reflects the ingested bundle, and that a job with no bundle is reflected `failed` not `running`; `queue_migration.test.mjs` boots the server against a hand-built pre-D27 database and asserts the column is added. Node tests 31 → 34.
+
+**Full gate:** ruff clean; mypy 74 files; **681 passed / 16 skipped** (was 654/16); `hatchery rules lint` passes; server typecheck + build + 34 node tests; dashboard build.
+
+**Not done, deliberately.** No distributed broker (Redis/Celery/RabbitMQ) and no remote workers — a worker is a local process reading a SQLite file, and only that is claimed. No priority or fairness scheduling (FIFO only). No cancellation API. When a heartbeat reports a lost lease mid-run the worker does not kill the still-running child process; the claim atomicity and the owner-checked completion are what prevent a double record, and an orphaned child on a single host is visible in the process table rather than hidden. A deterministic analysis failure is terminal — it is not retried, because retrying a bad sample wastes time and hides the reason; retries are for lost leases. The dashboard renders the new `queued` state but does not yet poll it. The queue database is a single-host SQLite file and the sample store it depends on still has no TTL or encryption — that is the next Phase 4 item, and an aggressive TTL must not evict a sample an existing run can still be replayed against.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -417,6 +472,8 @@ Verdict:  reproducible
 - **A dashboard panel for emulation.** The bundle, report, API (`emulation_json`) and CLI carry the emulation section; the dashboard does not yet render it.
 - **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
+- **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
+- **Sample-store TTL and encryption at rest.** The store exists and is content-addressed, but it has no expiry and no encryption; `cryptography` is only a transitive dev dependency today, so "encrypted at rest" is not claimed. This is the next Phase 4 item, and it is coupled to replay (D26).
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 
 ---

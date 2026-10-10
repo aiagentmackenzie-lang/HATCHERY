@@ -81,6 +81,19 @@ function migrate(database: Database.Database): void {
   if (!staticColumns.some((c) => c.name === 'triage_json')) {
     database.exec('ALTER TABLE static_results ADD COLUMN triage_json TEXT');
   }
+
+  // D27: the durable job a task was queued as. `CREATE TABLE IF NOT EXISTS`
+  // does not add columns to an existing table, so a database from before the
+  // queue would silently lack it and every insert naming it would fail.
+  const taskColumns = database
+    .prepare('PRAGMA table_info(tasks)')
+    .all() as Array<{ name: string }>;
+  if (!taskColumns.some((c) => c.name === 'queue_job_id')) {
+    database.exec('ALTER TABLE tasks ADD COLUMN queue_job_id TEXT');
+  }
+  // The index must be created after the column exists, otherwise a database
+  // from before the queue fails at schema load with "no such column".
+  database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(queue_job_id)');
 }
 
 export interface TaskRow {
@@ -98,6 +111,7 @@ export interface TaskRow {
   updated_at: string;
   completed_at: string | null;
   error_message: string | null;
+  queue_job_id: string | null;
 }
 
 export interface BehavioralEventRow {

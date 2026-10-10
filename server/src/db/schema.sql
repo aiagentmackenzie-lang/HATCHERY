@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
-    error_message TEXT
+    error_message TEXT,
+    queue_job_id TEXT          -- the durable job this task was queued as (D27)
 );
 
 CREATE TABLE IF NOT EXISTS static_results (

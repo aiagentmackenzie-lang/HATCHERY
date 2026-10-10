@@ -113,6 +113,7 @@ Not aspirational. What is in the code today.
 | **Campaign clustering** | ⚠️ | `hatchery cluster [path]` fingerprints each run from what the engine already recorded (import hash, imports, capa, YARA, ATT&CK, IOCs, emulated APIs, sections, classified strings) and groups similar runs by a weighted Jaccard score with a token simhash cross-check. Derived on demand — never a second producer. Lists the shared features that justify each group and **never names a family**: similarity is a lead, not attribution. 34 tests |
 | **MCP server** | ⚠️ | `hatchery mcp` exposes `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs` over newline-delimited JSON-RPC 2.0 on **stdio**, so an agent can call HATCHERY as a tool. Stdlib only, no SDK. Local stdio only — never expose it on a socket; the `triage_run` tool cannot be told to use a remote model |
 | **Deterministic replay** | ⚠️ | `hatchery replay <run_dir>` re-analyses the same sample under the settings the bundle recorded and classifies every signal. Deterministic static facts (hashes, file type, delivery format + child hashes, YARA rule set, capa capability set, ATT&CK id set, static IOC set) must be identical or the replay is a loud `static-mismatch`; dynamic observations (event counts, durations, IOC order, evasion score) are reported as drift and never failed on. A missing/changed sample, an unreproduced tier/collector, or a bundle missing a section is INCONCLUSIVE, never a silent pass. The old bundle is never mutated — see D26 |
+| **Durable job queue + workers** | ⚠️ | `hatchery submit --enqueue` writes a job to a stdlib-SQLite queue and `hatchery worker` executes it by running the existing `submit` pipeline (one producer per data path). Atomic claims (`BEGIN IMMEDIATE`) so two workers never run the same job, bounded `--concurrency`, a lease renewed while a job runs, and **fail-closed recovery**: an expired lease is requeued and, after `max_attempts`, failed with the reason — never left `running`. The bundle is the authority, so exit 0 without a bundle is a failure and `worker --once` exits non-zero if a job failed. The API enqueues instead of spawning and reflects queue state on read. Single host only — no broker or remote workers; see D27 |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
 ---
@@ -138,6 +139,9 @@ Not aspirational. What is in the code today.
 hatchery doctor                     Host readiness: isolation tiers, image, rules, emulation
 hatchery build [--emulation]        Build the sandbox image (and the emulator image)
 hatchery submit <file>              Static + dynamic analysis
+hatchery submit <file> --enqueue    Queue the job for a worker instead of analysing now
+hatchery worker [--once]            Run a queue worker (claim, execute, recover)
+hatchery queue [job_id]             Show the job queue, or one job
 hatchery emulate <file>             Windows PE emulation (static + emulator, no detonation)
 hatchery static <file>              Static analysis only
 hatchery status <task_id>           Task status
@@ -151,7 +155,11 @@ hatchery mcp                        Run the MCP server on stdio (for an agent to
 hatchery replay <run_dir>           Re-analyse a run and report whether its static findings reproduce
 ```
 
-Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`, `--triage`, `--triage-model NAME`, `--allow-remote-model`.
+Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`, `--triage`, `--triage-model NAME`, `--allow-remote-model`, `--enqueue`, `--queue PATH`, `--job-id ID`, `--requeue`.
+
+Options for `worker`: `--once` (drain and exit), `--concurrency N` (default 1), `--queue PATH`, `--lease SECONDS`, `--poll-interval SECONDS`, `--timeout SECONDS`, `--worker-id ID`.
+
+Options for `queue`: `--json`, `--status STATE`, `--limit N`, `--recover` (requeue or fail jobs whose worker lease expired), `--queue PATH`.
 
 Options for `replay`: `--output/-o DIR`, `--no-sandbox`, `--allow-host-emulation`, `--sample PATH`, `--timeout SECONDS`, `--json`.
 
@@ -229,6 +237,24 @@ hatchery replay results/<task_id>/bundle --json    # machine-readable replay sec
 
 See [`docs/DECISIONS.md`](docs/DECISIONS.md) D26 for the signal classes and the verdict precedence.
 
+### Durable queue and workers
+
+`hatchery submit --enqueue` writes the job to a SQLite queue (stdlib, no broker) and returns immediately; `hatchery worker` runs it later. This is what makes an API submission durable: the job's state is a record, not a subprocess the server is holding.
+
+- **The bundle is the authority.** A worker completes a job only when `hatchery submit` exited 0 **and** `bundle/analysis.json` exists. Exit 0 without a bundle is a failure; so is a non-zero exit with a partial bundle. `worker --once` exits non-zero if any job it drained did not complete.
+- **Atomic claims and bounded concurrency.** A claim takes the SQLite write lock (`BEGIN IMMEDIATE`), so two workers never run the same job. A worker runs at most `--concurrency` jobs at once (default 1).
+- **Leases and recovery.** A running job holds a lease that a monitor thread renews. If a worker dies, the lease expires; the next worker requeues the job, and once it has used its attempts it is **failed with the reason**. It is never left `running` forever and never silently lost.
+- **One producer per data path.** The queue is the only writer of job state; the worker executes the existing `submit` pipeline as a subprocess; the server only enqueues and reads.
+
+```bash
+hatchery submit sample.elf --no-sandbox --enqueue -o results/my-run   # queue it
+hatchery queue                                                         # list jobs and counts
+hatchery worker --once --concurrency 2                                 # drain the queue
+hatchery worker                                                        # or poll forever
+```
+
+Paths are resolved to absolute at enqueue time. The queue database is `data/queue.db` (override with `--queue` or `HATCHERY_QUEUE_DB`). See [`docs/DECISIONS.md`](docs/DECISIONS.md) D27 for the state model, the recovery rules and the deliberate exclusions (no broker, no remote workers, no cancellation).
+
 ---
 
 ## API
@@ -240,7 +266,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 
 | Method | Endpoint | Description |
 |:--|:--|:--|
-| POST | `/api/submit` | Submit a sample (JSON `filePath`, or multipart upload) |
+| POST | `/api/submit` | Submit a sample (JSON `filePath`, or multipart upload). **Enqueues** the job and returns `status: "queued"` |
 | POST | `/api/submit/:id/retry` | Re-analyze an existing task |
 | GET | `/api/tasks` | List tasks |
 | GET | `/api/tasks/:id` | Task + static + sandbox results + IOC/event summaries |
@@ -256,6 +282,8 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 
 **Audit log.** Every request the API answers is recorded in the `audit_log` table — actor, role, whether they authenticated, method, path (query string dropped) and status — and readable at `GET /api/audit` by an admin. No token, header, request body or sample byte is ever stored.
 
+**Queue.** `POST /api/submit` writes the job through `hatchery submit --enqueue` and returns `status: "queued"`; nothing is spawned and the request does not wait. `POST /api/submit/:id/retry` re-queues. `GET /api/tasks/:id` reports the live job in a `queue` object and reconciles the job's terminal state onto the task row on read (ingesting the bundle when the job completed, recording the job's error when it failed). A **worker must be running** for jobs to execute: `hatchery worker`. The queue database is `data/queue.db` (override with `HATCHERY_QUEUE_DB`); the results root accepts `HATCHERY_RESULTS_ROOT`.
+
 **Other defaults.** Binds `127.0.0.1`. `filePath` submissions are restricted to `samples/` and `uploads/` (override with `HATCHERY_ALLOWED_SAMPLE_ROOTS`), and uploaded filenames are reduced to a bare name. See [`SECURITY.md`](SECURITY.md).
 
 ---
@@ -263,7 +291,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 654 tests (+ emulation tests when the extra is installed)
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 681 tests (+ emulation tests when the extra is installed)
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 HATCHERY_EMULATION_E2E=1 pytest tests/test_emulate_e2e.py -v  # really emulates (needs the emulation image)
@@ -305,6 +333,8 @@ When triage is enabled, `engine/triage/` builds a **bounded, citable evidence se
 
 When a run is replayed, `engine/replay/` locates and hash-verifies the original sample, shells out to the existing `submit` pipeline with the settings the bundle recorded (tier, detonation, emulation), and writes a `replay` section with the verdict, the deterministic/volatile signal diff and the reasons the replay is weaker than the original. Static signals are compared for equality; dynamic observations are reported as drift. The original bundle is never modified.
 
+When a submission is queued, `engine/queue/` writes one row to a stdlib-SQLite `jobs` table and a worker claims it, runs the existing `submit` pipeline as a subprocess, and records the outcome. Claiming is atomic (`BEGIN IMMEDIATE`), concurrency is bounded, and a running job holds a lease that the worker renews; a dead worker's expired lease is recovered by the next worker and failed after `max_attempts` rather than left `running`. The bundle is the authority for completion. The API enqueues (it never spawns analysis) and projects the job's state onto its own `tasks` row on read.
+
 ---
 
 ## Roadmap
@@ -317,7 +347,7 @@ When a run is replayed, `engine/replay/` locates and hash-verifies the original 
 
 **Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ✅ *(MCP)* `hatchery mcp` exposes the engine as an MCP tool an agent can call (`submit_sample`, `get_report`, `get_iocs`, `triage_run`, `cluster_runs`), stdlib only over stdio. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
 
-**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25), and **deterministic replay** is built (D26): `hatchery replay <run_dir>` re-analyses a run and returns a reproducibility verdict, failing loudly when a deterministic static signal changed and reporting dynamic drift without failing. Still ahead: queue and workers, a sample store with TTL and encryption at rest, remote/cloud detonation, and shareable analysis URLs.
+**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25); **deterministic replay** is built (D26): `hatchery replay <run_dir>` re-analyses a run and returns a reproducibility verdict, failing loudly when a deterministic static signal changed and reporting dynamic drift without failing; and the **durable queue and workers** are built (D27): `hatchery submit --enqueue` plus `hatchery worker` execute submissions asynchronously with atomic claims, leases, bounded concurrency and fail-closed recovery of a dead worker's job, while the API enqueues instead of spawning and reflects queue state on read. Still ahead: a sample store with TTL and encryption at rest, remote/cloud detonation, and shareable analysis URLs.
 
 ---
 

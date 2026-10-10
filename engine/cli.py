@@ -293,6 +293,10 @@ def cli(verbose: bool) -> None:
 @click.option("--triage", "triage_enabled", is_flag=True, default=False, envvar="HATCHERY_TRIAGE", help="Run local LLM triage over the bundle (needs Ollama)")
 @click.option("--triage-model", default=None, help="Ollama model for triage (else auto-pick a local model)")
 @click.option("--allow-remote-model", is_flag=True, help="Escape hatch: allow a remote endpoint or a `:cloud` model to see sample text")
+@click.option("--enqueue", is_flag=True, help="Queue the job for a worker instead of analysing now")
+@click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
+@click.option("--job-id", default=None, help="Job id to enqueue under (default: a fresh id)")
+@click.option("--requeue", is_flag=True, help="Re-queue an existing terminal job instead of refusing")
 def submit(
     file: Path,
     timeout: int,
@@ -306,6 +310,10 @@ def submit(
     triage_enabled: bool,
     triage_model: Optional[str],
     allow_remote_model: bool,
+    enqueue: bool,
+    queue_db: Optional[Path],
+    job_id: Optional[str],
+    requeue: bool,
 ) -> None:
     """Submit a sample for full analysis.
 
@@ -313,7 +321,51 @@ def submit(
     optionally detonates Linux ELF in the sandbox container, and optionally
     emulates a Windows PE with Speakeasy. Emulation is a declared, containerized
     stage — not an isolation boundary.
+
+    With ``--enqueue`` the job is written to the durable queue instead and a
+    worker (``hatchery worker``) runs it later. In that mode the command prints
+    one JSON object on stdout and does not analyse anything.
     """
+    job_args = {
+        "timeout": timeout,
+        "no_sandbox": no_sandbox,
+        "emulate": emulate,
+        "emulate_timeout": emulate_timeout,
+        "emulate_raw": emulate_raw,
+        "no_emulate_capa": no_emulate_capa,
+        "allow_host_emulation": allow_host_emulation,
+        "triage": triage_enabled,
+        "triage_model": triage_model,
+        "allow_remote_model": allow_remote_model,
+    }
+    if enqueue:
+        # Queue, do not analyse. stdout is a single JSON object so a server can
+        # read the job id without parsing human-facing output.
+        from engine.queue import JobError, JobStore, resolve_queue_db
+
+        store = JobStore(resolve_queue_db(queue_db))
+        try:
+            job = store.enqueue(
+                file,
+                output_dir=output,
+                args=job_args,
+                job_id=job_id,
+                requeue=requeue,
+            )
+        except JobError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1)
+        finally:
+            store.close()
+        print(json.dumps({
+            "job_id": job.job_id,
+            "status": job.status,
+            "sample_path": job.sample_path,
+            "output_dir": job.output_dir,
+            "queue_db": str(resolve_queue_db(queue_db)),
+        }))
+        return
+
     task_id = uuid.uuid4().hex[:12]
     console.print(Panel(
         f"[bold orange_red1]HATCHERY[/bold orange_red1] — Submitting sample for analysis\n"
@@ -1436,6 +1488,192 @@ def replay(
     if result.verdict == "static-mismatch":
         console.print("[red]Deterministic static findings did NOT reproduce.[/red]")
     raise SystemExit(result.exit_code)
+
+
+@cli.command()
+@click.option("--once", is_flag=True, help="Drain the queue, then exit")
+@click.option("--concurrency", default=1, type=click.IntRange(min=1), help="Maximum jobs in flight at once")
+@click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
+@click.option("--lease", default=60.0, type=float, help="Lease seconds; a dead worker's job is recovered after this")
+@click.option("--poll-interval", default=2.0, type=float, help="Seconds to wait between polls (loop mode)")
+@click.option("--timeout", default=1800.0, type=float, help="Per-job submit timeout in seconds")
+@click.option("--worker-id", default=None, help="Worker id (default: a fresh id)")
+def worker(
+    once: bool,
+    concurrency: int,
+    queue_db: Optional[Path],
+    lease: float,
+    poll_interval: float,
+    timeout: float,
+    worker_id: Optional[str],
+) -> None:
+    """Run a queue worker: execute queued submissions, safely and durably.
+
+    Claims jobs atomically (two workers never run the same job), renews a lease
+    while a job runs, and recovers a dead worker's job instead of leaving it
+    ``running`` forever. The bundle is the authority: exit code 0 alone is not
+    success, so a job without a bundle fails with the reason.
+
+    Run with ``--once`` to drain the queue and exit.
+    """
+    import threading as _threading
+
+    from engine.queue import JobStore, Worker, WorkerConfig, resolve_queue_db
+
+    db_path = resolve_queue_db(queue_db)
+    config = WorkerConfig(
+        worker_id=worker_id or WorkerConfig().worker_id,
+        concurrency=concurrency,
+        lease_seconds=lease,
+        poll_interval=poll_interval,
+        submit_timeout=timeout,
+        once=once,
+    )
+    store = JobStore(db_path)
+    runner_worker = Worker(store, config)
+    if once:
+        outcomes = runner_worker.run_once()
+        if not outcomes:
+            console.print("[dim]Queue empty — nothing to do.[/dim]")
+            store.close()
+            return
+        failed = False
+        for outcome in outcomes:
+            color = "green" if outcome.status == "completed" else "red"
+            if outcome.status != "completed":
+                failed = True
+            console.print(
+                f"  [{color}]{outcome.status}[/{color}] job "
+                f"[cyan]{outcome.job_id}[/cyan]"
+                f"{(' — ' + outcome.detail) if outcome.detail else ''}"
+            )
+        store.close()
+        if failed:
+            # A worker that returns 0 while a job failed would be exactly the
+            # quiet failure this project exists to avoid.
+            raise SystemExit(1)
+        return
+
+    stop = _threading.Event()
+    try:
+        runner_worker.run_forever(stop)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Worker stopping.[/dim]")
+    finally:
+        store.close()
+
+
+@cli.command(name="queue")
+@click.argument("job_id", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+@click.option("--status", type=click.Choice(["queued", "running", "completed", "failed"]), default=None, help="Only show jobs in this state")
+@click.option("--limit", default=50, type=int, help="Maximum rows to list")
+@click.option("--recover", is_flag=True, help="Requeue or fail jobs whose worker lease expired")
+@click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
+def queue_command(
+    job_id: Optional[str],
+    as_json: bool,
+    status: Optional[str],
+    limit: int,
+    recover: bool,
+    queue_db: Optional[Path],
+) -> None:
+    """Show the durable job queue, or one job.
+
+    With no argument, lists jobs (most recent first) and the state counts. With
+    a JOB_ID, prints that job. ``--recover`` first requeues (or fails) any job
+    whose worker died holding the lease.
+    """
+    from engine.queue import JobStore, resolve_queue_db
+
+    store = JobStore(resolve_queue_db(queue_db))
+    try:
+        recovered = store.recover_expired() if recover else []
+        if job_id:
+            job = store.get(job_id)
+            if job is None:
+                console.print(f"[red]No job {job_id} in {store.path}[/red]")
+                raise SystemExit(1)
+            if as_json:
+                console.print_json(json.dumps(job.to_dict(), default=str))
+                return
+            _print_job(job)
+            return
+
+        jobs = store.list(status=status, limit=limit)
+        counts = store.counts()
+        if as_json:
+            console.print_json(json.dumps(
+                {
+                    "queue_db": store.path,
+                    "counts": counts,
+                    "recovered": recovered,
+                    "jobs": [job.to_dict() for job in jobs],
+                },
+                default=str,
+            ))
+            return
+
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Job queue\n"
+                f"Queue: [cyan]{store.path}[/cyan]\n"
+                f"queued {counts['queued']} · running {counts['running']} · "
+                f"completed {counts['completed']} · failed {counts['failed']} "
+                f"(total {counts['total']})",
+                title="Queue",
+            )
+        )
+        for recovered_id in recovered:
+            console.print(f"  [yellow]recovered[/yellow] {recovered_id}")
+        if not jobs:
+            console.print("[dim]No jobs.[/dim]")
+            return
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Job", style="cyan")
+        table.add_column("Status")
+        table.add_column("Attempts", style="dim")
+        table.add_column("Worker", style="dim")
+        table.add_column("Sample")
+        table.add_column("Detail", style="dim")
+        for job in jobs:
+            color = {
+                "completed": "green", "failed": "red",
+                "running": "yellow", "queued": "blue",
+            }.get(job.status, "white")
+            table.add_row(
+                job.job_id,
+                f"[{color}]{job.status}[/{color}]",
+                f"{job.attempts}/{job.max_attempts}",
+                job.worker_id or "-",
+                Path(job.sample_path).name,
+                (job.error or "")[:60],
+            )
+        console.print(table)
+    finally:
+        store.close()
+
+
+def _print_job(job: Any) -> None:
+    """Render one queue job for a human."""
+    color = {
+        "completed": "green", "failed": "red",
+        "running": "yellow", "queued": "blue",
+    }.get(job.status, "white")
+    console.print(
+        Panel(
+            f"Job:      [cyan]{job.job_id}[/cyan]\n"
+            f"Status:   [{color}]{job.status}[/{color}]\n"
+            f"Sample:   {job.sample_path}\n"
+            f"Output:   {job.output_dir}\n"
+            f"Attempts: {job.attempts}/{job.max_attempts}"
+            + (f"  worker={job.worker_id}" if job.worker_id else "")
+            + (f"\nLease:    expires {job.lease_expires_at}" if job.lease_expires_at else "")
+            + (f"\nRun dir:  {job.run_dir}" if job.run_dir else "")
+            + (f"\nError:    [red]{job.error}[/red]" if job.error else ""),
+            title="Job",
+        )
+    )
 
 
 @cli.command()
