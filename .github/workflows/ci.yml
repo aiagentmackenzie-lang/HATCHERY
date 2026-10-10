@@ -135,6 +135,46 @@ jobs:
           curl -sf http://127.0.0.1:3002/api/health
           kill $SERVER_PID
 
+  # The queue is a cross-language contract: the API enqueues through the engine
+  # CLI, and a worker executes the engine pipeline. This job is the only one with
+  # both runtimes installed, so it is where the server<->queue integration test
+  # actually runs (server-gate has no engine and skips it with a reason).
+  queue-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Build server
+        working-directory: ./server
+        run: npm run build
+
+      - name: Queue database migration and end-to-end tests
+        working-directory: ./server
+        env:
+          HATCHERY_ENGINE_PYTHON: python3
+        run: node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs
+
   dashboard-gate:
     runs-on: ubuntu-latest
     steps:

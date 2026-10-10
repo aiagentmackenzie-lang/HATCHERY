@@ -20,7 +20,37 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.join(here, '..');
 const repoRoot = path.join(serverRoot, '..');
+
+/**
+ * The interpreter the engine runs under, mirroring server/src/db/queue.ts: a
+ * checked-out venv when there is one, the system interpreter otherwise (CI
+ * installs the engine with pip).
+ */
 const venvPython = path.join(repoRoot, '.venv', 'bin', 'python3');
+const enginePython =
+  process.env.HATCHERY_ENGINE_PYTHON ?? (fs.existsSync(venvPython) ? venvPython : 'python3');
+
+/**
+ * A cross-language test cannot run without the engine. If it is not importable
+ * (its runtime dependencies are not installed), skip with the reason rather than
+ * fail — but only after printing why. The Python gate still covers the queue's
+ * own logic; the `queue-gate` CI job installs both runtimes and runs this.
+ */
+function engineReady() {
+  // `import engine.cli` is not enough: the engine tolerates missing optional
+  // dependencies (YARA-X, docker, pefile) by degrading. The worker needs the CLI
+  // to actually run, so probe exactly that.
+  const probe = spawnSync(enginePython, ['-m', 'engine.cli', '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    timeout: 60000,
+  });
+  return probe.status === 0;
+}
+
+const engineSkip = engineReady()
+  ? false
+  : `the HATCHERY engine is not importable by ${enginePython} (install it with pip install -e .)`;
 
 async function waitForHealth(baseUrl, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -38,7 +68,7 @@ async function waitForHealth(baseUrl, timeoutMs = 20000) {
 
 function runWorker(queueDb) {
   return spawnSync(
-    venvPython,
+    enginePython,
     ['-m', 'engine.cli', 'worker', '--once', '--concurrency', '1', '--queue', queueDb],
     {
       cwd: repoRoot,
@@ -49,7 +79,7 @@ function runWorker(queueDb) {
   );
 }
 
-test('a submission is queued, and a worker completes it into the API', async () => {
+test('a submission is queued, and a worker completes it into the API', { skip: engineSkip }, async () => {
   const port = 40000 + Math.floor(Math.random() * 10000);
   const baseUrl = `http://127.0.0.1:${port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hatchery-queue-api-'));
@@ -71,7 +101,7 @@ test('a submission is queued, and a worker completes it into the API', async () 
       HATCHERY_QUEUE_DB: queueDb,
       HATCHERY_RESULTS_ROOT: resultsRoot,
       HATCHERY_ALLOWED_SAMPLE_ROOTS: samplesDir,
-      HATCHERY_ENGINE_PYTHON: venvPython,
+      HATCHERY_ENGINE_PYTHON: enginePython,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -122,7 +152,7 @@ test('a submission is queued, and a worker completes it into the API', async () 
   }
 });
 
-test('a job that cannot produce a bundle is reflected as failed, not running', async () => {
+test('a job that cannot produce a bundle is reflected as failed, not running', { skip: engineSkip }, async () => {
   const port = 40000 + Math.floor(Math.random() * 10000);
   const baseUrl = `http://127.0.0.1:${port}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hatchery-queue-fail-'));
@@ -144,7 +174,7 @@ test('a job that cannot produce a bundle is reflected as failed, not running', a
       HATCHERY_QUEUE_DB: queueDb,
       HATCHERY_RESULTS_ROOT: resultsRoot,
       HATCHERY_ALLOWED_SAMPLE_ROOTS: samplesDir,
-      HATCHERY_ENGINE_PYTHON: venvPython,
+      HATCHERY_ENGINE_PYTHON: enginePython,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
