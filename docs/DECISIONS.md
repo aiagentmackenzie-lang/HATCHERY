@@ -336,6 +336,24 @@ The CLI is `hatchery push <run_dir> --target misp|opencti`, configured from `--u
 
 ---
 
+## D24 — HATCHERY is callable as an MCP tool, over stdio, with no new dependency
+
+**Decision.** `hatchery mcp` runs an MCP (Model Context Protocol) server on **stdio** that exposes the engine as six tools: `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs`. This is the deep dive's "an agent can call HATCHERY" item, and it is built without an SDK.
+
+- **Stdlib-only JSON-RPC.** The protocol surface a local tool needs is small (`initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`) and the transport is newline-delimited JSON-RPC 2.0 on stdio. Hand-writing it removes a dependency and a version-drift risk, and keeps the server auditable in a few hundred lines. `MCPServer.handle` is pure enough to unit-test; a real subprocess test drives `python -m engine.mcp` over stdin/stdout because that is how a client actually talks to it.
+- **Tools are thin wrappers.** No tool re-implements analysis. `submit_sample` shells out to the existing `hatchery submit`, keeping one producer of analysis data (D4); the read tools load the bundle the engine already wrote.
+- **The agent cannot widen the trust boundary.** `triage_run` uses `TriageConfig` defaults, so it uses a **local** model and cannot be told to use a remote endpoint or a `:cloud` model — permitting that stays an explicit operator decision at the CLI (`--allow-remote-model`), never something an agent can switch on. Reads are limited to a run directory's own files, and every path argument is validated to exist.
+- **Detonation is not the default.** `submit_sample` runs static-only unless the caller passes `no_sandbox=false`, so a chatty agent cannot spin up containers by accident.
+- **stdio only.** This is a local process with the operator's privileges. It must never be exposed on a network socket; the docs say so and there is no socket transport.
+
+**Tools.** `submit_sample(path, no_sandbox?, triage?, timeout?)`; `list_runs(root?)`; `get_report(run_dir, format: json\|markdown\|triage\|stix)`; `get_iocs(run_dir)`; `triage_run(run_dir, model?)`; `cluster_runs(root?, threshold?, min_size?)`. A tool failure is returned as an MCP tool error (`isError: true`) with a plain message, never as a protocol crash — the serve loop cannot be killed by a bad tool call.
+
+**Evidence.** 21 tests: every message shape (`initialize` version echo and fallback, notifications, ping, `tools/list`, unknown method, non-object message, missing method, malformed JSON, blank lines, `serve` over streams), every tool path including the error paths, and one real subprocess round-trip that initialises, lists the tools and calls `list_runs` against a temp corpus.
+
+**Not done, deliberately.** No socket/HTTP transport (stdio is the trust model). No MCP resources or prompts advertised, only tools. `submit_sample` is synchronous — an agent gets the result when the analysis finishes, not a task handle to poll.
+
+---
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.

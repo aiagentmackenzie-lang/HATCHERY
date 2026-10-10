@@ -15,6 +15,7 @@ import dataclasses
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -1303,6 +1304,26 @@ def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
         "\n[dim]Similarity is a lead, not attribution: shared features occur in "
         "benign software too. HATCHERY does not name families.[/dim]"
     )
+
+
+@cli.command()
+@click.option(
+    "--root",
+    type=click.Path(path_type=Path),
+    default=Path("results"),
+    help="Default results root for the read-only tools",
+)
+def mcp(root: Path) -> None:
+    """Run the MCP server on stdio, so an agent can call HATCHERY as a tool.
+
+    Exposes submit_sample, list_runs, get_report, get_iocs, triage_run and
+    cluster_runs over newline-delimited JSON-RPC 2.0. stdout is the protocol
+    channel: nothing else is printed to it. Local stdio only — never expose it
+    on a socket.
+    """
+    from engine.mcp.server import MCPServer
+
+    MCPServer(results_root=root).serve(sys.stdin, sys.stdout)
 
 
 @cli.command()

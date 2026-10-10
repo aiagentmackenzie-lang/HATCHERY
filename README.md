@@ -111,6 +111,7 @@ Not aspirational. What is in the code today.
 | **AI triage** | ⚠️ | `hatchery triage <run_dir>` / `submit --triage` runs a **local** Ollama model under a versioned prompt contract: JSON-schema-validated output, every claim must cite an evidence id that exists in the run, and a verdict left with no grounded finding is INCONCLUSIVE. Sample text is wrapped in an untrusted-data boundary (an anti-injection test is in CI). A remote endpoint or a `:cloud` model is refused unless `--allow-remote-model`; the run says so when it is. Advisory only — not ground truth |
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
 | **Campaign clustering** | ⚠️ | `hatchery cluster [path]` fingerprints each run from what the engine already recorded (import hash, imports, capa, YARA, ATT&CK, IOCs, emulated APIs, sections, classified strings) and groups similar runs by a weighted Jaccard score with a token simhash cross-check. Derived on demand — never a second producer. Lists the shared features that justify each group and **never names a family**: similarity is a lead, not attribution. 34 tests |
+| **MCP server** | ⚠️ | `hatchery mcp` exposes `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs` over newline-delimited JSON-RPC 2.0 on **stdio**, so an agent can call HATCHERY as a tool. Stdlib only, no SDK. Local stdio only — never expose it on a socket; the `triage_run` tool cannot be told to use a remote model |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
 ---
@@ -145,6 +146,7 @@ hatchery rules lint                 Lint the YARA rules (exits 1 on error)
 hatchery push <run_dir> --target misp|opencti   Push the run's STIX bundle
 hatchery triage <run_dir>           Local LLM triage over an existing run (advisory)
 hatchery cluster [path]             Group analysed runs that look like the same campaign
+hatchery mcp                        Run the MCP server on stdio (for an agent to call)
 ```
 
 Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`, `--triage`, `--triage-model NAME`, `--allow-remote-model`.
@@ -176,6 +178,35 @@ A non-2xx response or a transport error exits non-zero with the reason; the outc
 
 The default model is auto-selected from the local models that can generate text (a small-model preference order, then any local completion model). Set `HATCHERY_TRIAGE_MODEL` or `--triage-model` to pin one. On a weak machine the model may cold-load, so `--timeout` is generous by default and the model is kept warm between calls. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D22.
 
+### MCP server
+
+`hatchery mcp` runs HATCHERY as an [MCP](https://modelcontextprotocol.io) server on **stdio**, so an agent can call the engine as a tool. It speaks newline-delimited JSON-RPC 2.0 (stdlib only, no SDK) and exposes six tools:
+
+| Tool | What it does |
+|---|---|
+| `submit_sample` | Analyse a local sample (static-only by default; `no_sandbox=false` detonates, `triage=true` adds local triage) |
+| `list_runs` | List analysed runs under a results root, with hash, event count and triage verdict |
+| `get_report` | Return a run's analysis bundle (`json`), Markdown report, `triage` section or `stix` bundle |
+| `get_iocs` | A run's indicators, grouped by type |
+| `triage_run` | Local LLM triage over an existing run |
+| `cluster_runs` | Group runs that look like the same campaign |
+
+Wire it into an MCP client as a stdio server, e.g.:
+
+```json
+{
+  "mcpServers": {
+    "hatchery": {
+      "command": "hatchery",
+      "args": ["mcp"],
+      "cwd": "/path/to/HATCHERY"
+    }
+  }
+}
+```
+
+stdout is the protocol channel, so the command prints nothing else. **Local stdio only — never expose it on a socket.** The `triage_run` tool uses a local Ollama model and cannot be told to use a remote one: permitting a remote model stays an explicit operator decision at the CLI, never something an agent can switch on. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D24.
+
 ---
 
 ## API
@@ -205,7 +236,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 601 tests (+ emulation tests when the extra is installed)
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 622 tests (+ emulation tests when the extra is installed)
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 HATCHERY_EMULATION_E2E=1 pytest tests/test_emulate_e2e.py -v  # really emulates (needs the emulation image)
@@ -255,7 +286,7 @@ When triage is enabled, `engine/triage/` builds a **bounded, citable evidence se
 
 **Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images, PDF embedded files/JavaScript, legacy Office OLE/CFB compound files and RTF embedded objects are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically — with OLE/CFB embedded VBA macros decompressed to source (MS-OVBA) and `\x01Ole10Native` packages carved out, and an RTF `\objdata` OLE payload recursed into the same OLE parser — while 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. **MISP/OpenCTI push is done as D20**: the CLI transports the run's single STIX 2.1 bundle to MISP's STIX 2.1 import or an OpenCTI TAXII 2.1 push collection, fail-closed and without persisting the token (wire format pinned; live instance untested). **Windows PE emulation is done as D21**: Speakeasy 2.0.0b6 runs in a container at the probed tier and extracts runtime configuration (C2 endpoints, user agents, mutexes, registry persistence, dropped files) with `capa_dynamic` over captured memory snapshots — declared, containerized and fail-closed, never sold as isolation. Extraction of the remaining archives (7z, RAR, CAB) is still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts.
 
-**Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
+**Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ✅ *(MCP)* `hatchery mcp` exposes the engine as an MCP tool an agent can call (`submit_sample`, `get_report`, `get_iocs`, `triage_run`, `cluster_runs`), stdlib only over stdio. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
 
 **Phase 4 — product.** Queue and workers, RBAC and audit log, sample store with TTL, reproducible runs.
 
