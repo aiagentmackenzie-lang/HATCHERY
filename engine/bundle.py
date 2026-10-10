@@ -40,6 +40,9 @@ EVENTS_FILENAME = "events.jsonl"
 # the sample, and mixing them into events.jsonl would imply the sample did it
 # natively (D4).
 EMULATION_EVENTS_FILENAME = "emulation-events.jsonl"
+# The advisory LLM triage section, kept beside the bundle so it is never confused
+# with the engine's own findings (D22).
+TRIAGE_FILENAME = "triage.json"
 # Interoperable exports written alongside the bundle, by the same engine run.
 EXPORT_FILENAMES: dict[str, str] = {
     "stix": "stix_bundle.json",
@@ -259,6 +262,7 @@ def compute_limitations(
     evasion: Optional[dict] = None,
     delivery: Optional[dict] = None,
     emulation: Optional[dict] = None,
+    triage: Optional[dict] = None,
 ) -> list[str]:
     """State plainly what this run does not establish.
 
@@ -421,6 +425,7 @@ def compute_limitations(
         )
 
     _emulation_limitations(emulation, limits)
+    _triage_limitations(triage, limits)
     return limits
 
 
@@ -508,6 +513,66 @@ def _emulation_limitations(emulation: Optional[dict], limits: list[str]) -> None
             limits.append(f"Memory-snapshot problem: {problem}")
 
 
+def _triage_limitations(triage: Optional[dict], limits: list[str]) -> None:
+    """State what the LLM triage layer did and did not establish (D22).
+
+    Triage is advisory and model-generated. It must never read as a verdict the
+    engine reached, and a triage that failed is stated as a failure rather than
+    as an absence of findings.
+    """
+    if not triage:
+        return
+
+    if not triage.get("available"):
+        status = str(triage.get("status") or "unavailable")
+        reason = str(triage.get("reason") or "not run")
+        if status == "unavailable":
+            limits.append(f"AI triage was not run: {reason}")
+        else:
+            limits.append(f"AI triage did not produce a verdict ({status}): {reason}")
+        return
+
+    model = triage.get("model") or "unknown"
+    version = triage.get("prompt_version") or "?"
+    digest = str(triage.get("contract_hash") or "")[:12]
+    limits.append(
+        f"AI triage is advisory and model-generated (local model {model}, prompt "
+        f"contract {version}/{digest}). It summarises the evidence below; it is not "
+        "ground truth and it does not replace the engine's findings."
+    )
+    if triage.get("allowed_remote") or triage.get("allowed_cloud_model"):
+        limits.append(
+            "AI triage was permitted to use a remote endpoint or a `:cloud` model: "
+            "sample-derived text left this machine. This is not the default and is "
+            "flagged here on purpose."
+        )
+    limits.append(
+        f"Triage verdict: {triage.get('verdict')} (model confidence "
+        f"{int(triage.get('confidence') or 0)}/100), grounded in "
+        f"{len(triage.get('findings') or [])} finding(s) over "
+        f"{int(triage.get('evidence_ids') or 0)} citable evidence item(s)."
+    )
+    dropped = int(triage.get("findings_dropped") or 0)
+    if dropped:
+        limits.append(
+            f"AI triage dropped {dropped} finding(s) that cited evidence not present "
+            "in this run; the verdict reflects only what could be grounded."
+        )
+    techniques = triage.get("techniques") or []
+    if techniques:
+        limits.append(
+            "AI triage proposed ATT&CK technique(s) "
+            f"({', '.join(map(str, techniques))}) that exist in the pinned dataset, "
+            "but the observation-to-technique association is model-suggested and "
+            "unvalidated — validating an id is not proving the association."
+        )
+    if triage.get("evidence_truncated"):
+        limits.append(
+            "The triage evidence set was truncated to fit the model context; the "
+            "model did not see every event."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Bundle assembly
 # ---------------------------------------------------------------------------
@@ -526,6 +591,7 @@ class AnalysisBundle:
     mitre: dict = field(default_factory=dict)
     evasion: Optional[dict] = None
     emulation: Optional[dict] = None
+    triage: Optional[dict] = None
     events: list[dict] = field(default_factory=list)
     emulation_events: list[dict] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
@@ -547,6 +613,7 @@ class AnalysisBundle:
             "mitre": self.mitre,
             "evasion": self.evasion,
             "emulation": self.emulation,
+            "triage": self.triage,
             "limitations": self.limitations,
             "errors": self.errors,
             "exports": dict(EXPORT_FILENAMES),
@@ -609,6 +676,15 @@ class AnalysisBundle:
                 or bool(emulation.get("unsupported_apis"))
                 or int(emulation.get("api_calls") or 0) == 0
             ),
+            "triage_available": bool((self.triage or {}).get("available", False)),
+            "triage_status": (self.triage or {}).get("status"),
+            "triage_model": (self.triage or {}).get("model"),
+            "triage_verdict": (self.triage or {}).get("verdict"),
+            "triage_confidence": int((self.triage or {}).get("confidence") or 0),
+            "triage_findings": len((self.triage or {}).get("findings") or []),
+            "triage_findings_dropped": int((self.triage or {}).get("findings_dropped") or 0),
+            "triage_techniques": len((self.triage or {}).get("techniques") or []),
+            "triage_inconclusive": bool((self.triage or {}).get("inconclusive", True)),
         }
 
 
@@ -676,3 +752,49 @@ def render_limitations(limitations: list[str]) -> str:
     lines = ["", "What this run does NOT establish:"]
     lines.extend(f"  - {item}" for item in limitations)
     return "\n".join(lines)
+
+
+def write_triage(run_dir: Path, section: dict) -> Path:
+    """Write ``triage.json`` next to the bundle. Returns the path."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / TRIAGE_FILENAME
+    path.write_text(json.dumps(section, indent=2, default=str), encoding="utf-8")
+    return path
+
+
+def attach_triage(run_dir: Path, section: dict) -> Path:
+    """Attach a triage section to an existing bundle in place.
+
+    Used by the standalone ``hatchery triage`` command: the bundle is the single
+    source of truth, so triage patches ``analysis.json`` (and its ``summary``
+    counters) rather than living only in a side file the API never reads. The
+    ``triage.json`` side file is written too, for convenience.
+    """
+    path = run_dir / ANALYSIS_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(f"No analysis bundle at {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["triage"] = section
+    summary = data.get("summary")
+    if isinstance(summary, dict):
+        summary.update(
+            {
+                "triage_available": bool(section.get("available", False)),
+                "triage_status": section.get("status"),
+                "triage_model": section.get("model"),
+                "triage_verdict": section.get("verdict"),
+                "triage_confidence": int(section.get("confidence") or 0),
+                "triage_findings": len(section.get("findings") or []),
+                "triage_findings_dropped": int(section.get("findings_dropped") or 0),
+                "triage_techniques": len(section.get("techniques") or []),
+                "triage_inconclusive": bool(section.get("inconclusive", True)),
+            }
+        )
+    limits = data.get("limitations")
+    if isinstance(limits, list):
+        for line in section.get("limitations") or []:
+            if line not in limits:
+                limits.append(line)
+    path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    write_triage(run_dir, section)
+    return path

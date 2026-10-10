@@ -77,6 +77,9 @@ function migrate(database: Database.Database): void {
   if (!staticColumns.some((c) => c.name === 'emulation_json')) {
     database.exec('ALTER TABLE static_results ADD COLUMN emulation_json TEXT');
   }
+  if (!staticColumns.some((c) => c.name === 'triage_json')) {
+    database.exec('ALTER TABLE static_results ADD COLUMN triage_json TEXT');
+  }
 }
 
 export interface TaskRow {

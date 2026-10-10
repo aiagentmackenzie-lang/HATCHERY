@@ -1,0 +1,148 @@
+{
+  "bundle": {
+    "sample": {
+      "file_name": "invoice_update.doc",
+      "sha256": "3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a",
+      "md5": "9c1b9c1b9c1b9c1b9c1b9c1b9c1b9c1b",
+      "file_type": "OLE/CFB (Microsoft Word)",
+      "file_size": 27136
+    },
+    "isolation": {
+      "tier": 2,
+      "name": "sandboxed-kernel"
+    },
+    "limitations": [
+      "Isolation tier 2 (gVisor): user-space kernel, not a hardware boundary.",
+      "Network egress was blocked; C2 contact cannot appear in this run.",
+      "Delivery container (ole) was unpacked: 7 file(s) analysed statically."
+    ],
+    "static": {
+      "yara": {
+        "matches": [
+          {
+            "rule": "ole_vba_autoexec",
+            "severity": "high",
+            "namespace": "hatchery/office",
+            "matched_strings": [
+              "AutoOpen",
+              "Shell"
+            ]
+          },
+          {
+            "rule": "suspicious_powershell_download",
+            "severity": "critical",
+            "namespace": "hatchery/script",
+            "matched_strings": [
+              "-EncodedCommand",
+              "DownloadString"
+            ]
+          }
+        ]
+      },
+      "capa": {
+        "capabilities": [
+          {
+            "name": "create process",
+            "namespace": "host-interaction/process/create"
+          },
+          {
+            "name": "write file",
+            "namespace": "host-interaction/file-system/write"
+          },
+          {
+            "name": "run shell command",
+            "namespace": "host-interaction/process/create"
+          }
+        ]
+      },
+      "delivery": {
+        "format": "ole",
+        "children": [
+          {
+            "name": "Module1.bas",
+            "file_type": "text",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "name": "invoice_update.exe",
+            "file_type": "pe",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "flags": [
+          "ole-vba-macro",
+          "ole-embedded-native"
+        ]
+      }
+    },
+    "iocs": [
+      {
+        "type": "url",
+        "value": "http://185.220.101.5/gate.php",
+        "severity": "critical",
+        "source": "delivery",
+        "context": "Module1.bas"
+      },
+      {
+        "type": "ip",
+        "value": "185.220.101.5",
+        "severity": "high",
+        "source": "strings",
+        "context": "in .data"
+      }
+    ],
+    "mitre": {
+      "attack_version": "19.2",
+      "techniques": [
+        {
+          "technique_id": "T1059.005",
+          "technique_name": "Visual Basic",
+          "tactic": "execution",
+          "source": "yara"
+        },
+        {
+          "technique_id": "T1059.001",
+          "technique_name": "PowerShell",
+          "tactic": "execution",
+          "source": "capa"
+        }
+      ]
+    },
+    "evasion": {
+      "score": 0,
+      "verdict": "none",
+      "signals": [],
+      "recon_then_quiet": false,
+      "inconclusive": false
+    },
+    "emulation": {
+      "available": false,
+      "status": "unavailable",
+      "config": {}
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2026-10-09T21:00:01",
+      "category": "file",
+      "severity": "medium",
+      "syscall_name": "CREATE",
+      "args": "{\"path\": \"/tmp/Module1.bas\"}"
+    },
+    {
+      "timestamp": "2026-10-09T21:00:02",
+      "category": "process",
+      "severity": "high",
+      "syscall_name": "execve",
+      "args": "{\"raw\": \"execve(\\\"/bin/sh\\\", [\\\"sh\\\",\\\"-c\\\",\\\"powershell -EncodedCommand ...\\\"] )\"}"
+    },
+    {
+      "timestamp": "2026-10-09T21:00:03",
+      "category": "network",
+      "severity": "high",
+      "syscall_name": "connect",
+      "args": "{\"dst_ip\": \"185.220.101.5\", \"dst_port\": 80}"
+    }
+  ],
+  "model": "mistral:7b"
+}

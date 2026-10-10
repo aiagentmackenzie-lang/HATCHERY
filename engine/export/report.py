@@ -36,6 +36,7 @@ class ReportGenerator:
         attack_version: str = "",
         ocsf_schema_version: str = "",
         emulation: Optional[dict] = None,
+        triage: Optional[dict] = None,
     ) -> str:
         """Generate a Markdown analysis report.
 
@@ -361,6 +362,9 @@ class ReportGenerator:
         if emulation:
             lines.extend(self._render_emulation(emulation))
 
+        if triage:
+            lines.extend(self._render_triage(triage))
+
         # IOCs
         if ioc_report:
             lines.append("## Indicators of Compromise")
@@ -398,6 +402,91 @@ class ReportGenerator:
         lines.append(footer)
 
         return "\n".join(lines)
+
+    def _render_triage(self, triage: dict) -> list[str]:
+        """Render the advisory LLM triage section, grounded and clearly labelled.
+
+        The heading says *advisory* and *local* on purpose: this section is the
+        model's summary of the engine's evidence, not a new source of truth, and
+        every finding is shown with the evidence ids it cited.
+        """
+        lines: list[str] = ["## AI Triage (advisory, local model)", ""]
+        if not triage.get("available"):
+            lines.append(
+                f"Triage was **not produced** ({triage.get('status', 'unavailable')}): "
+                f"{triage.get('reason') or 'not available'}."
+            )
+            lines.append("")
+            return lines
+
+        if triage.get("allowed_remote") or triage.get("allowed_cloud_model"):
+            lines.append(
+                "> ⚠️ **Remote model permitted.** Sample-derived text left this "
+                "machine for this triage. This is not the default."
+            )
+            lines.append("")
+
+        lines.append(
+            f"- **Model:** `{triage.get('model', 'unknown')}` "
+            f"(prompt contract {triage.get('prompt_version', '?')}/"
+            f"`{str(triage.get('contract_hash', ''))[:12]}`)"
+        )
+        lines.append(
+            f"- **Verdict:** `{triage.get('verdict', 'inconclusive')}` "
+            f"(model confidence {int(triage.get('confidence') or 0)}/100)"
+        )
+        lines.append(
+            f"- **Grounded in:** {len(triage.get('findings') or [])} finding(s) over "
+            f"{int(triage.get('evidence_ids') or 0)} citable evidence item(s)"
+        )
+        if triage.get("evidence_truncated"):
+            lines.append(
+                "- **Note:** the evidence set was truncated to fit the model context."
+            )
+        lines.append("")
+
+        if triage.get("summary"):
+            lines.append(triage["summary"])
+            lines.append("")
+
+        findings = triage.get("findings") or []
+        if findings:
+            lines.append("### Grounded findings")
+            lines.append("")
+            for finding in findings:
+                citations = ", ".join(
+                    f"`{cid}`" for cid in (finding.get("grounding") or [])
+                )
+                lines.append(f"- {finding.get('claim', '')} — cited: {citations}")
+                if finding.get("technique_ids"):
+                    lines.append(
+                        "  - ATT&CK (model-suggested, unvalidated): "
+                        + ", ".join(f"`{t}`" for t in finding["technique_ids"])
+                    )
+            lines.append("")
+
+        dropped = int(triage.get("findings_dropped") or 0)
+        if dropped:
+            lines.append(
+                f"**{dropped} finding(s) were discarded** because their citations did "
+                "not resolve to evidence in this run. The verdict reflects only what "
+                "could be grounded."
+            )
+            lines.append("")
+
+        if triage.get("not_established"):
+            lines.append("### Not established by this run")
+            lines.append("")
+            lines.extend(f"- {item}" for item in triage["not_established"])
+            lines.append("")
+
+        if triage.get("recommended_actions"):
+            lines.append("### Recommended actions")
+            lines.append("")
+            lines.extend(f"- {item}" for item in triage["recommended_actions"])
+            lines.append("")
+
+        return lines
 
     def _render_emulation(self, emulation: dict) -> list[str]:
         """Render the emulation section, including its declared limits."""
@@ -505,6 +594,7 @@ class ReportGenerator:
         attack_version: str = "",
         ocsf_schema_version: str = "",
         emulation: Optional[dict] = None,
+        triage: Optional[dict] = None,
     ) -> str:
         """Generate a JSON analysis report.
 
@@ -526,6 +616,7 @@ class ReportGenerator:
             "behavioral_analysis": sandbox_results,
             "evasion": evasion,
             "emulation": emulation,
+            "triage": triage,
             "ioc_report": ioc_report,
             "limitations": limitations or [],
             "framework_versions": {
@@ -549,6 +640,7 @@ class ReportGenerator:
         attack_version: str = "",
         ocsf_schema_version: str = "",
         emulation: Optional[dict] = None,
+        triage: Optional[dict] = None,
     ) -> Path:
         """Write both Markdown and JSON reports to a directory.
 
@@ -573,13 +665,14 @@ class ReportGenerator:
             attack_version,
             ocsf_schema_version,
             emulation,
+            triage,
         )
         (output_dir / "report.md").write_text(md, encoding="utf-8")
 
         json_report = self.generate_json(
             sample_name, sample_hash, static_results, sandbox_results,
             ioc_report, limitations, evasion, attack_version, ocsf_schema_version,
-            emulation,
+            emulation, triage,
         )
         (output_dir / "report.json").write_text(json_report, encoding="utf-8")
 

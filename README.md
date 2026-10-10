@@ -108,7 +108,7 @@ Not aspirational. What is in the code today.
 | **Windows / macOS native dynamic analysis** | ❌ | no Windows guest; Windows PE is emulated, not executed natively |
 | **Delivery-format intake (ZIP/OOXML, tar/gzip/bzip2/xz, HTML/SVG, LNK, ISO9660/IMG, PDF, OLE/CFB, RTF)** | ⚠️ | one bounded intake path; containers are unpacked and their children analysed statically. LNK and ISO9660 are fully parsed; PDF is targeted (embedded files + JavaScript); OLE/CFB compound files are enumerated and their embedded VBA macros **decompressed to source** and `\x01Ole10Native` packages carved out; RTF `\objdata` objects are decoded and an OLE payload is fed straight back to the OLE parser. 7z, RAR and CAB are *detected and reported as unsupported* with a reason — never silently skipped |
 | **Unpacking / config extraction** | ⚠️ | Windows PE config comes from emulation (above, D21). Delivery containers are unpacked statically (D19); 7z, RAR and CAB are detected and reported as unsupported |
-| **AI triage** | ❌ | planned; prompt-contract design is in the roadmap |
+| **AI triage** | ⚠️ | `hatchery triage <run_dir>` / `submit --triage` runs a **local** Ollama model under a versioned prompt contract: JSON-schema-validated output, every claim must cite an evidence id that exists in the run, and a verdict left with no grounded finding is INCONCLUSIVE. Sample text is wrapped in an untrusted-data boundary (an anti-injection test is in CI). A remote endpoint or a `:cloud` model is refused unless `--allow-remote-model`; the run says so when it is. Advisory only — not ground truth |
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
@@ -142,9 +142,10 @@ hatchery report <task_id>           Print a completed report
 hatchery iocs <task_id>             IOC summary
 hatchery rules lint                 Lint the YARA rules (exits 1 on error)
 hatchery push <run_dir> --target misp|opencti   Push the run's STIX bundle
+hatchery triage <run_dir>           Local LLM triage over an existing run (advisory)
 ```
 
-Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`.
+Options for `submit`: `--timeout SECONDS`, `--output/-o DIR`, `--no-sandbox`, `--emulate`, `--emulate-timeout SECONDS`, `--emulate-raw`, `--no-emulate-capa`, `--allow-host-emulation`, `--triage`, `--triage-model NAME`, `--allow-remote-model`.
 
 ### Emulation (Windows PE)
 
@@ -160,6 +161,18 @@ export HATCHERY_OPENCTI_URL=https://opencti.example   HATCHERY_OPENCTI_TOKEN=...
 ```
 
 A non-2xx response or a transport error exits non-zero with the reason; the outcome is written to `push-<target>.json` next to the run, **without** the token. TLS verification is on by default (`--insecure` warns). See [`docs/DECISIONS.md`](docs/DECISIONS.md) D20 — the wire format is tested against a local server; live-instance compatibility is untested here.
+
+### AI triage (local model)
+
+`hatchery triage results/<task_id>` (or `hatchery submit sample.bin --triage`) asks a **local** Ollama model for a grounded triage of the run. It is the last ❌ in the capability table turned into a working, honest ⚠️. The point is the contract, not the model:
+
+- **Local by default.** The default endpoint is `http://127.0.0.1:11434`; a non-loopback endpoint is refused unless `--allow-remote-model`. A `:cloud` Ollama model is also refused by default — it is reached through localhost but runs on someone else's GPU, so the loopback check alone does not keep the sample at home. Both are reported in the run.
+- **A versioned prompt contract.** The system prompt, JSON schema and version are hashed into every result, so a contract change is visible per run rather than silent. Ollama's structured-output `format` constrains decoding; HATCHERY then re-validates the object itself, because the runtime is not the validator.
+- **Grounding or nothing.** Every finding must cite an evidence id that exists in the run (`event:12`, `rule:...`, `ioc:...`, `capa:...`, `technique:...`, `emulation:api:...`, `delivery:child:...`). Citations are normalised from the loose form a small model emits, and any finding that does not resolve is dropped. A verdict left with no grounded finding, an unparseable response, a timeout, or no model at all is **INCONCLUSIVE**, never clean.
+- **Malware strings are hostile input.** Sample-derived text is delivered inside an `<untrusted-sample-data>` boundary that the sample cannot close, and the prompt forbids following instructions found inside it. A model that obeys an injected instruction still cannot produce an ungrounded verdict. An adversarial-string test runs in CI.
+- **Techniques are validated, not trusted.** A model-proposed ATT&CK id is accepted only if it exists in the pinned dataset (D15); it is labelled *model-suggested* because validating an id is not proving the association.
+
+The default model is auto-selected from the local models that can generate text (a small-model preference order, then any local completion model). Set `HATCHERY_TRIAGE_MODEL` or `--triage-model` to pin one. On a weak machine the model may cold-load, so `--timeout` is generous by default and the model is kept warm between calls. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D22.
 
 ---
 
@@ -190,7 +203,7 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 ## Development
 
 ```bash
-ruff check engine/ tests/ && mypy engine/ && pytest -q      # 439 tests (+ emulation tests when the extra is installed)
+ruff check engine/ tests/ && mypy engine/ && pytest -q      # 567 tests (+ emulation tests when the extra is installed)
 hatchery rules lint                                          # YARA gate
 HATCHERY_E2E=1 pytest tests/test_dynamic_e2e.py -v            # really detonates (needs Docker)
 HATCHERY_EMULATION_E2E=1 pytest tests/test_emulate_e2e.py -v  # really emulates (needs the emulation image)
@@ -228,6 +241,8 @@ sample ──► intake (hash / delivery unpack / PE / ELF / strings)
 
 When emulation is enabled, a Windows PE additionally goes through `engine/emulate/` → Speakeasy in a tier-probed container → `emulation-events.jsonl` (a separate stream) plus a top-level `emulation` section (`config`, `snapshots`, `capa_dynamic`) in `bundle/analysis.json`.
 
+When triage is enabled, `engine/triage/` builds a **bounded, citable evidence set** from the bundle (stable `event:N` / `rule:...` / `ioc:...` / `capa:...` / `emulation:...` ids, sample text wrapped in an untrusted-data boundary), asks a local Ollama model under a versioned JSON-schema contract, grounds every citation against that evidence set, and writes a top-level `triage` section. The bundle is the single source of truth: triage patches `analysis.json` rather than living in a side file the API never reads.
+
 ---
 
 ## Roadmap
@@ -238,7 +253,7 @@ When emulation is enabled, a Windows PE additionally goes through `engine/emulat
 
 **Phase 2 — breadth.** Delivery-format intake is **largely done in this revision**: ZIP/OOXML Office, tar/gzip/bzip2/xz, HTML/SVG, Windows shell links (LNK), ISO9660/IMG images, PDF embedded files/JavaScript, legacy Office OLE/CFB compound files and RTF embedded objects are unpacked on one bounded intake path and each extracted child is hashed, classified and analysed statically — with OLE/CFB embedded VBA macros decompressed to source (MS-OVBA) and `\x01Ole10Native` packages carved out, and an RTF `\objdata` OLE payload recursed into the same OLE parser — while 7z, RAR and CAB are detected and reported as unsupported (never silently skipped) — see D19. **MISP/OpenCTI push is done as D20**: the CLI transports the run's single STIX 2.1 bundle to MISP's STIX 2.1 import or an OpenCTI TAXII 2.1 push collection, fail-closed and without persisting the token (wire format pinned; live instance untested). **Windows PE emulation is done as D21**: Speakeasy 2.0.0b6 runs in a container at the probed tier and extracts runtime configuration (C2 endpoints, user agents, mutexes, registry persistence, dropped files) with `capa_dynamic` over captured memory snapshots — declared, containerized and fail-closed, never sold as isolation. Extraction of the remaining archives (7z, RAR, CAB) is still ahead. The telemetry half is **done**: the ATT&CK mapping is rebuilt data-driven from a pinned **ATT&CK 19.2** dataset (the `Stealth`/`Impair Defenses` split, Detection Strategies and revoked-ID validation included), the bundle emits **OCSF 1.9.0 Detection Findings** and an **ATT&CK Navigator Layer v4.5**, tier-2 traces are attributed to the sample's process subtree, tier-2 in-guest artifacts are recovered copy-based, and candidate **Sigma rules** are emitted as generated drafts.
 
-**Phase 3 — AI triage, done properly.** Local (Ollama) function-level behavioral reporting with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**. Sample-derived text is treated as hostile input: malware contains strings designed to steer an LLM's verdict.
+**Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; and campaign clustering (ssdeep/simhash similarity, code-reuse lineage) is still ahead.*
 
 **Phase 4 — product.** Queue and workers, RBAC and audit log, sample store with TTL, reproducible runs.
 

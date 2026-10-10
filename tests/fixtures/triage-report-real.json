@@ -1,0 +1,152 @@
+{
+  "verdict": "suspicious",
+  "summary": "The provided Microsoft Word document contains a PowerShell script and a Visual Basic AutoExec macro, which download a malicious executable.",
+  "findings": [
+    {
+      "claim": "The sample is a Microsoft Word document.",
+      "grounding": ["file_type"],
+      "technique_ids": ["T1071"]
+    },
+    {
+      "claim": "The sample contains a PowerShell script.",
+      "grounding": ["event:1", "rule:suspicious_powershell_download"],
+      "technique_ids": ["T1086"]
+    },
+    {
+      "claim": "The sample contains a Visual Basic AutoExec macro.",
+      "grounding": ["rule:ole_vba_autoexec"],
+      "technique_ids": ["T1055"]
+    },
+    {
+      "claim": "The PowerShell script downloads a malicious executable.",
+      "grounding": ["ioc:http://185.220.101.5/gate.php"],
+      "technique_ids": ["T1059.001"]
+    },
+    {
+      "claim": "The Visual Basic AutoExec macro executes a shell command.",
+      "grounding": ["capa:run shell command"],
+      "technique_ids": ["T1059.004"]
+    },
+    {
+      "claim": "The Visual Basic AutoExec macro writes a file.",
+      "grounding": ["capa:write file"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The PowerShell script uses base64 encoding.",
+      "grounding": ["evasion:score"],
+      "technique_ids": ["T1132"]
+    },
+    {
+      "claim": "The network egress was blocked.",
+      "grounding": ["=== KNOWN LIMITATIONS OF THIS RUN ==="],
+      "technique_ids": ["T1041.001"]
+    },
+    {
+      "claim": "The sample's delivery format is OLE.",
+      "grounding": ["delivery_format"],
+      "technique_ids": ["T1036"]
+    },
+    {
+      "claim": "The sample's SHA256 hash is 3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a.",
+      "grounding": ["sha256"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The sample's MD5 hash is 9c1b9c1b9c1b9c1b9c1b9c1b.",
+      "grounding": ["md5"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The sample's file size is 27136 bytes.",
+      "grounding": ["file_size"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The sample was sandboxed at the kernel level.",
+      "grounding": ["isolation_tier"],
+      "technique_ids": ["T1567.001"]
+    },
+    {
+      "claim": "Dynamic analysis was not performed.",
+      "grounding": ["dynamic_analysis_performed"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "A total of 3 events were generated.",
+      "grounding": ["events_total"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "1 event was of medium severity.",
+      "grounding": ["events_by_severity"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "2 events were of high severity.",
+      "grounding": ["events_by_severity"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "1 event was related to files.",
+      "grounding": ["events_by_category"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "1 event was related to processes.",
+      "grounding": ["events_by_category"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "1 event was related to networks.",
+      "grounding": ["events_by_category"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "A total of 2 YARA matches were found.",
+      "grounding": ["yara_matches"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "A total of 3 capability detections were found.",
+      "grounding": ["capa_capabilities"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "A total of 2 IOCs were found.",
+      "grounding": ["iocs_total"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "The sample's SHA256 hash for Module1.bas is aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.",
+      "grounding": ["delivery:child:Module1.bas"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The sample's PE header SHA256 hash for invoice_update.exe is bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.",
+      "grounding": ["delivery:child:invoice_update.exe"],
+      "technique_ids": ["T1027"]
+    },
+    {
+      "claim": "The sample's delivery container was unpacked, and 7 files were analysed statically.",
+      "grounding": ["=== KNOWN LIMITATIONS OF THIS RUN ==="],
+      "technique_ids": ["T1036"]
+    },
+    {
+      "claim": "Emulation was not available.",
+      "grounding": ["emulation_available", "emulation_status"],
+      "technique_ids": ["T1088"]
+    },
+    {
+      "claim": "The attack version is 19.2.",
+      "grounding": ["attack_version"],
+      "technique_ids": ["T1088"]
+    }
+  ],
+  "not_established": [
+    "The sample's behavior is consistent with a specific malware family.",
+    "The sample's purpose.",
+    "The sample's command-and-control server.",
+    "The sample's intended target."
+  ]
+}

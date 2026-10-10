@@ -33,6 +33,16 @@ The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scann
 
 The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stays free of the beta. One opt-in CI job (`emulation-gate`) installs the extra and runs them.
 
+## AI triage (local model)
+
+`engine/triage/` asks a **local** Ollama model for an advisory triage of a run. It is the one component that handles sample-derived text outside a container, and it is treated as such (D22).
+
+- **The sample stays on the machine — checked twice.** The endpoint defaults to `http://127.0.0.1:11434`; a non-loopback host is refused unless `--allow-remote-model`. Separately, a **`:cloud` model is refused** unless `--allow-remote-model` is set, because a cloud model is reached through localhost but runs on a vendor's GPU. Both permissions are recorded in the run and printed as a loud warning when used.
+- **Hostile input is handled as hostile input.** All sample-derived text (filenames, strings, paths, URLs, mutex names, emulated IOCs) is rendered inside an `<untrusted-sample-data>` boundary. The boundary markers are stripped from the text first, so a sample cannot close the block early; control characters are removed and whitespace collapsed, so a string cannot forge extra lines. The prompt forbids following instructions inside the boundary. The adversarial-string test is in CI.
+- **No sample text is executed, and none is stored in the triage result.** The result records the model-output summary, findings and the grounding ids; the raw evidence block is not persisted.
+- **Fail-closed.** No model, a timeout, an unparseable response, or any verdict that fails grounding is `INCONCLUSIVE`, never clean.
+- **Model output is never trusted as ground truth.** Ollama's schema enforcement is not the validator; `engine.triage.contract` re-validates, and `engine.triage.grounding` drops any claim whose citation does not exist in the run.
+
 ## Threat-intelligence push
 
 `hatchery push` sends the run's STIX bundle to MISP or OpenCTI. The API token is read from `--token` or the environment, is used only to build the request, and is never written to the result object, the log, or the `push-<target>.json` audit file. TLS verification is on by default; `--insecure` exists for self-signed lab instances and warns each time it is used. A push is fail-closed: a non-2xx response or a transport error is reported with the status and exits non-zero.
@@ -48,6 +58,7 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 - [ ] Give the API's data directory the same care as the malware samples it stores: it holds live sample bytes and full behavioral traces.
 - [ ] Cap resources: `ContainerConfig` sets `mem_limit`, `nano_cpus`, `pids_limit` and `no-new-privileges`. Do not remove them.
 - [ ] Patch the host kernel regularly — at tier 1 the host kernel is the boundary.
+- [ ] If you use triage, keep it local. Do not pass `--allow-remote-model` unless you intend sample-derived text to leave the machine.
 
 ## Security posture of the API
 

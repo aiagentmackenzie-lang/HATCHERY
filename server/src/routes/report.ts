@@ -50,6 +50,7 @@ export async function reportRoutes(app: FastifyInstance) {
         packer: safeJsonParse(staticResults.packer_json),
         delivery: safeJsonParse(staticResults.delivery_json),
         emulation: safeJsonParse(staticResults.emulation_json),
+        triage: safeJsonParse(staticResults.triage_json),
         mitre: safeJsonParse(staticResults.mitre_json),
       };
     }
@@ -206,9 +207,44 @@ function generateMarkdown(report: any): string {
     lines.push(``);
   }
 
+  if (report.static_analysis?.triage) {
+    const tr = report.static_analysis.triage;
+    lines.push(`## AI Triage (advisory, local model)`);
+    lines.push(``);
+    if (!tr.available) {
+      lines.push(`Triage was **not produced** (${tr.status ?? 'unavailable'}): ${tr.reason ?? 'not available'}.`);
+      lines.push(``);
+    } else {
+      if (tr.allowed_remote || tr.allowed_cloud_model) {
+        lines.push(`> ⚠️ **Remote model permitted.** Sample-derived text left this machine for this triage.`);
+        lines.push(``);
+      }
+      lines.push(`**Model:** \`${tr.model ?? 'unknown'}\` (prompt contract ${tr.prompt_version ?? '?'}/\`${String(tr.contract_hash ?? '').slice(0, 12)}\`)`);
+      lines.push(`**Verdict:** \`${tr.verdict ?? 'inconclusive'}\` (model confidence ${tr.confidence ?? 0}/100)`);
+      lines.push(``);
+      if (tr.summary) {
+        lines.push(tr.summary);
+        lines.push(``);
+      }
+      const findings = tr.findings ?? [];
+      if (findings.length) {
+        lines.push(`### Grounded findings`);
+        lines.push(``);
+        for (const f of findings) {
+          const cites = (f.grounding ?? []).map((c: string) => `\`${c}\``).join(', ');
+          lines.push(`- ${f.claim} — cited: ${cites}`);
+        }
+        lines.push(``);
+      }
+      if (tr.findings_dropped) {
+        lines.push(`**${tr.findings_dropped} finding(s) were discarded** because their citations did not resolve to evidence in this run.`);
+        lines.push(``);
+      }
+    }
+  }
+
   if (report.sandbox_analysis?.evasion) {
-    const ev = report.sandbox_analysis.evasion;
-    lines.push(`## Evasion Assessment`);
+    const ev = report.sandbox_analysis.evasion;    lines.push(`## Evasion Assessment`);
     lines.push(``);
     lines.push(`**Score:** ${ev.score}/100 — **${String(ev.verdict ?? 'none').toUpperCase()}**`);
     if (ev.inconclusive) {

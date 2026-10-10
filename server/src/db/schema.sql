@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS static_results (
     packer_json TEXT,          -- packer detection results
     delivery_json TEXT,        -- delivery-format intake: container, children, unsupported
     emulation_json TEXT,       -- Windows PE emulation: config, snapshots, capa_dynamic
+    triage_json TEXT,          -- advisory local-LLM triage: verdict, grounded findings
     ioc_json TEXT,             -- extracted IOCs
     mitre_json TEXT,           -- MITRE ATT&CK mapping
     created_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -289,6 +289,9 @@ def cli(verbose: bool) -> None:
 @click.option("--emulate-raw", is_flag=True, help="Treat the sample as raw shellcode")
 @click.option("--no-emulate-capa", is_flag=True, help="Skip capa over memory snapshots")
 @click.option("--allow-host-emulation", is_flag=True, help="Escape hatch: emulate on the bare host (loudly unsupported)")
+@click.option("--triage", "triage_enabled", is_flag=True, default=False, envvar="HATCHERY_TRIAGE", help="Run local LLM triage over the bundle (needs Ollama)")
+@click.option("--triage-model", default=None, help="Ollama model for triage (else auto-pick a local model)")
+@click.option("--allow-remote-model", is_flag=True, help="Escape hatch: allow a remote endpoint or a `:cloud` model to see sample text")
 def submit(
     file: Path,
     timeout: int,
@@ -299,6 +302,9 @@ def submit(
     emulate_raw: bool,
     no_emulate_capa: bool,
     allow_host_emulation: bool,
+    triage_enabled: bool,
+    triage_model: Optional[str],
+    allow_remote_model: bool,
 ) -> None:
     """Submit a sample for full analysis.
 
@@ -761,6 +767,50 @@ def submit(
         limitations=limitations,
         errors=[e for e in (sandbox_error, emulation_error) if e],
     )
+
+    # Local LLM triage (D22). Opt-in, because it costs a model call and needs
+    # Ollama; the standalone `hatchery triage <run_dir>` does the same on an
+    # existing run. Triage is advisory and grounded — it never replaces the
+    # engine's findings, and a failed triage is INCONCLUSIVE, not "clean".
+    triage_section = None
+    if triage_enabled:
+        from engine.triage.triage import TriageConfig, run_triage
+
+        console.print("\n[bold]▸ AI Triage (local model)[/bold]")
+        triage_config = TriageConfig.from_env()
+        if triage_model:
+            triage_config.model = triage_model
+        triage_config.allow_remote = allow_remote_model
+        triage_config.allow_cloud_model = allow_remote_model
+        triage_section = run_triage(bundle.to_dict(), events, config=triage_config)
+        if triage_section.get("available"):
+            console.print(
+                f"  Verdict: [cyan]{triage_section['verdict']}[/cyan] "
+                f"(model confidence {triage_section['confidence']}/100, "
+                f"{len(triage_section['findings'])} grounded finding(s), "
+                f"{triage_section['findings_dropped']} dropped)"
+            )
+            if triage_section.get("techniques"):
+                console.print(
+                    f"  Model-suggested techniques: "
+                    f"{', '.join(triage_section['techniques'])}"
+                )
+        else:
+            console.print(f"  [red]Triage {triage_section['status']}: {triage_section['reason']}[/red]")
+        bundle.triage = triage_section
+        # Recompute so the triage limitations are part of the single list.
+        bundle.limitations = compute_limitations(
+            isolation=sandbox_result_dict.get("isolation") if sandbox_result_dict else None,
+            sandbox=sandbox_result_dict,
+            artifacts=sandbox_result_dict.get("artifacts") if sandbox_result_dict else None,
+            events=events,
+            evasion=evasion_dict,
+            delivery=delivery_dict,
+            emulation=emulation_result_dict,
+            triage=triage_section,
+        )
+        limitations = bundle.limitations
+
     analysis_path, events_path = write_bundle(results_dir / "bundle", bundle)
     summary = bundle.summary()
     console.print(f"  Events: [cyan]{summary['events_total']}[/cyan] {summary['events_by_category']}")
@@ -812,6 +862,7 @@ def submit(
         attack_version=mitre_result.attack_version,
         ocsf_schema_version=OCSF_SCHEMA_VERSION,
         emulation=emulation_result_dict,
+        triage=triage_section,
     )
     console.print(f"  Markdown: [cyan]{report_dir / 'report.md'}[/cyan]")
 
@@ -1075,6 +1126,82 @@ def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[st
 
 
 @cli.command()
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--model", default=None, help="Ollama model to use (else HATCHERY_TRIAGE_MODEL or auto-pick)")
+@click.option("--allow-remote-model", is_flag=True, help="Escape hatch: allow a remote endpoint or a `:cloud` model to see sample text")
+@click.option("--timeout", default=180.0, help="Per-request timeout in seconds")
+def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeout: float) -> None:
+    """Run local LLM triage over an existing run's bundle.
+
+    Reads `analysis.json` and `events.jsonl`, asks a local Ollama model for a
+    grounded triage, and writes the result back into the bundle. Advisory only:
+    every claim must cite evidence that exists in the run, and a triage that
+    cannot be grounded is INCONCLUSIVE, not clean.
+    """
+    from engine.bundle import attach_triage, load_bundle, load_events
+    from engine.triage.triage import TriageConfig, run_triage
+
+    try:
+        bundle = load_bundle(run_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
+    events = load_events(run_dir)
+
+    config = TriageConfig.from_env()
+    if model:
+        config.model = model
+    config.allow_remote = allow_remote_model
+    config.allow_cloud_model = allow_remote_model
+    config.timeout = timeout
+
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Local LLM triage\n"
+            f"Run: [cyan]{run_dir}[/cyan]\n"
+            f"Evidence: {len(events)} event(s) in the bundle",
+            title="🔍 AI Triage",
+        )
+    )
+
+    section = run_triage(bundle, events, config=config)
+    if section.get("available"):
+        console.print(
+            f"  Model: [cyan]{section['model']}[/cyan] "
+            f"(prompt contract {section['prompt_version']})"
+        )
+        console.print(
+            f"  Verdict: [cyan]{section['verdict']}[/cyan] "
+            f"(confidence {section['confidence']}/100)"
+        )
+        if section.get("summary"):
+            console.print(f"  {section['summary']}")
+        for finding in section.get("findings") or []:
+            console.print(
+                f"    • {finding['claim']} [dim]← {', '.join(finding['grounding'])}[/dim]"
+            )
+        if section.get("findings_dropped"):
+            console.print(
+                f"  [yellow]{section['findings_dropped']} finding(s) dropped: "
+                "citations did not resolve to evidence in this run[/yellow]"
+            )
+        if section.get("techniques"):
+            console.print(
+                f"  Model-suggested ATT&CK: [yellow]{', '.join(section['techniques'])}"
+                "[/yellow] [dim](unvalidated association)[/dim]"
+            )
+        for item in section.get("not_established") or []:
+            console.print(f"  [dim]not established: {item}[/dim]")
+    else:
+        console.print(f"  [red]Triage {section['status']}: {section['reason']}[/red]")
+
+    path = attach_triage(run_dir, section)
+    console.print(f"  Bundle updated: [cyan]{path}[/cyan]")
+    if not section.get("available"):
+        raise SystemExit(1)
+
+
+@cli.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 def static(file: Path) -> None:
     """Run static analysis only (no sandbox execution)."""
@@ -1234,6 +1361,31 @@ def doctor() -> None:
         )
     else:
         console.print(f"Emulation: [yellow]unavailable ({emu_reason})[/yellow]")
+
+    # Triage readiness: is a local model reachable, and which one would be used?
+    # It is advisory and off by default, so an unavailable model is not a failure.
+    console.print()
+    try:
+        from engine.triage.client import OllamaClient
+        from engine.triage.client import OllamaError as _OllamaError
+
+        triage_client = OllamaClient()
+        if not triage_client.is_available():
+            console.print(
+                "Triage: [dim]unavailable (no local Ollama at "
+                f"{triage_client.base_url})[/dim]"
+            )
+        else:
+            selected = triage_client.resolve_model()
+            console.print(f"Triage: [green]available[/green] — local model {selected}")
+            console.print(
+                "[dim]  Advisory only; opt in with `--triage`. Sample text stays "
+                "local unless --allow-remote-model is passed.[/dim]"
+            )
+    except _OllamaError as exc:
+        console.print(f"Triage: [dim]unavailable ({exc})[/dim]")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"Triage: [dim]unavailable ({type(exc).__name__})[/dim]")
 
     console.print()
     lint = lint_rules()
