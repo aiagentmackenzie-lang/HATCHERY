@@ -41,14 +41,21 @@ The host decides the isolation; HATCHERY reports it honestly.
 
 ## Quick start
 
+Python 3.12–3.14 is supported; 3.15 is excluded until a capa dependency ships a
+wheel.
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 hatchery doctor          # what isolation can this host actually give you?
 hatchery build           # build the sandbox image
 hatchery submit sample.elf --timeout 120
 ```
+
+A clean checkout is verified end to end (CLI, compiled API, queue worker and
+dashboard proxy) by `scripts/verify_setup.sh`. The captured result, acceptance
+fixtures and three known defects are in [`docs/BASELINE.md`](docs/BASELINE.md).
 
 Output lands in `results/<task_id>/`:
 

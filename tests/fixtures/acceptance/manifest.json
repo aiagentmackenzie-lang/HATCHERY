@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "generated_by": "tests/fixtures/acceptance/tools/generate_fixtures.py",
+  "note": "Regenerate with `python tests/fixtures/acceptance/tools/generate_fixtures.py`; verify with `python scripts/verify_fixtures.py`.",
+  "fixtures": [
+    {
+      "id": "eicar",
+      "path": "samples/eicar.com",
+      "description": "Checked-in EICAR anti-malware test string (positive control)",
+      "provenance": "checked-in",
+      "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+      "size": 68,
+      "expected": {
+        "uploader_file_type": "Unknown",
+        "yara": {
+          "status": "match",
+          "rules": [
+            "HATCHERY_EICAR_TestFile"
+          ]
+        },
+        "packer": "error_not_pe",
+        "capa": "explicit_status"
+      }
+    },
+    {
+      "id": "negative_text",
+      "path": "tests/fixtures/acceptance/benign/negative.txt",
+      "description": "Ordinary prose, negative control (no executable content)",
+      "provenance": "generated",
+      "sha256": "fe4bc710ee57c028861108166650a1cca4edff99918896a77906ffa6a1263be3",
+      "size": 240,
+      "expected": {
+        "uploader_file_type": "Unknown",
+        "yara": {
+          "status": "clean",
+          "rules": []
+        },
+        "packer": "error_not_pe",
+        "capa": "explicit_status"
+      }
+    },
+    {
+      "id": "benign_pe",
+      "path": "tests/fixtures/acceptance/benign/benign_pe.exe",
+      "description": "Generated PE32+ x86-64 console executable, one .text section, ret",
+      "provenance": "generated",
+      "sha256": "b48db7697fa5defb7788cfd49cae42b59ceb6e50712b1294b5346dd6ca3ef206",
+      "size": 1024,
+      "expected": {
+        "uploader_file_type": "PE",
+        "pe": {
+          "valid": true,
+          "machine": "x64 (AMD64)",
+          "subsystem": "Windows CUI"
+        },
+        "yara": {
+          "status": "match",
+          "rules": [
+            "HATCHERY_Packing_Generic_HighEntropy",
+            "HATCHERY_Suspicious_HexStrings"
+          ]
+        },
+        "known_defect": "rule-calibration",
+        "known_defect_detail": "Every PE matches HATCHERY_Suspicious_HexStrings on its MZ header and any PE with <=2 sections matches HATCHERY_Packing_Generic_HighEntropy. Both rules are declared low severity; calibration is not part of this baseline.",
+        "packer": "not_packed",
+        "capa": "explicit_status"
+      }
+    },
+    {
+      "id": "benign_elf",
+      "path": "tests/fixtures/acceptance/benign/hello.elf",
+      "description": "Generated ELF64 x86-64 ET_EXEC, exits 42, .text + .shstrtab",
+      "provenance": "generated",
+      "sha256": "bf58b0366a47d77ac6a649a7726875b16361e456005c217b29f438aebff5f302",
+      "size": 4328,
+      "expected": {
+        "uploader_file_type": "ELF",
+        "elf": {
+          "valid": false,
+          "error_contains": "format code"
+        },
+        "elf_independent": {
+          "arch": "EM_X86_64",
+          "type": "ET_EXEC"
+        },
+        "yara": {
+          "status": "clean",
+          "rules": []
+        },
+        "known_defect": "elf-enum",
+        "known_defect_detail": "ELFAnalyzer formats pyelftools 0.33 enum strings with :x and aborts before reporting any metadata.",
+        "packer": "error_not_pe",
+        "capa": "explicit_status"
+      }
+    },
+    {
+      "id": "trace_timestamp",
+      "path": "tests/fixtures/acceptance/replay/trace_timestamp.log",
+      "description": "strace -f -tt layout: execve, file write, clone, connect, exit_group",
+      "provenance": "generated",
+      "sha256": "1bce74315309fe3a53e16517d1a56e5e22ebfa4c3bc6dc4f9fd2c34ae06e69d6",
+      "size": 702,
+      "expected": {
+        "parse": {
+          "parsed_events": 9,
+          "process_tree": {
+            "1000": [
+              1001
+            ]
+          },
+          "network_connections": 1
+        }
+      }
+    },
+    {
+      "id": "trace_pid_first",
+      "path": "tests/fixtures/acceptance/replay/trace_pid_first.log",
+      "description": "Same events with PID before timestamp",
+      "provenance": "generated",
+      "sha256": "bd4dbb86ab4e4fb39ca995aaa6bb3a52e4d27c9232ca27b7287deb46d16e503d",
+      "size": 702,
+      "expected": {
+        "parse": {
+          "parsed_events": 9,
+          "process_tree": {
+            "1000": [
+              1001
+            ]
+          },
+          "network_connections": 1
+        }
+      }
+    },
+    {
+      "id": "file_events",
+      "path": "tests/fixtures/acceptance/replay/file_events.log",
+      "description": "inotifywait log: create, modify, rename pair, delete",
+      "provenance": "generated",
+      "sha256": "77628cd11a79203840fbadba0dca20e7e3723dc8b34d7b87248aaca6535b67bb",
+      "size": 277,
+      "expected": {
+        "parse": {
+          "total_events": 5,
+          "created_files": 1,
+          "modified_files": 1,
+          "deleted_files": 1
+        }
+      }
+    },
+    {
+      "id": "pcap_one_packet",
+      "path": "tests/fixtures/acceptance/replay/one_packet.pcap",
+      "description": "One Ethernet/IPv4/TCP SYN packet, 10.0.0.2:40000 -> 10.0.0.3:8080",
+      "provenance": "generated",
+      "sha256": "ab62078787e40c0bdaac0ad68357af4614eac487635b6b1e4ed8c7504eab79c3",
+      "size": 94,
+      "expected": {
+        "parse": {
+          "total_packets": 1,
+          "connections": 1
+        },
+        "backend_required": "tshark"
+      }
+    },
+    {
+      "id": "pcap_empty",
+      "path": "tests/fixtures/acceptance/replay/empty.pcap",
+      "description": "Valid global header, zero packets",
+      "provenance": "generated",
+      "sha256": "acc530668c8bc60b2d229281130b1899bfc81d70fdada5c34b3236c628f739c8",
+      "size": 24,
+      "expected": {
+        "parse": {
+          "total_packets": 0
+        }
+      },
+      "backend_required": "tshark"
+    },
+    {
+      "id": "pcap_malformed",
+      "path": "tests/fixtures/acceptance/replay/malformed.pcap",
+      "description": "Not a capture file: used to check that unreadable input is reported",
+      "provenance": "generated",
+      "sha256": "5407e5d60ad87ad2b128073e1dc5a962937558eafcd9ac08963fa607e6b63540",
+      "size": 93,
+      "expected": {
+        "parse": {
+          "total_packets": 0
+        },
+        "known_defect": "pcap-error",
+        "known_defect_detail": "The tshark failure is swallowed; an unreadable capture is indistinguishable from an empty one and errors stays empty.",
+        "backend_required": "tshark"
+      }
+    }
+  ]
+}

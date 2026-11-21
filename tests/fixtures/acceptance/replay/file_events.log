@@ -1,0 +1,5 @@
+2026-11-20T10:00:00 /sandbox/output/hatched.txt CREATE
+2026-11-20T10:00:01 /sandbox/output/hatched.txt MODIFY
+2026-11-20T10:00:02 /sandbox/output/old.txt MOVED_FROM
+2026-11-20T10:00:03 /sandbox/output/renamed.txt MOVED_TO
+2026-11-20T10:00:04 /sandbox/output/hatched.txt DELETE

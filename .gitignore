@@ -42,3 +42,4 @@ server/dist/
 # Without this negation `*.log` silently excluded the strace fixture the parser
 # tests are written against, so CI could not run the test it backs.
 !tests/fixtures/*.log
+!tests/fixtures/**/*.log

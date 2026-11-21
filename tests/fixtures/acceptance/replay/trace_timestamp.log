@@ -1,0 +1,10 @@
+10:00:00.000001 1000 execve("/opt/hatchery/sample", ["/opt/hatchery/sample"], 0x7ffd0000) = 0
+10:00:00.000100 1000 brk(NULL) = 0x5555a000
+10:00:00.000200 1000 openat(AT_FDCWD, "/sandbox/output/hatched.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+10:00:00.000300 1000 write(3, "hatched\n", 8) = 8
+10:00:00.000400 1000 close(3) = 0
+10:00:00.000500 1000 clone(child_stack=0, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD) = 1001
+10:00:00.000600 1001 execve("/opt/hatchery/child", ["/opt/hatchery/child"], 0x7ffd0000) = 0
+10:00:00.000700 1001 connect(3, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
+10:00:00.000800 1001 exit_group(42) = ?
++++ exited with 42 +++

@@ -37,6 +37,14 @@ jobs:
       - name: Test with pytest
         run: pytest -q
 
+      # Deterministic acceptance inputs: the manifest must regenerate
+      # byte-identically, and recorded outcomes must match (known defects are
+      # reported but do not fail this gate).
+      - name: Verify acceptance fixtures
+        run: |
+          python tests/fixtures/acceptance/tools/generate_fixtures.py --check
+          python scripts/verify_fixtures.py
+
   # Opt-in and non-required until it has proven stable. It installs the beta
   # emulator extra (which the pinned python-gate deliberately never installs) and
   # runs the emulation tests. It does NOT build the emulation image or run the

@@ -1,0 +1,4 @@
+HATCHERY negative control.
+This file is ordinary prose with no executable content, no URLs and no
+indicators. A static scan that is running correctly reports zero YARA
+matches and no findings; a scan that failed to run must say so instead.
