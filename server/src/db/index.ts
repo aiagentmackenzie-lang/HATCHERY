@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { initAuditChain } from '../security/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,12 +45,22 @@ export function getDb(): Database.Database {
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // D30: two writers (the API and the token CLI, or two API processes on one
+  // database) must wait for the write lock rather than fail instantly. Without a
+  // busy timeout the loser of a concurrent audit append gets SQLITE_BUSY and the
+  // row is lost; `BEGIN IMMEDIATE` only serialises writers if they can wait.
+  db.pragma('busy_timeout = 5000');
 
   // Run schema on first create
   const schema = fs.readFileSync(findSchemaPath(), 'utf-8');
   db.exec(schema);
 
   migrate(db);
+
+  // Record the pre-chain audit boundary once (D30). Rows that existed before the
+  // hash chain are left exactly as they are: not backfilled, not claimed to be
+  // tamper-evident.
+  initAuditChain(db);
 
   return db;
 }
@@ -94,6 +105,25 @@ function migrate(database: Database.Database): void {
   // The index must be created after the column exists, otherwise a database
   // from before the queue fails at schema load with "no such column".
   database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(queue_job_id)');
+
+  // D30: the audit hash chain. `CREATE TABLE IF NOT EXISTS` does not add columns to
+  // an existing table, so a pre-D30 database would silently lack them and every
+  // append would fail. Additive ALTERs only — no row is rewritten, no history is
+  // recomputed, and the columns are nullable precisely because old rows keep NULL.
+  const auditColumns = database
+    .prepare('PRAGMA table_info(audit_log)')
+    .all() as Array<{ name: string }>;
+  if (!auditColumns.some((c) => c.name === 'prev_hash')) {
+    database.exec('ALTER TABLE audit_log ADD COLUMN prev_hash TEXT');
+  }
+  if (!auditColumns.some((c) => c.name === 'entry_hash')) {
+    database.exec('ALTER TABLE audit_log ADD COLUMN entry_hash TEXT');
+  }
+  // The metadata table is created by schema.sql for both new and old databases;
+  // this is belt-and-braces for a checkout whose schema.sql predates D30.
+  database.exec(
+    `CREATE TABLE IF NOT EXISTS audit_chain_meta (key TEXT PRIMARY KEY, value TEXT)`,
+  );
 }
 
 export interface TaskRow {

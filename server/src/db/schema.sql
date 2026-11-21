@@ -86,6 +86,12 @@ CREATE INDEX IF NOT EXISTS idx_iocs_type ON iocs(ioc_type);
 -- Access audit log (D25). Every API request the server answers is recorded here:
 -- who (actor + role), what (method + path), and the outcome (status). No token, no
 -- sample bytes and no request body is ever stored.
+--
+-- D30 adds an append-only hash chain: `prev_hash` is the previous row's
+-- `entry_hash` (or the documented genesis constant for the first chained row) and
+-- `entry_hash` is SHA-256 over a canonical encoding of the row's stored fields.
+-- Both are nullable because rows written before D30 are left untouched: they were
+-- not tamper-evident then and are not claimed to be now.
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL DEFAULT 'anonymous',
@@ -96,8 +102,38 @@ CREATE TABLE IF NOT EXISTS audit_log (
     status_code INTEGER,
     action TEXT,               -- auth.denied | request.forbidden | request.allowed
     detail TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    prev_hash TEXT,            -- previous entry_hash, or the genesis constant (D30)
+    entry_hash TEXT            -- sha256 of this row's canonical encoding (D30)
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);
+
+-- Audit-chain bookkeeping (D30). One row per key. `legacy_*` is written once, at
+-- the migration that adds the chain, and records how many pre-chain rows existed
+-- so their later deletion is visible; `head_*`/`chained_row_count` track the live
+-- head so truncation of the tail is detectable too.
+CREATE TABLE IF NOT EXISTS audit_chain_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- API tokens (D30). A credential's lifecycle: an id, a role, a non-secret prefix,
+-- a one-way hash of the secret, creation/expiry times and a revocation stamp.
+-- There is deliberately no column that can hold the raw token: `secret_hash` is
+-- sha256(domain || token) and the token itself is shown once, by the CLI, at
+-- creation. A row's id or prefix is never sufficient to authenticate.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id TEXT PRIMARY KEY,               -- htk_<16 hex>; the token's first segment
+    name TEXT,                          -- operator label, never a secret
+    role TEXT NOT NULL,                 -- admin | viewer
+    prefix TEXT NOT NULL,              -- non-secret identifying prefix for listings
+    secret_hash TEXT NOT NULL UNIQUE,  -- sha256(domain || token), hex
+    created_at TEXT NOT NULL,
+    expires_at TEXT,                   -- ISO-8601 UTC; NULL means no expiry
+    revoked_at TEXT,                   -- ISO-8601 UTC; NULL means live
+    retired_reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_role ON api_tokens(role);
