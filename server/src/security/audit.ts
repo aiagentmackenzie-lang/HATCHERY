@@ -484,6 +484,9 @@ export function verifyAuditChain(
     // removed from the end, which no forward link can reveal.
     const headId = result.head.id;
     const headHash = result.head.hash;
+    // A resumed page that ends exactly on the recorded head (rows.length === 0)
+    // must report a match, not the placeholder set when the anchor was read.
+    result.head.matches_meta = metaHeadId !== null && headId === metaHeadId && headHash === metaHeadHash;
     if (metaHeadId !== null && (headId !== metaHeadId || headHash !== metaHeadHash)) {
       result.ok = false;
       result.head.matches_meta = false;
@@ -493,6 +496,15 @@ export function verifyAuditChain(
         detail:
           `the chain ends at row ${headId ?? 'none'} but the recorded head is row ` +
           `${metaHeadId} — rows were removed from the end`,
+      };
+    } else if (metaHeadId === null && result.head.id !== null) {
+      // Chained rows with no recorded head: the chain metadata was cleared or is
+      // missing. Fail closed rather than reporting a chain nobody anchored.
+      result.ok = false;
+      result.first_broken = {
+        id: result.head.id,
+        classification: 'truncated',
+        detail: 'chained rows exist but no head is recorded — the chain metadata is missing or was cleared',
       };
     }
   }

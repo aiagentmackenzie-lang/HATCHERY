@@ -328,6 +328,28 @@ function append0() {
   };
 }
 
+test('clearing the chain metadata is a break, not a green verification', () => {
+  const db = freshDb();
+  appendMany(db, 4);
+  assert.equal(verifyAuditChain(db).ok, true);
+
+  db.exec('DELETE FROM audit_chain_meta');
+  const result = verifyAuditChain(db);
+  assert.equal(result.ok, false);
+  assert.equal(result.first_broken.classification, 'truncated');
+  assert.match(result.first_broken.detail, /no head is recorded/);
+  assert.equal(result.head.matches_meta, false);
+
+  // And a resume page that ends exactly on the recorded head reports a match.
+  const db2 = freshDb();
+  appendMany(db2, 4);
+  const last = verifyAuditChain(db2, { limitRows: 4 });
+  const resumed = verifyAuditChain(db2, { limitRows: 4, afterId: last.head.id });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.equal(resumed.rows_checked, 0);
+  assert.equal(resumed.head.matches_meta, true);
+});
+
 test('listing returns the chain columns and never reorders rows', () => {
   const db = freshDb();
   appendMany(db, 3);
