@@ -25,6 +25,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +41,9 @@ from engine.replay.compare import (
     settings_from_bundle,
 )
 from engine.replay.signals import extract_signals
+from engine.store import SampleStore, SampleStoreError
+from engine.store.staging import StagedPlaintext
+from engine.store.store import resolve_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +119,12 @@ def default_output_dir(run_dir: Path) -> Path:
 
 @dataclass(frozen=True)
 class SampleResolution:
-    """Where the sample came from, and whether its bytes were verified."""
+    """Where the sample came from, and whether its bytes were verified.
+
+    ``plaintext`` is the decrypted sample for a store-backed resolution. It is
+    deliberately excluded from :meth:`to_dict`: the replay section is written to
+    disk and printed, and sample bytes must never be either.
+    """
 
     requested_sha256: str
     sha256: str
@@ -123,6 +132,10 @@ class SampleResolution:
     resolution: str
     hash_verified: bool
     problem: str = ""
+    reason: str = ""
+    encryption: str = ""
+    store_reference: str = ""
+    plaintext: Optional[bytes] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -132,20 +145,133 @@ class SampleResolution:
             "resolution": self.resolution,
             "hash_verified": self.hash_verified,
             "problem": self.problem,
+            "reason": self.reason,
+            "encryption": self.encryption,
+            "store_reference": self.store_reference,
         }
+
+    def limitations(self) -> list[str]:
+        """What this resolution means for the strength of the replay."""
+        lines: list[str] = []
+        if self.encryption:
+            lines.append(
+                f"The sample was read from the sample store ({self.encryption}) and "
+                "decrypted in memory; its sha256 was verified against the bundle "
+                "before re-analysis."
+            )
+            if self.encryption == "plaintext-legacy":
+                lines.append(
+                    "The stored sample is still legacy plaintext on disk; run "
+                    "`hatchery store migrate` to encrypt the store."
+                )
+            if self.plaintext is not None:
+                lines.append(
+                    "The path-based analysis pipeline was handed a single-use "
+                    "staging file (0600, 0700 directory) containing the decrypted "
+                    "sample for the duration of the submit subprocess; it is removed "
+                    "when the replay ends. No plaintext is written to the store, the "
+                    "index or the results tree."
+                )
+        if self.reason == "expired":
+            lines.append(
+                "The sample is past the configured retention TTL. A replay cannot "
+                "be defended on an expired sample, so this replay is INCONCLUSIVE "
+                "rather than a pass."
+            )
+        return lines
+
+
+def _store_resolution(
+    store: Any,
+    expected: str,
+    *,
+    ttl: Optional[float],
+    now: Optional[float],
+) -> Optional[SampleResolution]:
+    """Resolve a sample through the store, or ``None`` if it does not hold it.
+
+    Once the store claims an address — a blob exists or the index has a row —
+    the store is authoritative. A wrong key, a tampered envelope or an expired
+    entry is then an INCONCLUSIVE replay with that precise reason; silently
+    falling back to some other copy would hide exactly the integrity event a
+    replay exists to surface.
+    """
+    if not expected or store is None:
+        return None
+    try:
+        record = store.record(expected)
+        present = record is not None or store.has(expected)
+    except Exception as exc:  # a broken index must not look like a missing sample
+        return SampleResolution(
+            expected, "", "", "sample store", False,
+            f"the sample store could not be queried: {exc}", reason="index-error",
+        )
+    if not present:
+        return None
+
+    try:
+        ttl_seconds = resolve_ttl(ttl)
+    except SampleStoreError as exc:
+        return SampleResolution(
+            expected, "", "", "sample store", False,
+            f"the retention configuration is invalid: {exc.message}", reason=exc.reason,
+        )
+    moment = time.time() if now is None else float(now)
+    if ttl_seconds > 0:
+        anchor = record.anchor_epoch() if record is not None else 0.0
+        if anchor and moment - anchor > ttl_seconds:
+            return SampleResolution(
+                expected, "", "", "sample store", False,
+                f"the sample is {moment - anchor:.0f}s old, past the configured "
+                f"retention TTL of {ttl_seconds:.0f}s; it is expired and a replay "
+                "cannot rely on it",
+                reason="expired",
+                store_reference=expected,
+            )
+    try:
+        stored = store.read(expected)
+    except SampleStoreError as exc:
+        return SampleResolution(
+            expected, "", "", "sample store", False,
+            f"the stored sample {expected} is unusable: {exc.reason}: {exc.message}",
+            reason=exc.reason,
+            store_reference=expected,
+        )
+    label = "sample store" if stored.encryption == "aes-256-gcm/v1" else "sample store (legacy plaintext)"
+    return SampleResolution(
+        expected,
+        stored.sha256,
+        str(store.blob_path(stored.sha256)),
+        label,
+        True,
+        encryption=stored.encryption,
+        store_reference=stored.sha256,
+        plaintext=stored.data,
+    )
 
 
 def locate_sample(
     bundle: dict[str, Any],
     run_dir: Path,
     override: Optional[Path] = None,
+    *,
+    store: Any = None,
+    ttl: Optional[float] = None,
+    now: Optional[float] = None,
 ) -> SampleResolution:
     """Locate the original sample and verify it against the recorded hash.
 
-    The recorded path is tried first, then the content-addressed sample store the
-    uploader writes (``samples/<sha256>.sample``). A candidate whose bytes do not
-    match the bundle is refused rather than replayed — comparing a different file
-    would produce a false ``static-mismatch``.
+    Order (D28): the **sample store** is authoritative when it holds the content
+    address, then the recorded path, then a legacy ``samples/<sha256>.sample``
+    directory. The store is checked first because it is the copy retention
+    policy actually protects; the older locations remain for runs recorded before
+    the store existed. A candidate whose bytes do not match the bundle is refused
+    rather than replayed — comparing a different file would manufacture a false
+    ``static-mismatch``.
+
+    A store-backed resolution carries the decrypted bytes in memory; the caller
+    stages them for the submit subprocess and never writes them into the store or
+    the results tree.
     """
     sample = bundle.get("sample")
     sample = sample if isinstance(sample, dict) else {}
@@ -157,7 +283,7 @@ def locate_sample(
         if not candidate.is_file():
             return SampleResolution(
                 expected, "", str(candidate), "--sample override", False,
-                f"--sample {candidate} does not exist",
+                f"--sample {candidate} does not exist", reason="not-found",
             )
         actual = _sha256(candidate)
         if expected and actual != expected:
@@ -165,43 +291,36 @@ def locate_sample(
                 expected, actual, str(candidate.resolve()), "--sample override", False,
                 f"--sample {candidate} has sha256 {actual}, but the bundle records "
                 f"{expected}; refusing to replay different bytes",
+                reason="hash-mismatch",
             )
         return SampleResolution(
             expected or actual, actual, str(candidate.resolve()), "--sample override", True,
         )
 
-    candidates: list[tuple[Path, str]] = []
-    if recorded:
-        candidates.append((Path(recorded), "recorded sample path"))
-    if expected:
-        store_name = f"{expected}.sample"
-        seen_dirs: set[str] = set()
-        for base in (Path("samples"), run_dir.parent / "samples", run_dir.parent.parent / "samples"):
-            key = str(base.resolve()) if base.exists() else str(base)
-            if key in seen_dirs:
-                continue
-            seen_dirs.add(key)
-            candidates.append((base / store_name, "stored sample store"))
+    resolved_store = _store_resolution(store, expected, ttl=ttl, now=now)
+    if resolved_store is not None:
+        return resolved_store
 
+    # The store above is authoritative. The only other place a pre-D28 run may
+    # legitimately point at is the path it recorded; ad-hoc ``samples/``
+    # guessing is deliberately gone, because it could pick up an encrypted blob
+    # from an unrelated directory and call it corrupt plaintext.
     last_problem = ""
-    seen_paths: set[str] = set()
-    for candidate, source in candidates:
-        key = str(candidate)
-        if key in seen_paths:
-            continue
-        seen_paths.add(key)
-        if not candidate.is_file():
-            continue
-        actual = _sha256(candidate)
-        if expected and actual != expected:
+    last_reason = ""
+    if recorded and not recorded.startswith("store:"):
+        candidate = Path(recorded)
+        if candidate.is_file():
+            actual = _sha256(candidate)
+            if not expected or actual == expected:
+                return SampleResolution(
+                    expected or actual, actual, str(candidate.resolve()),
+                    "recorded sample path", True,
+                )
             last_problem = (
-                f"a candidate sample at {candidate} has sha256 {actual}, but the "
+                f"the recorded sample path {candidate} has sha256 {actual}, but the "
                 f"bundle records {expected}; refusing to replay different bytes"
             )
-            continue
-        return SampleResolution(
-            expected, actual, str(candidate.resolve()), source, True,
-        )
+            last_reason = "hash-mismatch"
 
     problem = last_problem or (
         "the sample could not be located: the recorded path "
@@ -209,7 +328,10 @@ def locate_sample(
         f"{expected or '(unknown)'} was found in the sample store. A replay is "
         "INCONCLUSIVE, not a pass."
     )
-    return SampleResolution(expected, "", "", "not found", False, problem)
+    return SampleResolution(
+        expected, "", "", "not found", False, problem,
+        reason=last_reason or "not-found",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,45 +547,28 @@ class ReplayResult:
         )
 
 
-def run_replay(
-    run_dir: Path,
+def _execute_replay(
     *,
-    output_dir: Optional[Path] = None,
-    force_no_sandbox: bool = False,
-    allow_host_emulation: bool = False,
-    sample_override: Optional[Path] = None,
-    submit_runner: Optional[SubmitRunner] = None,
-    submit_timeout: float = 1800.0,
+    original: dict[str, Any],
+    resolved: Path,
+    out: Path,
+    replay_bundle_dir: Path,
+    original_settings: Any,
+    original_signals: Any,
+    resolution: SampleResolution,
+    limitations: list[str],
+    sample_path: Optional[Path],
+    force_no_sandbox: bool,
+    allow_host_emulation: bool,
+    submit_runner: Optional[SubmitRunner],
+    submit_timeout: float,
 ) -> ReplayResult:
-    """Re-analyse a run and return the reproducibility verdict.
+    """Submit, compare and persist once the sample has been resolved.
 
-    Never raises for a failed *analysis* — a failure is an INCONCLUSIVE verdict
-    with a reason. Raises :class:`ReplayError` only when the replay could not be
-    attempted at all (bad path, malformed bundle).
+    Split out so :func:`run_replay` can own the staging file's lifetime in a
+    single ``try/finally``.
     """
-    resolved = resolve_run_dir(Path(run_dir))
-    try:
-        original = load_bundle(resolved)
-    except json.JSONDecodeError as exc:
-        raise ReplayError(
-            f"malformed bundle at {resolved / ANALYSIS_FILENAME}: {exc}"
-        ) from exc
-    except FileNotFoundError as exc:
-        raise ReplayError(str(exc)) from exc
-    if not isinstance(original, dict):
-        raise ReplayError(f"bundle at {resolved / ANALYSIS_FILENAME} is not a JSON object")
-
-    original_settings = settings_from_bundle(original)
-    original_signals = extract_signals(original)
-
-    out = Path(output_dir) if output_dir else default_output_dir(resolved)
-    out.mkdir(parents=True, exist_ok=True)
-    replay_bundle_dir = out / "bundle"
-
-    resolution = locate_sample(original, resolved, sample_override)
-    limitations = [POLICY_LIMITATION]
-
-    if not resolution.hash_verified:
+    if sample_path is None:
         limitations.append(resolution.problem)
         section = _base_section(original, resolved, replay_bundle_dir, resolution)
         section.update(
@@ -492,7 +597,7 @@ def run_replay(
 
     dynamic = original_settings.dynamic and not force_no_sandbox
     command = build_submit_command(
-        Path(resolution.path),
+        sample_path,
         out,
         dynamic=dynamic,
         emulation=original_settings.emulation,
@@ -579,6 +684,83 @@ def run_replay(
         len(comparison.dynamic_drift),
     )
     return ReplayResult(section=section, output_dir=out)
+
+
+def run_replay(
+    run_dir: Path,
+    *,
+    output_dir: Optional[Path] = None,
+    force_no_sandbox: bool = False,
+    allow_host_emulation: bool = False,
+    sample_override: Optional[Path] = None,
+    submit_runner: Optional[SubmitRunner] = None,
+    submit_timeout: float = 1800.0,
+    store: Any = None,
+    ttl: Optional[float] = None,
+    now: Optional[float] = None,
+) -> ReplayResult:
+    """Re-analyse a run and return the reproducibility verdict.
+
+    Never raises for a failed *analysis* — a failure is an INCONCLUSIVE verdict
+    with a reason. Raises :class:`ReplayError` only when the replay could not be
+    attempted at all (bad path, malformed bundle).
+    """
+    resolved = resolve_run_dir(Path(run_dir))
+    try:
+        original = load_bundle(resolved)
+    except json.JSONDecodeError as exc:
+        raise ReplayError(
+            f"malformed bundle at {resolved / ANALYSIS_FILENAME}: {exc}"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise ReplayError(str(exc)) from exc
+    if not isinstance(original, dict):
+        raise ReplayError(f"bundle at {resolved / ANALYSIS_FILENAME} is not a JSON object")
+
+    original_settings = settings_from_bundle(original)
+    original_signals = extract_signals(original)
+
+    out = Path(output_dir) if output_dir else default_output_dir(resolved)
+    out.mkdir(parents=True, exist_ok=True)
+    replay_bundle_dir = out / "bundle"
+
+    owned_store = store is None
+    sample_store = store if store is not None else SampleStore(create=False)
+    staged: Optional[StagedPlaintext] = None
+    try:
+        resolution = locate_sample(
+            original, resolved, sample_override, store=sample_store, ttl=ttl, now=now
+        )
+        limitations = [POLICY_LIMITATION]
+        limitations.extend(resolution.limitations())
+        sample_path: Optional[Path] = None
+        if resolution.hash_verified:
+            if resolution.plaintext is not None:
+                filename = Path(resolution.path).name or "sample"
+                staged = StagedPlaintext(resolution.plaintext, filename)
+                sample_path = staged.path
+            else:
+                sample_path = Path(resolution.path)
+        return _execute_replay(
+            original=original,
+            resolved=resolved,
+            out=out,
+            replay_bundle_dir=replay_bundle_dir,
+            original_settings=original_settings,
+            original_signals=original_signals,
+            resolution=resolution,
+            limitations=limitations,
+            sample_path=sample_path,
+            force_no_sandbox=force_no_sandbox,
+            allow_host_emulation=allow_host_emulation,
+            submit_runner=submit_runner,
+            submit_timeout=submit_timeout,
+        )
+    finally:
+        if staged is not None:
+            staged.close()
+        if owned_store:
+            sample_store.close()
 
 
 __all__ = [

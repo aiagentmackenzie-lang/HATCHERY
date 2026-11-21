@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 import click
 from rich.console import Console
@@ -281,7 +281,9 @@ def cli(verbose: bool) -> None:
 
 
 @cli.command()
-@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.argument("file", type=click.Path(exists=True, path_type=Path), required=False)
+@click.option("--from-store", "from_store", default=None, help="Analyse a stored sample by its sha256 address (internal: worker/replay)")
+@click.option("--sample-hint", "sample_hint", default=None, help="Original path to record for a stored sample (informational)")
 @click.option("--timeout", default=120, help="Sandbox timeout in seconds")
 @click.option("--output", "-o", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--no-sandbox", is_flag=True, help="Skip sandbox execution (static only)")
@@ -298,7 +300,9 @@ def cli(verbose: bool) -> None:
 @click.option("--job-id", default=None, help="Job id to enqueue under (default: a fresh id)")
 @click.option("--requeue", is_flag=True, help="Re-queue an existing terminal job instead of refusing")
 def submit(
-    file: Path,
+    file: Optional[Path],
+    from_store: Optional[str],
+    sample_hint: Optional[str],
     timeout: int,
     output: Optional[Path],
     no_sandbox: bool,
@@ -324,8 +328,25 @@ def submit(
 
     With ``--enqueue`` the job is written to the durable queue instead and a
     worker (``hatchery worker``) runs it later. In that mode the command prints
-    one JSON object on stdout and does not analyse anything.
+    one JSON object on stdout and does not analyse anything. The accepted bytes
+    are encrypted into the sample store before the job row is written, so the
+    job survives deletion of the original path.
+
+    ``--from-store`` analyses a stored sample by its content address instead of a
+    file. It is how a worker executes a queued job and how replay re-analyses a
+    record whose original path is gone; the plaintext is decrypted in memory and
+    handed to the path-based pipeline through a single-use staging file that is
+    removed when the run ends.
     """
+    from engine.intake.uploader import SampleUploader
+    from engine.store import SampleStore, SampleStoreError
+    from engine.store.staging import StagedPlaintext
+
+    if from_store and enqueue:
+        raise click.UsageError("--enqueue takes a sample file; --from-store is for replay/worker execution")
+    if not from_store and file is None:
+        raise click.UsageError("submit needs a sample FILE (or --from-store SHA256)")
+
     job_args = {
         "timeout": timeout,
         "no_sandbox": no_sandbox,
@@ -343,12 +364,29 @@ def submit(
         # read the job id without parsing human-facing output.
         from engine.queue import JobError, JobStore, resolve_queue_db
 
+        assert file is not None
+        # D28: the accepted bytes enter the encrypted store *before* the job row
+        # exists. A queued job can therefore be executed after the original path
+        # is deleted, and the job records the content address it will run.
+        sample_store = SampleStore()
+        try:
+            record = sample_store.put_file(file)
+        except SampleStoreError as exc:
+            console.print(f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]")
+            raise SystemExit(1)
+        finally:
+            sample_store.close()
+        if sample_store.generated_key_notice:
+            click.echo(f"WARNING: {sample_store.generated_key_notice}", err=True)
+
         store = JobStore(resolve_queue_db(queue_db))
         try:
             job = store.enqueue(
                 file,
                 output_dir=output,
                 args=job_args,
+                sample_sha256=record.sha256,
+                sample_store_ref=record.sha256,
                 job_id=job_id,
                 requeue=requeue,
             )
@@ -361,16 +399,58 @@ def submit(
             "job_id": job.job_id,
             "status": job.status,
             "sample_path": job.sample_path,
+            "sample_sha256": job.sample_sha256,
+            "sample_store_ref": job.sample_store_ref,
             "output_dir": job.output_dir,
             "queue_db": str(resolve_queue_db(queue_db)),
         }))
         return
 
+    sample_store = SampleStore()
+    staged: Optional[StagedPlaintext] = None
+    if from_store:
+        try:
+            stored = sample_store.read(from_store)
+        except SampleStoreError as exc:
+            console.print(
+                f"[red]Cannot read stored sample {from_store}: {exc.reason}: {exc.message}[/red]"
+            )
+            raise SystemExit(1)
+        sample_name = Path(sample_hint).name if sample_hint else f"{stored.sha256[:12]}.sample"
+        staged = StagedPlaintext(stored.data, sample_name)
+        file = staged.path
+        recorded_path = str(Path(sample_hint)) if sample_hint else f"store:{stored.sha256}"
+        store_record = {
+            "reference": stored.sha256,
+            "encryption": stored.encryption,
+            "blob": sample_store.blob_path(stored.sha256).name,
+        }
+        uploader = SampleUploader(store=sample_store)
+        metadata = uploader.describe(
+            sample_name,
+            stored.data,
+            storage_path=sample_store.blob_path(stored.sha256),
+            sha256=stored.sha256,
+            encryption=stored.encryption,
+        )
+    else:
+        assert file is not None
+        sample_name = file.name
+        recorded_path = str(file)
+        uploader = SampleUploader(store=sample_store)
+        try:
+            metadata = uploader.upload(file)
+        except SampleStoreError as exc:
+            console.print(f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]")
+            raise SystemExit(1)
+        store_record = metadata.store_reference()
+        file = Path(file)
+
     task_id = uuid.uuid4().hex[:12]
     console.print(Panel(
         f"[bold orange_red1]HATCHERY[/bold orange_red1] — Submitting sample for analysis\n"
         f"Task ID: [cyan]{task_id}[/cyan]\n"
-        f"File: [green]{file.name}[/green]",
+        f"File: [green]{sample_name}[/green]",
         title="🔴 New Analysis",
     ))
 
@@ -401,9 +481,6 @@ def submit(
 
     # Phase 1: Sample intake
     console.print("\n[bold]▸ Phase 1: Sample Intake[/bold]")
-
-    uploader = SampleUploader()
-    metadata = uploader.upload(file)
 
     # Delivery-format intake runs before static analysis: a ZIP, Office
     # document, archive or HTML/SVG page is opened once, and its children join
@@ -576,7 +653,7 @@ def submit(
                     from engine.monitor.attribution import attribute_to_sample
 
                     scoped_events, attribution = attribute_to_sample(
-                        gvisor_result.events, sample_name=file.name
+                        gvisor_result.events, sample_name=sample_name
                     )
                     gvisor_result = dataclasses.replace(
                         gvisor_result,
@@ -802,10 +879,11 @@ def submit(
     bundle = AnalysisBundle(
         task_id=task_id,
         sample={
-            "file_name": file.name,
-            "file_path": str(file),
+            "file_name": sample_name,
+            "file_path": recorded_path,
             "file_size": hash_result.file_size,
             "file_type": metadata.file_type,
+            "store": store_record,
             **hash_result.to_dict(),
         },
         isolation=sandbox_result_dict.get("isolation") if sandbox_result_dict else None,
@@ -904,7 +982,7 @@ def submit(
     report_gen = ReportGenerator()
     report_dir = report_gen.write_report(
         results_dir,
-        sample_name=file.name,
+        sample_name=sample_name,
         sample_hash=hash_result.to_dict(),
         static_results=static_data,
         sandbox_results=sandbox_result_dict,
@@ -933,7 +1011,7 @@ def submit(
 
     navigator_layer = build_navigator_layer(
         mitre=mitre_result.to_dict(),
-        sample_name=file.name,
+        sample_name=sample_name,
         task_id=task_id,
     )
     navigator_errors = validate_navigator_layer(navigator_layer)
@@ -946,7 +1024,7 @@ def submit(
 
     ocsf_findings = build_ocsf_findings(
         task_id=task_id,
-        sample_name=file.name,
+        sample_name=sample_name,
         mitre=mitre_result.to_dict(),
         evasion=evasion_dict,
         events=events,
@@ -972,7 +1050,7 @@ def submit(
         mitre=mitre_result.to_dict(),
         events=events,
         task_id=task_id,
-        sample_name=file.name,
+        sample_name=sample_name,
         attack_version=mitre_result.attack_version,
     )
     sigma_errors = [p for rule in sigma_rules for p in validate_sigma_rule(rule)]
@@ -1000,6 +1078,12 @@ def submit(
         f"Results: [cyan]{results_dir}[/cyan]",
         title="✅ Analysis Complete",
     ))
+
+    # The staging file for a --from-store run is removed here and by an atexit
+    # hook; nothing plaintext survives the run in the store or the results tree.
+    if staged is not None:
+        staged.close()
+    sample_store.close()
 
 
 @cli.command()
@@ -1665,7 +1749,9 @@ def _print_job(job: Any) -> None:
             f"Job:      [cyan]{job.job_id}[/cyan]\n"
             f"Status:   [{color}]{job.status}[/{color}]\n"
             f"Sample:   {job.sample_path}\n"
-            f"Output:   {job.output_dir}\n"
+            + (f"Store:    {job.sample_store_ref} (encrypted copy the worker runs)\n"
+               if job.sample_store_ref else "")
+            + f"Output:   {job.output_dir}\n"
             f"Attempts: {job.attempts}/{job.max_attempts}"
             + (f"  worker={job.worker_id}" if job.worker_id else "")
             + (f"\nLease:    expires {job.lease_expires_at}" if job.lease_expires_at else "")
@@ -1673,6 +1759,346 @@ def _print_job(job: Any) -> None:
             + (f"\nError:    [red]{job.error}[/red]" if job.error else ""),
             title="Job",
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# hatchery store — the sample store maintenance group (D28)
+# ---------------------------------------------------------------------------
+
+STORE_EXIT_OK = 0
+STORE_EXIT_ERROR = 1
+STORE_EXIT_FAILURES = 2
+
+
+def _store_root() -> Path:
+    from engine.store import resolve_store_root
+
+    return resolve_store_root()
+
+
+def _store_command_failed(exc: Any, as_json: bool) -> NoReturn:
+    """Report a store error on stderr and exit 1 — never print key material."""
+    reason = getattr(exc, "reason", "error")
+    message = getattr(exc, "message", str(exc))
+    if as_json:
+        click.echo(json.dumps({"ok": False, "reason": reason, "message": message}), err=True)
+    else:
+        click.echo(f"HATCHERY store: {reason}: {message}", err=True)
+    raise SystemExit(STORE_EXIT_ERROR)
+
+
+def _human_size(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"  # pragma: no cover
+
+
+def _store_common_options(function: Any) -> Any:
+    """The options every store subcommand shares (root, results, queue, --json)."""
+    function = click.option(
+        "--queue", "queue_db", type=click.Path(path_type=Path), default=None,
+        help="Queue database to read for queued/running job references "
+             "(default: data/queue.db or HATCHERY_QUEUE_DB)",
+    )(function)
+    function = click.option(
+        "--results", "results_root", type=click.Path(path_type=Path), default=None,
+        help="Results root to scan for run-bundle references (default: discovered)",
+    )(function)
+    function = click.option(
+        "--store", "store_root", type=click.Path(path_type=Path), default=None,
+        help="Sample store root (default: HATCHERY_SAMPLE_STORE or <checkout>/samples)",
+    )(function)
+    function = click.option(
+        "--json", "as_json", is_flag=True, help="Emit one JSON object on stdout"
+    )(function)
+    return function
+
+
+def _logs_to_stderr() -> None:
+    """Keep stdout for the machine-readable object a store command promises.
+
+    The global Rich handler writes to stdout, which would corrupt
+    ``hatchery store ... --json`` the moment a prune logs what it deleted.
+    Diagnostics for this command group go to stderr instead.
+    """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.addHandler(
+        RichHandler(console=Console(stderr=True), show_time=True, show_path=False)
+    )
+
+
+def _open_store(store_root: Optional[Path]) -> Any:
+    from engine.store import SampleStore
+
+    _logs_to_stderr()
+    return SampleStore(store_root)
+
+
+def _resolved_queue_db(queue_db: Optional[Path]) -> Optional[Path]:
+    """The queue to read for references, or ``None`` when it does not exist."""
+    from engine.queue import resolve_queue_db
+
+    path = resolve_queue_db(queue_db)
+    return path if path.is_file() else None
+
+
+@cli.group()
+def store() -> None:
+    """Sample store: status, verify, migrate and prune.
+
+    The store is content-addressed by sha256 and encrypted at rest (AES-256-GCM,
+    versioned envelope). `status` reports counts and retention, `verify`
+    decrypts and hash-checks every entry, `migrate` encrypts a legacy plaintext
+    store idempotently, and `prune` deletes expired, unreferenced samples —
+    dry-run unless --apply.
+
+    Every subcommand accepts --json (one object on stdout; diagnostics on
+    stderr). Exit codes: 0 success, 1 operational error, 2 verification or
+    retention failure (including a refused prune). No command prints a key.
+    """
+
+
+@store.command("status")
+@_store_common_options
+@click.option("--ttl", "ttl_seconds", type=float, default=None,
+              help="Retention TTL in seconds for the report (0 disables; default: HATCHERY_SAMPLE_TTL)")
+def store_status(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, ttl_seconds: Optional[float],
+) -> None:
+    """Show sample count/bytes, encryption, expiry and references."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        report = sample_store.status(
+            ttl=ttl_seconds,
+            results_roots=[results_root] if results_root else None,
+            queue_db=_resolved_queue_db(queue_db),
+        )
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+        return
+    key = report["key"]
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Sample store\n"
+            f"Root:      [cyan]{report['store_root']}[/cyan]\n"
+            f"Index:     [cyan]{report['index']}[/cyan]\n"
+            f"Samples:   [cyan]{report['samples']}[/cyan] "
+            f"({report['encrypted']} encrypted, {report['legacy_plaintext']} legacy plaintext)\n"
+            f"Bytes:     [cyan]{_human_size(report['bytes'])}[/cyan]\n"
+            f"References: {report['referenced']} referenced · "
+            f"{report['references']['bundles_scanned']} bundle(s), "
+            f"{report['references']['jobs_scanned']} queued/running job(s) scanned\n"
+            f"Retention: "
+            + (f"[cyan]{report['ttl_seconds']:.0f}s[/cyan]" if report["ttl_enabled"] else "[dim]disabled[/dim]")
+            + f" · expired {report['expired']} · reclaimable {report['reclaimable']} "
+            f"({_human_size(report['reclaimable_bytes'])})",
+            title="Store",
+        )
+    )
+    if key.get("configured"):
+        console.print(f"  Key: [cyan]{key['key_id']}[/cyan] from {key['source']}")
+        if key.get("warning"):
+            console.print(f"  [yellow]{key['warning']}[/yellow]")
+    else:
+        console.print(f"  Key: [yellow]not configured[/yellow] — {key.get('note', '')}")
+    for warning in report.get("warnings") or []:
+        console.print(f"  [yellow]warning:[/yellow] {warning}")
+    for line in (report.get("references") or {}).get("unreadable_jobs") or []:
+        console.print(f"  [red]unreadable job reference:[/red] {line}")
+    console.print("  [dim]No sample is modified by status.[/dim]")
+
+
+@store.command("verify")
+@_store_common_options
+@click.option("--sha", "sha256", default=None, help="Verify one content address instead of every sample")
+def store_verify(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, sha256: Optional[str],
+) -> None:
+    """Decrypt and hash-check stored samples; fail closed on any mismatch."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        report = sample_store.verify(sha256=sha256)
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        for entry in report["entries"]:
+            status = entry.get("status")
+            color = {"ok": "green", "legacy": "yellow"}.get(str(status), "red")
+            console.print(
+                f"  [{color}]{status:<7}[/{color}] {entry['sha256'][:16]} "
+                f"{entry.get('encryption', '')}"
+                + (f" — {entry.get('reason', '')}: {entry.get('message', '')}" if entry.get("message") else "")
+            )
+        console.print(
+            f"verify: {report['checked']} checked, {report['passed']} passed, "
+            f"{report['failed']} failed, {report['legacy']} legacy plaintext"
+        )
+    if not report["ok"]:
+        raise SystemExit(STORE_EXIT_FAILURES)
+
+
+@store.command("migrate")
+@_store_common_options
+@click.option("--dry-run", is_flag=True, help="Report what would be encrypted without writing")
+@click.option("--queue/--no-queue", "adopt_queue", default=True,
+              help="Also adopt pre-D28 queued jobs into the store (default: on)")
+def store_migrate(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, dry_run: bool, adopt_queue: bool,
+) -> None:
+    """Encrypt a legacy plaintext store, idempotently and resumably."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        queue_path = _resolved_queue_db(queue_db) if adopt_queue else None
+        report = sample_store.migrate(apply=not dry_run, queue_db=queue_path)
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    failures = report.get("failed") or []
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        if dry_run:
+            console.print(
+                f"migrate (dry run): {report['legacy_found']} legacy plaintext "
+                f"sample(s) would be encrypted"
+            )
+            for sha in report["would_encrypt"]:
+                console.print(f"  would encrypt {sha[:16]}")
+        else:
+            console.print(
+                f"migrate: encrypted {len(report['encrypted'])} of "
+                f"{report['legacy_found']} legacy plaintext sample(s)"
+            )
+            for item in report["encrypted"]:
+                console.print(f"  [green]encrypted[/green] {item['sha256'][:16]}")
+        for item in report.get("adopted_queue_jobs") or []:
+            console.print(
+                f"  [green]adopted[/green] queued job {item['job_id']} -> {item['sha256'][:16]}"
+            )
+        for item in failures:
+            what = item.get("job_id") or item.get("sha256", "?")[:16]
+            console.print(
+                f"  [red]failed[/red] {what}: {item.get('reason')}: {item.get('message')}"
+            )
+        if report.get("key_notice"):
+            console.print(f"  [yellow]{report['key_notice']}[/yellow]")
+    if failures:
+        raise SystemExit(STORE_EXIT_FAILURES)
+
+
+@store.command("prune")
+@_store_common_options
+@click.option("--apply", is_flag=True, help="Delete; without it prune is a dry run")
+@click.option("--ttl", "ttl_seconds", type=float, default=None,
+              help="Retention TTL in seconds (0 disables; default: HATCHERY_SAMPLE_TTL)")
+def store_prune(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, apply: bool,
+    ttl_seconds: Optional[float],
+) -> None:
+    """Delete expired samples that no bundle or job still references."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        report = sample_store.prune(
+            ttl=ttl_seconds,
+            apply=apply,
+            results_roots=[results_root] if results_root else None,
+            queue_db=_resolved_queue_db(queue_db),
+        )
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    summary = report.get("summary") or {}
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        mode = "apply" if report["applied"] else "dry run (pass --apply to delete)"
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Prune ({mode})\n"
+                f"Root: [cyan]{report['store_root']}[/cyan]\n"
+                + ("TTL: [cyan]{:.0f}s[/cyan]".format(report["ttl_seconds"]) if report["ttl_enabled"] else "TTL: [dim]disabled[/dim]")
+                + f" · kept {summary.get('kept', 0)} · would delete "
+                f"{summary.get('would_delete', 0)} · deleted {summary.get('deleted', 0)}",
+                title="Prune",
+            )
+        )
+        for entry in report.get("deleted") or []:
+            console.print(f"  [red]deleted[/red] {entry['sha256'][:16]} ({entry.get('reason')})")
+        for entry in report.get("would_delete") or []:
+            console.print(
+                f"  [yellow]would delete[/yellow] {entry['sha256'][:16]} "
+                f"({entry.get('reason')}, age {entry.get('age_seconds', 0):.0f}s)"
+            )
+        for entry in report.get("kept") or []:
+            why = entry.get("reason")
+            refs = ", ".join(entry.get("referenced_by") or [])
+            console.print(
+                f"  [dim]kept[/dim] {entry['sha256'][:16]} ({why}"
+                + (f": {refs}" if refs else "") + ")"
+            )
+        for refusal in report.get("refused") or []:
+            console.print(f"  [red]refused:[/red] {refusal}")
+        for error in report.get("errors") or []:
+            console.print(f"  [red]error:[/red] {error}")
+    if report.get("refused") or report.get("errors"):
+        raise SystemExit(STORE_EXIT_FAILURES)
+
+
+@store.command("keygen")
+@click.option("--output", "-o", "output", type=click.Path(path_type=Path), required=True,
+              help="Path for the new key file (created 0600, never overwritten)")
+def store_keygen(output: Path) -> None:
+    """Generate a 32-byte key file (0600). The key is never printed."""
+    from engine.store import SampleStoreError, generate_key
+
+    _logs_to_stderr()
+    try:
+        key = generate_key(output)
+    except SampleStoreError as exc:
+        _store_command_failed(exc, False)
+        return
+    click.echo(
+        json.dumps({"path": str(output), "key_id": key.key_id, "mode": "0600"})
     )
 
 
