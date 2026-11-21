@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { configureAuditKeyring, initAuditChain } from '../security/audit.js';
+import { configureAuditKeyring, initAuditChain, loadAuditAppendFailures } from '../security/audit.js';
 import { resolveAuditKeyring } from '../security/auditKey.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -108,6 +108,10 @@ export function getDb(): Database.Database {
   // hash chain are left exactly as they are: not backfilled, not claimed to be
   // tamper-evident.
   initAuditChain(opened);
+
+  // Seed the persisted audit-append failure total (D32). A restart no longer forgets
+  // how many appends were lost; the counter lives in the same store as the chain.
+  loadAuditAppendFailures(opened);
 
   // Resolve the audit chain's keys (D31) *before* anything can append. With nothing
   // configured a `0600` key ring is generated beside the database and announced —

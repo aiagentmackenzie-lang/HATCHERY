@@ -26,14 +26,34 @@
  *    `expectHead` is for, and what the docs say plainly.
  */
 
-import { createHash, timingSafeEqual } from 'crypto';
+import fs from 'fs';
 import type Database from 'better-sqlite3';
+import {
+  CHAIN_ALGORITHM,
+  GENESIS_HASH,
+  canonical,
+  entryHash,
+  hexEqual,
+  type ChainBreak,
+  type ChainBreakClass,
+  type HashableFields,
+} from './auditChain.js';
 import {
   activeKey,
   auditMac,
   findKey,
   type AuditKeyring,
 } from './auditKey.js';
+import {
+  readArchiveSegments,
+  resolveArchivePath,
+  verifyArchive,
+  type ArchiveSegment,
+} from './auditArchive.js';
+import { growthReport } from './auditGrowth.js';
+
+export { CHAIN_ALGORITHM, GENESIS_HASH, canonical, entryHash } from './auditChain.js';
+export type { ChainBreak, ChainBreakClass } from './auditChain.js';
 
 export type AuditAction =
   | 'auth.denied'
@@ -44,7 +64,8 @@ export type AuditAction =
   | 'token.retired'
   | 'token.expired'
   | 'audit.verified'
-  | 'audit.key-rotated';
+  | 'audit.key-rotated'
+  | 'audit.compacted';
 
 export interface AuditEntry {
   actor: string;
@@ -83,71 +104,12 @@ export function shouldAudit(url: string): boolean {
 
 const MAX_DETAIL = 300;
 
-/**
- * The chain's canonical encoding, versioned.
- *
- * A JSON array is used rather than a delimited string because `JSON.stringify`
- * escapes every field deterministically — a path containing the delimiter cannot
- * forge a different row's encoding. The domain string and the fixed field order
- * make an `entry_hash` from another purpose unusable here. D31 does **not** change
- * this: the digest and the MAC cover the same bytes, so a D30 log stays verifiable.
- */
-const CHAIN_DOMAIN = 'hatchery.audit.v1';
-
-/** The documented genesis value: 32 zero bytes, hex. The first chained row links to it. */
-export const GENESIS_HASH = '0'.repeat(64);
-
-/** How the chain is computed, reported by the verify endpoint so it is never a guess. */
-export const CHAIN_ALGORITHM = 'sha256(json-array-v1)+hmac-sha256(json-array-v1,v2)';
-
-interface HashableFields {
-  id: number;
-  prev_hash: string | null;
-  actor: string;
-  role: string;
-  authenticated: number;
-  method: string;
-  path: string;
-  status_code: number | null;
-  action: string | null;
-  detail: string | null;
-  created_at: string;
-}
-
 interface ChainFields extends HashableFields {
-  entry_hash: string | null;
+  entry_hash: string;
   key_id: string | null;
   entry_mac: string | null;
 }
 
-function canonical(row: HashableFields): string {
-  return JSON.stringify([
-    CHAIN_DOMAIN,
-    row.id,
-    row.prev_hash,
-    row.actor,
-    row.role,
-    row.authenticated,
-    row.method,
-    row.path,
-    row.status_code,
-    row.action,
-    row.detail,
-    row.created_at,
-  ]);
-}
-
-/** SHA-256 over the canonical encoding of exactly the fields the table stores. */
-export function entryHash(row: HashableFields): string {
-  return createHash('sha256').update(canonical(row), 'utf8').digest('hex');
-}
-
-function hexEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a, 'hex');
-  const right = Buffer.from(b, 'hex');
-  if (left.length !== 32 || right.length !== 32) return false;
-  return timingSafeEqual(left, right);
-}
 
 export function auditChainMeta(db: Database.Database): Record<string, string> {
   try {
@@ -166,6 +128,14 @@ function setMeta(db: Database.Database, key: string, value: string): void {
     'INSERT INTO audit_chain_meta (key, value) VALUES (?, ?) ' +
       'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(key, value);
+}
+
+/**
+ * Write one `audit_chain_meta` key. Exported for the compaction path (D32), which
+ * records the archive boundary in the same transaction that deletes the segment.
+ */
+export function setAuditChainMeta(db: Database.Database, key: string, value: string): void {
+  setMeta(db, key, value);
 }
 
 /**
@@ -188,6 +158,10 @@ export function auditKeyring(): AuditKeyring | null {
 
 /** Appends that failed and were logged instead of written. Surfaced by verification. */
 let appendFailures = 0;
+/** The persisted count read at startup, so a restart does not forget the total. */
+let appendFailuresBeforeStart = 0;
+/** Whether this process managed to persist its failures to `audit_chain_meta`. */
+let appendFailuresPersisted = true;
 
 export function auditAppendFailures(): number {
   return appendFailures;
@@ -195,6 +169,54 @@ export function auditAppendFailures(): number {
 
 export function resetAuditAppendFailures(): void {
   appendFailures = 0;
+}
+
+/**
+ * Seed the persisted failure total from the database at startup (D32).
+ *
+ * The counter used to be per process, so a restart forgot it. Persisting it in
+ * `audit_chain_meta` is the same store the chain already uses — no second database,
+ * no second daemon. It is **best effort by design**: a failure is usually caused by a
+ * disk that is full or a lock that cannot be taken, and in exactly that case the
+ * write that records the failure can fail too. When it does, `persisted` is false and
+ * the server log remains the record — that limitation is stated, not hidden.
+ */
+export function loadAuditAppendFailures(db: Database.Database): void {
+  appendFailures = 0;
+  try {
+    const meta = auditChainMeta(db);
+    appendFailuresBeforeStart = Number(meta.append_failure_total ?? '0') || 0;
+    appendFailuresPersisted = true;
+  } catch {
+    appendFailuresBeforeStart = 0;
+    appendFailuresPersisted = false;
+  }
+}
+
+function persistAppendFailure(db: Database.Database): void {
+  try {
+    const meta = auditChainMeta(db);
+    const total = (Number(meta.append_failure_total ?? '0') || 0) + 1;
+    setMeta(db, 'append_failure_total', String(total));
+    setMeta(db, 'append_failure_last_at', new Date().toISOString());
+    appendFailuresPersisted = true;
+  } catch {
+    // The database is the thing that just failed. The in-memory count and the server
+    // log are what is left, and the report says the total is not persisted.
+    appendFailuresPersisted = false;
+  }
+}
+
+export function auditAppendFailureTotals(): {
+  since_start: number;
+  total: number;
+  persisted: boolean;
+} {
+  return {
+    since_start: appendFailures,
+    total: appendFailuresBeforeStart + appendFailures,
+    persisted: appendFailuresPersisted,
+  };
 }
 
 /**
@@ -221,6 +243,8 @@ export function initAuditChain(db: Database.Database): void {
       setMeta(db, 'legacy_row_count', String(row.n));
       setMeta(db, 'legacy_max_id', String(row.max_id ?? 0));
       setMeta(db, 'chained_row_count', '0');
+      setMeta(db, 'chained_rows_total', '0');
+      setMeta(db, 'archived_row_total', '0');
     }).immediate();
   } catch {
     // A database without the table yet (an older schema mid-migration) is handled
@@ -307,6 +331,12 @@ function appendChained(db: Database.Database, entry: AuditEntry): {
     setMeta(db, 'head_id', String(id));
     setMeta(db, 'head_hash', hash);
     setMeta(db, 'chained_row_count', String(Number(meta.chained_row_count ?? '0') + 1));
+    // The cumulative count is what lets verification prove that every row that ever
+    // existed is either live or archived (D32); it only ever grows.
+    const previousTotal = Number(
+      meta.chained_rows_total ?? meta.chained_row_count ?? '0',
+    );
+    setMeta(db, 'chained_rows_total', String(previousTotal + 1));
     return { id, entryHash: hash, prevHash };
   };
 
@@ -337,10 +367,21 @@ export function recordAudit(db: Database.Database, entry: AuditEntry): boolean {
     appendFailures += 1;
     const message = error instanceof Error ? error.message : String(error);
     console.error(
-      `[hatchery] audit append failed (chain not advanced, ${appendFailures} this process): ${message}`,
+      `[hatchery] audit append failed (chain not advanced, ${appendFailures} this process, ` +
+        `${appendFailuresBeforeStart + appendFailures} total): ${message}`,
     );
+    persistAppendFailure(db);
     return false;
   }
+}
+
+/**
+ * Append one row and let a failure propagate. Used where an append is part of a
+ * larger transaction that must roll back rather than continue (the `audit.compacted`
+ * record, D32). The request path uses `recordAudit`, which never throws.
+ */
+export function appendAuditRowStrict(db: Database.Database, entry: AuditEntry): void {
+  appendChained(db, entry);
 }
 
 /** Read the log, newest first. */
@@ -366,29 +407,49 @@ export function countAudit(db: Database.Database): number {
   return row.n;
 }
 
-export type ChainBreakClass =
-  | 'modified'
-  | 'deleted'
-  | 'inserted'
-  | 'truncated'
-  | 'unhashed'
-  | 'forged'
-  | 'unkeyed'
-  | 'unknown-key'
-  | 'replaced';
-
-export interface ChainBreak {
-  id: number | null;
-  classification: ChainBreakClass;
-  detail: string;
-}
-
 /**
  * What the verifier was actually able to check. `ok` must be read with this:
  * `empty` (nothing chained yet), `unkeyed` (no MACs at all), `mixed` (a keyed suffix
  * over unkeyed history) or `keyed` (every chained row authenticated).
+ *
+ * D32 does not change what `assurance` means: it is the strength of the check **on the
+ * live chain**. A compacted-but-intact log reports the same assurance it had before the
+ * compaction and says separately what is archived and whether the archive was read —
+ * history moving to an archive must never silently weaken the claim.
  */
 export type Assurance = 'empty' | 'unkeyed' | 'mixed' | 'keyed';
+
+/** What is known about the archived history behind the live segment (D32). */
+export interface ArchiveReport {
+  /** The chain metadata records at least one archived segment. */
+  recorded: boolean;
+  /** Every recorded segment's archive file and manifest exist. */
+  present: boolean;
+  /** The archives were read and recomputed — not merely observed to exist. */
+  checked: boolean;
+  /** `checked` and nothing was wrong with them. */
+  verified: boolean;
+  mode: 'full' | 'presence' | 'none';
+  segments: number;
+  rows: number;
+  first_id: number | null;
+  last_id: number | null;
+  /** The newest archived segment's manifest hash (of the manifest file itself). */
+  manifest_sha256: string | null;
+  archive_sha256: string | null;
+  tail: {
+    id: number;
+    entry_hash: string;
+    entry_mac: string | null;
+    key_id: string | null;
+  } | null;
+  /** Whether the live chain's first `prev_hash` links to the archived tail. */
+  join: 'none' | 'proven' | 'mismatch' | 'unchecked';
+  missing: string[];
+  error: string | null;
+  /** Why the archives were not read, when they were not. */
+  reason: string | null;
+}
 
 export interface ChainVerification {
   ok: boolean;
@@ -402,6 +463,18 @@ export interface ChainVerification {
     unkeyed_rows: number;
     legacy_rows: number;
   };
+  /** Live rows vs archived rows, and whether the two chains splice (D32). */
+  segments: {
+    live_rows: number;
+    archived_rows: number;
+    archived_segments: number;
+    live_first_prev_hash: string | null;
+    archived_tail_hash: string | null;
+    join: 'none' | 'proven' | 'mismatch' | 'unchecked';
+  };
+  archive: ArchiveReport;
+  /** Convenience: `archive.verified`. A verifier that did not read the archive says false. */
+  archive_verified: boolean;
   key: {
     active: string | null;
     id: string | null;
@@ -410,7 +483,16 @@ export interface ChainVerification {
   };
   anchor: {
     expected: { id: number; hash: string } | null;
+    /**
+     * `true` when the anchored row is present with the anchored hash, wherever it is
+     * now (live or archived). An anchor says "the log I recorded is still a prefix of
+     * this log" — it is not a demand that nothing has happened since (D32 corrected
+     * D31 here; a strict head equality made an anchor unusable after a single append).
+     */
     matches: boolean | null;
+    found_in: 'live' | 'archive' | null;
+    /** Whether the anchored row is still the newest live row. Staleness is visible. */
+    head_at_anchor: boolean | null;
   };
   rows_checked: number;
   complete: boolean;
@@ -423,8 +505,20 @@ export interface ChainVerification {
     anchor_row_count: number;
     altered: boolean;
   };
-  /** Appends that failed and were logged in this process. A hole the chain cannot see. */
+  /** Appends that failed in this process, and the persisted total (D32). */
   append_failures_since_start: number;
+  append_failures_total: number;
+  append_failures_persisted: boolean;
+  /** The disk-growth guard: measured and warned, never enforced by deletion. */
+  growth: {
+    rows: number;
+    bytes: number;
+    warn_rows: number;
+    warn_bytes: number;
+    over: boolean;
+    reasons: string[];
+    message: string;
+  } | null;
 }
 
 const MAX_VERIFY_ROWS = 50000;
@@ -445,9 +539,14 @@ const MAX_VERIFY_ROWS = 50000;
  *                  downgraded after D31.
  * - `unknown-key`— a row names a key id the key ring does not hold (fail closed).
  * - `truncated`  — the recorded head is not at the end of the chain.
- * - `replaced`   — the head does not match a caller-supplied `expectHead`: the
- *                  database is not the one that was anchored.
+ * - `replaced`   — the anchored head is not in this chain (live or archived).
  * - `unhashed`   — a row inside the chained region has no `entry_hash` at all.
+ * - `archive-missing`  — a recorded archive's file or manifest is gone (D32).
+ * - `archive-mismatch` — the archive file is not the one the manifest recorded.
+ * - `archive-modified` — an archived row was edited (digest or MAC).
+ * - `archive-truncated`— archived rows are missing or the tail moved.
+ * - `archive-invalid`  — the archive or its manifest cannot be parsed.
+ * - `join-mismatch`    — the live chain does not link to the archived tail.
  */
 export function verifyAuditChain(
   db: Database.Database,
@@ -457,11 +556,19 @@ export function verifyAuditChain(
     /** A head recorded outside the database, from `npm run audit -- head`. */
     expectHead?: { id: number; hash: string } | null;
     keyring?: AuditKeyring | null;
+    /** Where the database lives, so a recorded archive path can be resolved. */
+    dbPath?: string | null;
+    /** `full` reads and recomputes the archives; `presence` only stats them. */
+    archiveMode?: 'full' | 'presence';
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): ChainVerification {
   const limit = Math.min(Math.max(options.limitRows ?? 5000, 1), MAX_VERIFY_ROWS);
   const afterId = Math.max(options.afterId ?? 0, 0);
   const ring = options.keyring === undefined ? chainKeyring : options.keyring;
+  const dbPath = options.dbPath ?? null;
+  const env = options.env ?? process.env;
+  const wantedArchiveMode = options.archiveMode ?? 'full';
   const meta = auditChainMeta(db);
   const metaHeadId = meta.head_id ? Number(meta.head_id) : null;
   const metaHeadHash = meta.head_hash ?? null;
@@ -469,26 +576,75 @@ export function verifyAuditChain(
   const chainFirstId = meta.chain_first_id ? Number(meta.chain_first_id) : null;
   const expectedHead = options.expectHead ?? null;
 
+  const segmentsRead = readArchiveSegments(db);
+  const segments: ArchiveSegment[] = segmentsRead.segments;
+  const lastSegment = segments.length > 0 ? segments[segments.length - 1] : null;
+  const archivedRowsRecorded = Number(
+    meta.archived_row_total ??
+      segments.reduce((sum, segment) => sum + Number(segment.window.rows ?? 0), 0),
+  );
+  const failures = auditAppendFailureTotals();
+  const growth = dbPath ? growthReport(db, dbPath, env) : null;
+
+  const archive: ArchiveReport = {
+    recorded: segments.length > 0,
+    present: false,
+    checked: false,
+    verified: false,
+    mode: segments.length === 0 ? 'none' : wantedArchiveMode,
+    segments: segments.length,
+    rows: archivedRowsRecorded,
+    first_id: segments[0]?.window.first_id ?? null,
+    last_id: lastSegment?.window.last_id ?? null,
+    manifest_sha256: lastSegment?.manifest.sha256 ?? null,
+    archive_sha256: lastSegment?.archive.sha256 ?? null,
+    tail: lastSegment
+      ? {
+          id: lastSegment.tail.id,
+          entry_hash: lastSegment.tail.entry_hash,
+          entry_mac: lastSegment.tail.entry_mac,
+          key_id: lastSegment.tail.key_id,
+        }
+      : null,
+    join: segments.length === 0 ? 'none' : 'unchecked',
+    missing: [],
+    error: segmentsRead.error,
+    reason: null,
+  };
+
   const result: ChainVerification = {
     ok: true,
     algorithm: CHAIN_ALGORITHM,
     genesis: GENESIS_HASH,
     assurance: 'empty',
     coverage: { chained_rows: 0, mac_rows: 0, unkeyed_rows: 0, legacy_rows: 0 },
+    segments: {
+      live_rows: 0,
+      archived_rows: archivedRowsRecorded,
+      archived_segments: segments.length,
+      live_first_prev_hash: null,
+      archived_tail_hash: lastSegment?.tail.entry_hash ?? null,
+      join: segments.length === 0 ? 'none' : 'unchecked',
+    },
+    archive,
+    archive_verified: false,
     key: {
       active: ring?.active ?? null,
       id: ring?.active ?? null,
       source: ring?.source ?? null,
       env_ignored: ring?.env_ignored ?? false,
     },
-    anchor: { expected: expectedHead, matches: null },
+    anchor: { expected: expectedHead, matches: null, found_in: null, head_at_anchor: null },
     rows_checked: 0,
     complete: false,
     next_after_id: null,
     first_broken: null,
     head: { id: null, hash: null, matches_meta: false },
     legacy: { rows: 0, covered: false, anchor_row_count: anchorRows, altered: false },
-    append_failures_since_start: appendFailures,
+    append_failures_since_start: failures.since_start,
+    append_failures_total: failures.total,
+    append_failures_persisted: failures.persisted,
+    growth,
   };
 
   // Rows that predate the chain must be a prefix. Count them by id, which is
@@ -516,6 +672,17 @@ export function verifyAuditChain(
     return result;
   }
 
+  // Archive metadata that cannot be parsed is a break, not a shorter green history.
+  if (segmentsRead.error) {
+    result.ok = false;
+    result.first_broken = {
+      id: null,
+      classification: 'archive-invalid',
+      detail: `the archive metadata is unusable: ${segmentsRead.error}`,
+    };
+    return result;
+  }
+
   // A NULL hash inside the chained region is a stripped hash, not a legacy row.
   if (chainFirstId !== null) {
     const stray = db
@@ -534,6 +701,8 @@ export function verifyAuditChain(
     }
   }
 
+  // With an archive behind the live segment, the chain must resume from the archived
+  // tail, not from genesis. Without one, genesis is still the documented anchor.
   let expectedPrev = GENESIS_HASH;
   let prevId: number | null = null;
   let seenMac = false;
@@ -548,8 +717,12 @@ export function verifyAuditChain(
     } else {
       result.assurance = result.coverage.unkeyed_rows === 0 ? 'keyed' : 'mixed';
     }
+    result.segments.live_rows = result.coverage.chained_rows;
+    result.segments.join = result.archive.join;
+    result.archive_verified = result.archive.verified;
     return result;
   };
+
   if (afterId > 0) {
     const anchor = db
       .prepare('SELECT id, entry_hash, entry_mac FROM audit_log WHERE id = ?')
@@ -561,12 +734,14 @@ export function verifyAuditChain(
         classification: 'deleted',
         detail: 'the row used to resume verification no longer exists or has no entry_hash',
       };
-      return result;
+      return finish();
     }
     expectedPrev = anchor.entry_hash;
     prevId = anchor.id;
     seenMac = Boolean(anchor.entry_mac);
     result.head = { id: anchor.id, hash: anchor.entry_hash, matches_meta: false };
+  } else if (lastSegment) {
+    expectedPrev = lastSegment.tail.entry_hash;
   }
 
   const rows = db
@@ -580,9 +755,29 @@ export function verifyAuditChain(
     )
     .all(afterId, limit) as ChainFields[];
 
+  let firstWalked = true;
   for (const row of rows) {
     result.rows_checked += 1;
     result.coverage.chained_rows += 1;
+    if (firstWalked && afterId === 0) {
+      result.segments.live_first_prev_hash = row.prev_hash;
+      if (lastSegment) {
+        result.archive.join =
+          row.prev_hash === lastSegment.tail.entry_hash ? 'proven' : 'mismatch';
+        if (result.archive.join === 'mismatch') {
+          result.ok = false;
+          result.first_broken = {
+            id: row.id,
+            classification: 'join-mismatch',
+            detail:
+              `the live chain starts at row ${row.id} linking to ${String(row.prev_hash)}, ` +
+              `but the archived segment ends at ${lastSegment.tail.id}:` +
+              `${lastSegment.tail.entry_hash} — the two chains do not splice`,
+          };
+          return finish();
+        }
+      }
+    }
 
     if (row.prev_hash !== expectedPrev) {
       const contiguous = prevId !== null ? row.id === prevId + 1 : true;
@@ -650,6 +845,7 @@ export function verifyAuditChain(
 
     expectedPrev = row.entry_hash as string;
     prevId = row.id;
+    firstWalked = false;
     result.head = {
       id: row.id,
       hash: row.entry_hash,
@@ -685,21 +881,183 @@ export function verifyAuditChain(
         detail: 'chained rows exist but no head is recorded — the chain metadata is missing or was cleared',
       };
     }
+  }
+
+  // --- the archived segments (D32) -----------------------------------------
+  if (segments.length > 0 && afterId === 0 && dbPath) {
+    let expectedArchivePrev = GENESIS_HASH;
+    let anchorFound: 'live' | 'archive' | null = null;
+    let anchorMismatched = false;
+
+    const liveHas = (expected: { id: number; hash: string }): 'match' | 'conflict' | 'absent' => {
+      const row = db
+        .prepare('SELECT id, entry_hash FROM audit_log WHERE id = ?')
+        .get(expected.id) as { id: number; entry_hash: string | null } | undefined;
+      if (!row) return 'absent';
+      return row.entry_hash === expected.hash ? 'match' : 'conflict';
+    };
 
     if (expectedHead) {
-      const matches = headId === expectedHead.id && headHash === expectedHead.hash;
-      result.anchor.matches = matches;
-      if (!matches) {
+      const state = liveHas(expectedHead);
+      if (state === 'match') anchorFound = 'live';
+      else if (state === 'conflict') anchorMismatched = true;
+    }
+
+    let allPresent = true;
+    for (const [index, segment] of segments.entries()) {
+      const archiveFile = resolveArchivePath(dbPath, segment.archive.path);
+      const manifestFile = resolveArchivePath(dbPath, segment.manifest.path);
+      for (const file of [archiveFile, manifestFile]) {
+        if (!fs.existsSync(file)) {
+          allPresent = false;
+          result.archive.missing.push(file);
+        }
+      }
+      if (result.archive.missing.length > 0) continue;
+
+      if (wantedArchiveMode === 'presence') {
+        if (!anchorFound && expectedHead && !anchorMismatched) {
+          // The manifest records the tail, not every row; a presence check cannot say
+          // whether an old anchor is archived, and must not guess.
+        }
+        continue;
+      }
+
+      const verified = verifyArchive({
+        archiveFile,
+        manifestFile,
+        keyring: ring,
+        expectedFirstPrev: expectedArchivePrev,
+        expectContains:
+          expectedHead && !anchorFound && !anchorMismatched
+            ? { id: expectedHead.id, hash: expectedHead.hash }
+            : undefined,
+      });
+      result.archive.checked = true;
+      if (verified.contains) {
+        if (verified.contains.found) anchorFound = 'archive';
+        else if (verified.contains.mismatched) anchorMismatched = true;
+      }
+      if (!verified.ok) {
+        result.ok = false;
+        result.archive.error = verified.error;
+        result.first_broken = verified.first_broken;
+        return finish();
+      }
+      const tail = verified.tail;
+      if (!tail) {
+        result.ok = false;
+        result.first_broken = {
+          id: null,
+          classification: 'archive-truncated',
+          detail: `archived segment ${segment.sequence} has no tail`,
+        };
+        return finish();
+      }
+      expectedArchivePrev = tail.entry_hash;
+      if (index === segments.length - 1) {
+        result.archive.tail = {
+          id: tail.id,
+          entry_hash: tail.entry_hash,
+          entry_mac: tail.entry_mac,
+          key_id: tail.key_id,
+        };
+      }
+    }
+
+    result.archive.present = allPresent && result.archive.missing.length === 0;
+    if (!result.archive.present) {
+      result.ok = false;
+      result.first_broken = {
+        id: result.archive.tail?.id ?? null,
+        classification: 'archive-missing',
+        detail:
+          `the chain records ${segments.length} archived segment(s) but ` +
+          `${result.archive.missing.length} file(s) are missing: ` +
+          `${result.archive.missing.join(', ')} — history has been removed, not archived`,
+      };
+      return finish();
+    }
+
+    result.archive.verified = result.archive.checked;
+    if (expectedHead) {
+      if (anchorFound) {
+        result.anchor.matches = true;
+        result.anchor.found_in = anchorFound;
+        result.anchor.head_at_anchor =
+          anchorFound === 'live' ? result.head.id === expectedHead.id : false;
+      } else if (anchorMismatched) {
+        result.anchor.matches = false;
+        result.anchor.found_in = anchorFound;
+      } else if (!result.archive.checked) {
+        // The archive was not read, so whether the anchor is in it is unknown. Say so
+        // rather than implying a pass.
+        result.anchor.matches = null;
+        result.archive.reason =
+          'the archive was not read (presence check only), so an anchor older than the ' +
+          'live segment cannot be confirmed';
+      } else {
+        result.anchor.matches = false;
+      }
+      if (result.anchor.matches === false) {
         result.ok = false;
         result.first_broken = {
           id: expectedHead.id,
           classification: 'replaced',
           detail:
-            `the chain head is ${headId ?? 'none'}:${headHash ?? 'none'} but the anchored ` +
-            `head is ${expectedHead.id}:${expectedHead.hash} — this is not the database ` +
-            'that was anchored (restored backup, truncated tail, or a replaced log)',
+            `the anchored head ${expectedHead.id}:${expectedHead.hash} is not in this chain ` +
+            '(live or archived) — this is not the database that was anchored ' +
+            '(restored backup, truncated tail, or a replaced log)',
         };
       }
+    }
+  } else if (segments.length > 0) {
+    result.archive.reason =
+      afterId > 0
+        ? 'verification resumed mid-chain, so the archive was not read on this page'
+        : 'no database path was supplied, so the archive files cannot be resolved';
+  }
+
+  // An anchor that must be checked on a *complete, unanchored-at-the-start* pass when
+  // there is no archived history: the row is either in the live chain or nowhere.
+  if (expectedHead && result.complete && afterId === 0 && segments.length === 0) {
+    const row = db
+      .prepare('SELECT id, entry_hash FROM audit_log WHERE id = ?')
+      .get(expectedHead.id) as { id: number; entry_hash: string | null } | undefined;
+    if (row && row.entry_hash === expectedHead.hash) {
+      result.anchor.matches = true;
+      result.anchor.found_in = 'live';
+      result.anchor.head_at_anchor = row.id === result.head.id;
+    } else {
+      result.anchor.matches = false;
+      result.ok = false;
+      result.first_broken = {
+        id: expectedHead.id,
+        classification: 'replaced',
+        detail:
+          `the chain head is ${result.head.id ?? 'none'}:${result.head.hash ?? 'none'} but the ` +
+          `anchored head is ${expectedHead.id}:${expectedHead.hash} — this is not the database ` +
+          'that was anchored (restored backup, truncated tail, or a replaced log)',
+      };
+    }
+  }
+
+  // Accounting: every chained row that ever existed is either live or archived. A row
+  // that is in neither was deleted outside a compaction. Only checked when the totals
+  // are known (a pre-D32 database does not record them).
+  if (result.ok && result.complete && afterId === 0 && meta.chained_rows_total) {
+    const totalEver = Number(meta.chained_rows_total);
+    const accounted = result.coverage.chained_rows + archivedRowsRecorded;
+    if (accounted !== totalEver) {
+      result.ok = false;
+      result.first_broken = {
+        id: result.head.id,
+        classification: 'deleted',
+        detail:
+          `${totalEver} chained row(s) were ever written, but ${result.coverage.chained_rows} ` +
+          `live + ${archivedRowsRecorded} archived = ${accounted} are accounted for — ` +
+          'rows were deleted outside a compaction',
+      };
     }
   }
 

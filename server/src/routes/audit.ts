@@ -8,7 +8,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { getDb } from '../db/index.js';
+import { databasePath, getDb } from '../db/index.js';
 import { countAudit, listAudit, recordAudit, verifyAuditChain } from '../security/audit.js';
 
 const MAX_VERIFY_DEFAULT = 5000;
@@ -30,12 +30,14 @@ export async function auditRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Recompute the audit hash chain (D30).
+   * Recompute the audit hash chain (D30/D31) and the archived segments behind it (D32).
    *
    * Bounded rather than exhaustive: at most `limit` rows are checked per call and
    * an incomplete pass returns `next_after_id` for the operator to continue with.
    * A tampered, deleted, inserted or truncated row is reported at its id with a
-   * classification — never skipped because it "looked fine".
+   * classification — never skipped because it "looked fine". Compaction moved history
+   * into archives; `archive.mode=full` reads them, `archive.mode=presence` only stats
+   * them and the response then says the archive was **not** verified.
    */
   app.get('/api/audit/verify', async (request: any, reply: any) => {
     const db = getDb();
@@ -72,6 +74,11 @@ export async function auditRoutes(app: FastifyInstance) {
       limitRows: limit,
       afterId: after,
       expectHead,
+      dbPath: databasePath(),
+      // Reading the archive is the default because "ok" over a compacted log that was
+      // never opened would be a claim the verifier cannot support. `?archive=presence`
+      // stats the files instead and says plainly that it did not read them.
+      archiveMode: query.archive === 'presence' ? 'presence' : 'full',
     });
     const actor = request.hatcheryActor ?? {
       name: 'anonymous',
@@ -87,7 +94,9 @@ export async function auditRoutes(app: FastifyInstance) {
       statusCode: 200,
       action: 'audit.verified',
       detail:
-        `checked ${result.rows_checked} row(s), assurance=${result.assurance}: ` +
+        `checked ${result.rows_checked} live row(s) and ` +
+        `${result.archive.checked ? result.archive.rows : 0} archived row(s), ` +
+        `assurance=${result.assurance}, archive=${result.archive.join}: ` +
         (result.ok
           ? 'chain intact'
           : `first break at row ${result.first_broken?.id ?? 'unknown'} ` +

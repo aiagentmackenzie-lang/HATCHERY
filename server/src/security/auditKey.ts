@@ -94,7 +94,7 @@ export function readKeyFile(file: string): string {
   return material;
 }
 
-function readRingFile(file: string): AuditKeyring | null {
+export function readRingFile(file: string): AuditKeyring | null {
   if (!fs.existsSync(file)) return null;
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) throw new Error(`${file}: refusing a symlink key ring`);

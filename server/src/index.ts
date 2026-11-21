@@ -15,6 +15,8 @@ import { recordAudit, shouldAudit } from './security/audit.js';
 import { allowedOrigins, describeAllowList, isOriginAllowed } from './security/cors.js';
 import { countTokens } from './security/tokens.js';
 import { auditKeyring } from './security/audit.js';
+import { databasePath } from './db/index.js';
+import { growthReport } from './security/auditGrowth.js';
 
 const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
 // Bind to loopback by default. This API stores live malware samples and serves
@@ -95,6 +97,37 @@ console.warn(`[hatchery] CORS allow-list — ${describeAllowList(ALLOWED_ORIGINS
     console.warn(
       '[hatchery] audit chain is UNKEYED — no audit key was resolved. ' +
         'GET /api/audit/verify will report assurance=unkeyed.',
+    );
+  }
+}
+
+// The disk-growth guard (D32): make an unbounded log visible **before** it hurts.
+// It warns; it never deletes. Only `npm run audit -- compact --apply` removes rows.
+{
+  const growth = growthReport(db, databasePath());
+  if (growth.over) {
+    console.warn(
+      `[hatchery] AUDIT LOG GROWTH WARNING — ${growth.reasons.join('; ')}. ` +
+        'Nothing was deleted: run `npm run audit -- status` and then ' +
+        '`npm run audit -- compact --apply` (retention is an operator decision).',
+    );
+  }
+  let archived = 0;
+  let segments = 0;
+  try {
+    const rows = db
+      .prepare("SELECT key, value FROM audit_chain_meta WHERE key IN ('archive_segments', 'archived_row_total')")
+      .all() as Array<{ key: string; value: string }>;
+    const map = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    archived = Number(map.archived_row_total ?? '0') || 0;
+    segments = map.archive_segments ? (JSON.parse(map.archive_segments) as unknown[]).length : 0;
+  } catch {
+    // a database mid-migration; the verifier will report it
+  }
+  if (segments > 0) {
+    console.warn(
+      `[hatchery] audit chain spans ${segments} archive segment(s), ${archived} archived row(s) — ` +
+        'GET /api/audit/verify reads them; a missing archive is a break, not a pass.',
     );
   }
 }
