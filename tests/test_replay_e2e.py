@@ -9,6 +9,7 @@ operator runs, not a mock.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,9 @@ SAMPLE = (REPO_ROOT / "tests" / "fixtures" / "eicar.com").resolve()
 
 
 def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    # Keep the checkout's real sample store out of the test (D28).
+    env.setdefault("HATCHERY_SAMPLE_STORE", str(cwd / "samples"))
     return subprocess.run(
         [sys.executable, "-m", "engine.cli", *args],
         cwd=cwd,
@@ -25,6 +29,7 @@ def _run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
         timeout=600,
+        env=env,
     )
 
 
@@ -48,6 +53,9 @@ def test_replay_of_a_real_static_run_is_reproducible(tmp_path: Path) -> None:
     assert section["deterministic_mismatches"] == []
     assert section["settings"]["reproduced"] is True
     assert section["sample"]["hash_verified"] is True
+    # D28: the sample now comes back from the encrypted store, not a guess.
+    assert section["sample"]["resolution"] == "sample store"
+    assert section["sample"]["encryption"] == "aes-256-gcm/v1"
 
     # the replayed bundle carries the section, and the original was not touched
     replayed_bundle = json.loads((replay_out / "bundle" / "analysis.json").read_text())

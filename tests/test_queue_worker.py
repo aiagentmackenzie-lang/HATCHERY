@@ -15,6 +15,20 @@ from pathlib import Path
 
 from engine.queue.store import COMPLETED, FAILED, QUEUED, RUNNING, Job, JobStore
 from engine.queue.worker import Worker, WorkerConfig, build_job_command
+from engine.store import SampleStore
+
+
+def make_sample(tmp_path: Path, name: str = "sample.bin", data: bytes = b"sample bytes\n") -> Path:
+    """A real file for the worker to adopt into a temporary store (D28)."""
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+def make_worker(store: JobStore, tmp_path: Path, config: WorkerConfig | None = None, **kwargs) -> Worker:
+    """A worker whose sample store is temporary, never the checkout's."""
+    kwargs.setdefault("sample_store", SampleStore(tmp_path / "samples"))
+    return Worker(store, config, **kwargs)
 
 
 def _output_dir(command: list[str]) -> Path:
@@ -40,8 +54,8 @@ def runner_writing_bundle(task_id: str = "engine-task"):
 
 def test_worker_completes_a_job_and_records_the_bundle(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out")
-    worker = Worker(store, WorkerConfig(once=True), runner=runner_writing_bundle("t-42"))
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out")
+    worker = make_worker(store, tmp_path, WorkerConfig(once=True), runner=runner_writing_bundle("t-42"))
 
     outcomes = worker.run_once()
 
@@ -57,9 +71,9 @@ def test_worker_completes_a_job_and_records_the_bundle(tmp_path: Path) -> None:
 
 def test_exit_zero_without_a_bundle_is_a_failure(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out")
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out")
     # A quiet submit that produced nothing must not be called success.
-    worker = Worker(store, WorkerConfig(), runner=lambda command, timeout: (0, "looked fine", ""))
+    worker = make_worker(store, tmp_path, WorkerConfig(), runner=lambda command, timeout: (0, "looked fine", ""))
 
     worker.run_once()
 
@@ -72,13 +86,13 @@ def test_exit_zero_without_a_bundle_is_a_failure(tmp_path: Path) -> None:
 
 def test_nonzero_exit_with_a_bundle_is_a_failure(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out")
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out")
 
     def run(command: list[str], timeout: float) -> tuple[int, str, str]:
         write_bundle(command)
         return 2, "", "delivery intake crashed"
 
-    worker = Worker(store, WorkerConfig(), runner=run)
+    worker = make_worker(store, tmp_path, WorkerConfig(), runner=run)
     worker.run_once()
 
     row = store.get(job.job_id)
@@ -91,12 +105,12 @@ def test_nonzero_exit_with_a_bundle_is_a_failure(tmp_path: Path) -> None:
 
 def test_a_runner_exception_fails_the_job_with_the_reason(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out")
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out")
 
     def boom(command: list[str], timeout: float) -> tuple[int, str, str]:
         raise RuntimeError("subprocess exploded")
 
-    Worker(store, WorkerConfig(), runner=boom).run_once()
+    make_worker(store, tmp_path, WorkerConfig(), runner=boom).run_once()
 
     row = store.get(job.job_id)
     assert row is not None
@@ -107,7 +121,10 @@ def test_a_runner_exception_fails_the_job_with_the_reason(tmp_path: Path) -> Non
 
 def test_concurrency_is_bounded_and_every_job_runs(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    jobs = [store.enqueue(tmp_path / f"{index}.bin", job_id=f"job-{index}") for index in range(4)]
+    jobs = [
+        store.enqueue(make_sample(tmp_path, f"{index}.bin"), job_id=f"job-{index}")
+        for index in range(4)
+    ]
 
     lock = threading.Lock()
     live = 0
@@ -124,7 +141,7 @@ def test_concurrency_is_bounded_and_every_job_runs(tmp_path: Path) -> None:
             live -= 1
         return 0, "", ""
 
-    worker = Worker(store, WorkerConfig(concurrency=2), runner=run)
+    worker = make_worker(store, tmp_path, WorkerConfig(concurrency=2), runner=run)
     outcomes = worker.run_once()
 
     assert peak <= 2, f"concurrency exceeded the bound: peak={peak}"
@@ -135,7 +152,7 @@ def test_concurrency_is_bounded_and_every_job_runs(tmp_path: Path) -> None:
 
 def test_a_crashed_worker_is_recovered_and_the_job_finishes(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out", max_attempts=3)
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out", max_attempts=3)
 
     # The previous worker claimed the job and died without completing it.
     claimed = store.claim("dead-worker", lease_seconds=0.05)
@@ -143,7 +160,7 @@ def test_a_crashed_worker_is_recovered_and_the_job_finishes(tmp_path: Path) -> N
     time.sleep(0.15)
 
     recovered = JobStore(store.path)
-    worker = Worker(recovered, WorkerConfig(), runner=runner_writing_bundle("recovered"))
+    worker = make_worker(recovered, tmp_path, WorkerConfig(), runner=runner_writing_bundle("recovered"))
     outcomes = worker.run_once()
 
     assert [outcome.status for outcome in outcomes] == [COMPLETED]
@@ -158,7 +175,7 @@ def test_a_crashed_worker_is_recovered_and_the_job_finishes(tmp_path: Path) -> N
 
 def test_heartbeat_keeps_the_lease_alive_while_the_job_runs(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    job = store.enqueue(tmp_path / "sample.bin", output_dir=tmp_path / "out")
+    job = store.enqueue(make_sample(tmp_path), output_dir=tmp_path / "out")
 
     started = threading.Event()
     release = threading.Event()
@@ -170,7 +187,7 @@ def test_heartbeat_keeps_the_lease_alive_while_the_job_runs(tmp_path: Path) -> N
         return 0, "", ""
 
     config = WorkerConfig(lease_seconds=0.5, heartbeat_interval=0.02)
-    worker = Worker(store, config, runner=slow)
+    worker = make_worker(store, tmp_path, config, runner=slow)
     thread = threading.Thread(target=worker.run_once, daemon=True)
     thread.start()
 
@@ -199,10 +216,10 @@ def test_heartbeat_keeps_the_lease_alive_while_the_job_runs(tmp_path: Path) -> N
 
 def test_worker_returns_nothing_on_an_empty_queue(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
-    worker = Worker(store, WorkerConfig(), runner=runner_writing_bundle())
+    worker = make_worker(store, tmp_path, WorkerConfig(), runner=runner_writing_bundle())
     assert worker.run_once() == []
     # recovery is still run, so a stale running job is not stranded
-    store.enqueue(tmp_path / "a.bin")
+    store.enqueue(make_sample(tmp_path, "a.bin"))
     store.claim("dead", lease_seconds=0.01)
     time.sleep(0.05)
     worker.run_once()

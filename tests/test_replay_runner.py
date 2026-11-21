@@ -172,15 +172,17 @@ def test_sample_with_different_bytes_is_refused(tmp_path: Path) -> None:
 
 
 def test_sample_is_recovered_from_the_content_addressed_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    """D28: the store is the authoritative copy, not a guessed ``samples/`` dir."""
+    from engine.store import SampleStore
+
     data = b"recovered from the store\n"
     sample_path, sha = make_sample(tmp_path, data)
     sample_path.unlink()  # the recorded path is gone
-    store = tmp_path / "samples" / f"{sha}.sample"
-    store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_bytes(data)
+    store = SampleStore(tmp_path / "samples", key=None, clock=None)
+    record = store.put_bytes(data)
+    assert record.sha256 == sha
 
     original = bundle_with(
         sample={"file_path": str(sample_path), "sha256": sha},
@@ -192,10 +194,13 @@ def test_sample_is_recovered_from_the_content_addressed_store(
         original_dir,
         output_dir=tmp_path / "replay-out",
         submit_runner=fake_submit_runner(replayed),
+        store=store,
     )
 
     assert result.verdict == "reproducible"
-    assert result.section["sample"]["resolution"] == "stored sample store"
+    assert result.section["sample"]["resolution"] == "sample store"
+    assert result.section["sample"]["encryption"] == "aes-256-gcm/v1"
+    store.close()
 
 
 def test_missing_bundle_raises_a_clean_error(tmp_path: Path) -> None:
