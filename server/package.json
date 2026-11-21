@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "token": "node scripts/token.mjs",
+    "audit": "node scripts/audit.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {

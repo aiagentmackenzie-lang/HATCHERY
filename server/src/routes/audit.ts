@@ -53,7 +53,26 @@ export async function auditRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: 'after must be a non-negative integer' });
     }
 
-    const result = verifyAuditChain(db, { limitRows: limit, afterId: after });
+    // An externally recorded head (`npm run audit -- head`) makes a deliberate
+    // truncation or a whole-database rollback detectable: without an anchor outside
+    // the database, a rewrite of the tail plus its metadata verifies.
+    let expectHead: { id: number; hash: string } | null = null;
+    const expectRaw = query.expect_head;
+    if (expectRaw !== undefined && String(expectRaw) !== '') {
+      const match = /^(\d+):([0-9a-f]{64})$/.exec(String(expectRaw));
+      if (!match) {
+        return reply
+          .code(400)
+          .send({ error: 'expect_head must be "<id>:<64 hex chars>" (see npm run audit -- head)' });
+      }
+      expectHead = { id: Number(match[1]), hash: match[2] };
+    }
+
+    const result = verifyAuditChain(db, {
+      limitRows: limit,
+      afterId: after,
+      expectHead,
+    });
     const actor = request.hatcheryActor ?? {
       name: 'anonymous',
       role: 'anonymous',
@@ -68,7 +87,7 @@ export async function auditRoutes(app: FastifyInstance) {
       statusCode: 200,
       action: 'audit.verified',
       detail:
-        `checked ${result.rows_checked} row(s): ` +
+        `checked ${result.rows_checked} row(s), assurance=${result.assurance}: ` +
         (result.ok
           ? 'chain intact'
           : `first break at row ${result.first_broken?.id ?? 'unknown'} ` +

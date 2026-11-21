@@ -70,6 +70,9 @@ export interface CreatedToken {
 
 const ID_PATTERN = /^htk_[0-9a-f]{16}$/;
 
+/** A well-formed hash that no token produces; used to equalise the unknown-id path. */
+const DUMMY_HASH = 'f'.repeat(64);
+
 /** `sha256(domain || token)`, hex. One-way; the token is not recoverable from it. */
 export function hashToken(token: string): string {
   return createHash('sha256').update(`${TOKEN_HASH_DOMAIN}\u0000${token}`, 'utf8').digest('hex');
@@ -165,7 +168,10 @@ export function listTokens(db: Database.Database): TokenListing[] {
   return rows.map((row) => ({ ...row, state: tokenState(row, now) }));
 }
 
-export function tokenState(row: StoredTokenRow, now = Date.now()): 'live' | 'expired' | 'revoked' {
+export function tokenState(
+  row: Pick<StoredTokenRow, 'expires_at' | 'revoked_at'>,
+  now = Date.now(),
+): 'live' | 'expired' | 'revoked' {
   if (row.revoked_at) return 'revoked';
   if (row.expires_at) {
     const expires = Date.parse(row.expires_at);
@@ -185,19 +191,21 @@ export function tokenState(row: StoredTokenRow, now = Date.now()): 'live' | 'exp
  * never an implicit "no live token means open".
  */
 export function hasStoredTokens(db: Database.Database): boolean {
-  const row = db.prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number };
-  return row.n > 0;
+  // `LIMIT 1` on the primary key: O(1), and it does not materialise every row's
+  // hash on every request the way `SELECT *` did.
+  const row = db.prepare('SELECT 1 AS present FROM api_tokens LIMIT 1').get();
+  return row !== undefined;
 }
 
 export function countTokens(db: Database.Database): { total: number; live: number } {
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number }).n;
+  // Only the two fields liveness depends on, and the same `tokenState` rule the
+  // authenticator uses, so a "live" count can never disagree with what is accepted.
   const rows = db
-    .prepare('SELECT id, role, expires_at, revoked_at, prefix, name, created_at, retired_reason FROM api_tokens')
-    .all() as StoredTokenRow[];
+    .prepare('SELECT expires_at, revoked_at FROM api_tokens')
+    .all() as Array<Pick<StoredTokenRow, 'expires_at' | 'revoked_at'>>;
   const now = Date.now();
-  return {
-    total: rows.length,
-    live: rows.filter((row) => tokenState(row, now) === 'live').length,
-  };
+  return { total, live: rows.filter((row) => tokenState(row, now) === 'live').length };
 }
 
 /**
@@ -272,6 +280,13 @@ export function checkStoredToken(db: Database.Database, presented: string): Toke
   const id = tokenIdOf(presented);
   if (!id) return { ok: false, reason: 'token-malformed', tokenId: null, role: null };
 
+  // Hash before the lookup so an unknown id and a known one do the same hashing
+  // work. The response is uniform either way; this only narrows the timing gap so
+  // existence is not trivially probeable by a local caller. It is not a formal
+  // constant-time guarantee, and the audit row is admin-only, so nothing here is
+  // relied on for secrecy.
+  const presentedHash = hashToken(presented);
+
   let row: (StoredTokenRow & { secret_hash: string }) | undefined;
   try {
     row = db
@@ -280,9 +295,14 @@ export function checkStoredToken(db: Database.Database, presented: string): Toke
   } catch {
     return { ok: false, reason: 'token-store-unreadable', tokenId: id, role: null };
   }
-  if (!row) return { ok: false, reason: 'token-unknown', tokenId: id, role: null };
+  if (!row) {
+    // Compare against a value that cannot match, so the "missing row" path is not
+    // measurably cheaper than "wrong secret".
+    constantTimeHashEqual(presentedHash, DUMMY_HASH);
+    return { ok: false, reason: 'token-unknown', tokenId: id, role: null };
+  }
 
-  if (!constantTimeHashEqual(hashToken(presented), String(row.secret_hash ?? ''))) {
+  if (!constantTimeHashEqual(presentedHash, String(row.secret_hash ?? ''))) {
     return { ok: false, reason: 'token-hash-mismatch', tokenId: id, role: null };
   }
   if (row.revoked_at) {

@@ -1,5 +1,5 @@
 /**
- * Append-only access audit log (D25) with a tamper-evident hash chain (D30).
+ * Append-only access audit log (D25), a hash chain (D30) and a keyed chain (D31).
  *
  * Every request the API answers is recorded: who (actor + role, and whether they
  * authenticated), what (method + path), and the outcome (status + action). What is
@@ -7,22 +7,33 @@
  * header, no request body and no sample bytes. An audit log that leaks the
  * credential it is auditing is worse than no audit log.
  *
- * D30 makes the table append-only in practice, not just in intent. Each row
- * carries `prev_hash` (the previous row's `entry_hash`, or the documented genesis
- * constant) and `entry_hash` (SHA-256 over a canonical encoding of the stored
- * fields). Reading the head and inserting happen inside one `BEGIN IMMEDIATE`
- * transaction, so concurrent writers — two API processes, the API and the CLI —
- * produce one chain rather than a fork.
+ * Three layers, each of which answers a different question:
  *
- * What the chain is and is not: it detects a modified row, a deleted row, a row
- * that does not link, and truncation of the tail. It is **not** authenticated with
- * a secret, so an attacker with write access who recomputes every hash from the
- * edit onwards (and the recorded head) produces a chain that verifies. There is no
- * KMS/HSM here, deliberately. See D30.
+ * 1. **Append-only under concurrency.** Each row carries `prev_hash` (the previous
+ *    row's `entry_hash`, or the documented genesis constant) and `entry_hash`
+ *    (SHA-256 over a canonical encoding of the stored fields). The head read and the
+ *    insert share one `BEGIN IMMEDIATE` transaction, so two API processes or the API
+ *    plus the CLI produce one chain, not a fork.
+ * 2. **Tamper-evidence.** `entry_mac` is HMAC-SHA-256 over the same canonical form,
+ *    keyed by a local key ring (D31). Without the key, an attacker with write access
+ *    can recompute digests but cannot produce a matching MAC — so "rewrite the whole
+ *    chain" stops working. `key_id` names the key per row, so rotation never
+ *    invalidates history.
+ * 3. **Honesty about the gaps.** Verification reports its own strength
+ *    (`assurance`, `coverage`) instead of a bare `ok`. A deliberate truncation that
+ *    also rewrites the recorded head, or a whole-database rollback, is only
+ *    detectable against a head recorded **outside** the database — that is what
+ *    `expectHead` is for, and what the docs say plainly.
  */
 
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import type Database from 'better-sqlite3';
+import {
+  activeKey,
+  auditMac,
+  findKey,
+  type AuditKeyring,
+} from './auditKey.js';
 
 export type AuditAction =
   | 'auth.denied'
@@ -32,7 +43,8 @@ export type AuditAction =
   | 'token.created'
   | 'token.retired'
   | 'token.expired'
-  | 'audit.verified';
+  | 'audit.verified'
+  | 'audit.key-rotated';
 
 export interface AuditEntry {
   actor: string;
@@ -58,6 +70,8 @@ export interface AuditRow {
   created_at: string;
   prev_hash: string | null;
   entry_hash: string | null;
+  key_id: string | null;
+  entry_mac: string | null;
 }
 
 /** Routes that are not worth an audit row (liveness probes, the websocket upgrade). */
@@ -75,7 +89,8 @@ const MAX_DETAIL = 300;
  * A JSON array is used rather than a delimited string because `JSON.stringify`
  * escapes every field deterministically — a path containing the delimiter cannot
  * forge a different row's encoding. The domain string and the fixed field order
- * make an `entry_hash` from another purpose unusable here.
+ * make an `entry_hash` from another purpose unusable here. D31 does **not** change
+ * this: the digest and the MAC cover the same bytes, so a D30 log stays verifiable.
  */
 const CHAIN_DOMAIN = 'hatchery.audit.v1';
 
@@ -83,7 +98,7 @@ const CHAIN_DOMAIN = 'hatchery.audit.v1';
 export const GENESIS_HASH = '0'.repeat(64);
 
 /** How the chain is computed, reported by the verify endpoint so it is never a guess. */
-export const CHAIN_ALGORITHM = 'sha256(json-array-v1)';
+export const CHAIN_ALGORITHM = 'sha256(json-array-v1)+hmac-sha256(json-array-v1,v2)';
 
 interface HashableFields {
   id: number;
@@ -101,6 +116,8 @@ interface HashableFields {
 
 interface ChainFields extends HashableFields {
   entry_hash: string | null;
+  key_id: string | null;
+  entry_mac: string | null;
 }
 
 function canonical(row: HashableFields): string {
@@ -125,6 +142,13 @@ export function entryHash(row: HashableFields): string {
   return createHash('sha256').update(canonical(row), 'utf8').digest('hex');
 }
 
+function hexEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'hex');
+  const right = Buffer.from(b, 'hex');
+  if (left.length !== 32 || right.length !== 32) return false;
+  return timingSafeEqual(left, right);
+}
+
 export function auditChainMeta(db: Database.Database): Record<string, string> {
   try {
     const rows = db.prepare('SELECT key, value FROM audit_chain_meta').all() as Array<{
@@ -142,6 +166,35 @@ function setMeta(db: Database.Database, key: string, value: string): void {
     'INSERT INTO audit_chain_meta (key, value) VALUES (?, ?) ' +
       'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(key, value);
+}
+
+/**
+ * The process's chain key ring (D31).
+ *
+ * `getDb()` always resolves one (generating a `0600` ring beside the database when
+ * nothing is configured), so the server cannot silently write an unkeyed row. A unit
+ * test that has no ring gets unkeyed rows and verification says so — the reduced
+ * assurance is reported, never hidden.
+ */
+let chainKeyring: AuditKeyring | null = null;
+
+export function configureAuditKeyring(ring: AuditKeyring | null): void {
+  chainKeyring = ring;
+}
+
+export function auditKeyring(): AuditKeyring | null {
+  return chainKeyring;
+}
+
+/** Appends that failed and were logged instead of written. Surfaced by verification. */
+let appendFailures = 0;
+
+export function auditAppendFailures(): number {
+  return appendFailures;
+}
+
+export function resetAuditAppendFailures(): void {
+  appendFailures = 0;
 }
 
 /**
@@ -175,20 +228,29 @@ export function initAuditChain(db: Database.Database): void {
   }
 }
 
-interface AppendResult {
-  id: number;
-  entryHash: string;
-  prevHash: string;
+/** Synchronous sleep, used only for the bounded retry of a busy append. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /SQLITE_BUSY|database is locked|database table is locked/i.test(message);
 }
 
 /**
  * Insert one audit row and advance the chain.
  *
- * The head read and the insert are one `BEGIN IMMEDIATE` transaction, so two
- * writers cannot both claim the same `prev_hash`. It throws on failure; the
- * caller decides whether that is survivable.
+ * The head read, the insert and the MAC all happen inside one `BEGIN IMMEDIATE`
+ * transaction, so two writers cannot claim the same `prev_hash`. A busy database is
+ * retried a bounded number of times (a *lost* audit row is worse than 120 ms of
+ * latency); after that it throws and the caller logs the failure and counts it.
  */
-function appendChained(db: Database.Database, entry: AuditEntry): AppendResult {
+function appendChained(db: Database.Database, entry: AuditEntry): {
+  id: number;
+  entryHash: string;
+  prevHash: string;
+} {
   const created = new Date().toISOString();
   const stored = {
     actor: entry.actor || 'anonymous',
@@ -203,6 +265,7 @@ function appendChained(db: Database.Database, entry: AuditEntry): AppendResult {
   };
 
   const run = () => {
+    const key = chainKeyring ? activeKey(chainKeyring) : null;
     const head = db
       .prepare(
         'SELECT id, entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1',
@@ -214,8 +277,8 @@ function appendChained(db: Database.Database, entry: AuditEntry): AppendResult {
       .prepare(
         `INSERT INTO audit_log
            (actor, role, authenticated, method, path, status_code, action, detail,
-            created_at, prev_hash, entry_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_at, prev_hash, entry_hash, key_id, entry_mac)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)`,
       )
       .run(
         stored.actor,
@@ -228,47 +291,54 @@ function appendChained(db: Database.Database, entry: AuditEntry): AppendResult {
         stored.detail,
         stored.created_at,
         prevHash,
-        // Placeholder: the hash covers the row id, which SQLite assigns on insert.
-        // It is filled in below inside the same transaction, so no reader and no
-        // later appender can observe or link to the unfilled row.
-        null,
+        key?.id ?? null,
       );
 
     const id = Number(info.lastInsertRowid);
     const hash = entryHash({ id, prev_hash: prevHash, ...stored });
-    db.prepare('UPDATE audit_log SET entry_hash = ? WHERE id = ?').run(hash, id);
+    const mac = key ? auditMac(key.material, key.id, canonical({ id, prev_hash: prevHash, ...stored })) : null;
+    // Both cover the row id, which SQLite assigns on insert; they are filled in
+    // inside the same transaction so no reader and no later appender can observe
+    // or link to an unfilled row.
+    db.prepare('UPDATE audit_log SET entry_hash = ?, entry_mac = ? WHERE id = ?').run(hash, mac, id);
 
     const meta = auditChainMeta(db);
     if (!meta.chain_first_id) setMeta(db, 'chain_first_id', String(id));
     setMeta(db, 'head_id', String(id));
     setMeta(db, 'head_hash', hash);
-    setMeta(
-      db,
-      'chained_row_count',
-      String(Number(meta.chained_row_count ?? '0') + 1),
-    );
+    setMeta(db, 'chained_row_count', String(Number(meta.chained_row_count ?? '0') + 1));
     return { id, entryHash: hash, prevHash };
   };
 
-  // `BEGIN IMMEDIATE` takes the write lock before the head is read, so two
-  // processes cannot read the same head and then both insert. A caller already
-  // inside a transaction keeps its lock instead of nesting one.
-  const result = db.inTransaction ? run() : db.transaction(run).immediate();
-  return result;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // A caller already inside a transaction keeps its lock instead of nesting one
+      // (and cannot be retried: its transaction is the one holding the write).
+      if (db.inTransaction) return run();
+      return db.transaction(run).immediate();
+    } catch (error) {
+      if (!isBusy(error) || attempt >= 2) throw error;
+      sleepSync(40 * 3 ** attempt);
+    }
+  }
 }
 
 /**
  * Insert one audit row. Never throws: auditing must not break the request path
- * (D25). A failure is logged **without** any credential — the log line names the
- * error and that the chain did not advance, nothing else.
+ * (D25). A failure is logged **without** any credential, counted, and reported by
+ * `GET /api/audit/verify` as `append_failures_since_start` — so a hole caused by a
+ * full disk or an exhausted busy timeout is visible instead of silent.
  */
 export function recordAudit(db: Database.Database, entry: AuditEntry): boolean {
   try {
     appendChained(db, entry);
     return true;
   } catch (error) {
+    appendFailures += 1;
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[hatchery] audit append failed (chain not advanced): ${message}`);
+    console.error(
+      `[hatchery] audit append failed (chain not advanced, ${appendFailures} this process): ${message}`,
+    );
     return false;
   }
 }
@@ -301,7 +371,11 @@ export type ChainBreakClass =
   | 'deleted'
   | 'inserted'
   | 'truncated'
-  | 'unhashed';
+  | 'unhashed'
+  | 'forged'
+  | 'unkeyed'
+  | 'unknown-key'
+  | 'replaced';
 
 export interface ChainBreak {
   id: number | null;
@@ -309,10 +383,35 @@ export interface ChainBreak {
   detail: string;
 }
 
+/**
+ * What the verifier was actually able to check. `ok` must be read with this:
+ * `empty` (nothing chained yet), `unkeyed` (no MACs at all), `mixed` (a keyed suffix
+ * over unkeyed history) or `keyed` (every chained row authenticated).
+ */
+export type Assurance = 'empty' | 'unkeyed' | 'mixed' | 'keyed';
+
 export interface ChainVerification {
   ok: boolean;
   algorithm: string;
   genesis: string;
+  /** How strong the checks were: no MACs, a keyed suffix, or a fully keyed chain. */
+  assurance: Assurance;
+  coverage: {
+    chained_rows: number;
+    mac_rows: number;
+    unkeyed_rows: number;
+    legacy_rows: number;
+  };
+  key: {
+    active: string | null;
+    id: string | null;
+    source: string | null;
+    env_ignored: boolean;
+  };
+  anchor: {
+    expected: { id: number; hash: string } | null;
+    matches: boolean | null;
+  };
   rows_checked: number;
   complete: boolean;
   next_after_id: number | null;
@@ -324,6 +423,8 @@ export interface ChainVerification {
     anchor_row_count: number;
     altered: boolean;
   };
+  /** Appends that failed and were logged in this process. A hole the chain cannot see. */
+  append_failures_since_start: number;
 }
 
 const MAX_VERIFY_ROWS = 50000;
@@ -332,40 +433,62 @@ const MAX_VERIFY_ROWS = 50000;
  * Recompute the chain and report the first row that does not verify.
  *
  * Bounded by `limitRows` so a large log cannot hang the endpoint; when the page is
- * exhausted the caller continues with `after`. Classification is causal rather than
- * cosmetic:
+ * exhausted the caller continues with `after`. Classification is causal:
  *
  * - `modified`   — the row's own `entry_hash` no longer matches its stored fields.
  * - `deleted`    — a row links to a hash that is not the previous row's, and the
  *                  ids skip, so row(s) were removed.
- * - `inserted`   — a row links to a hash the chain never produced (and the ids are
- *                  contiguous), so it was written by something other than the
- *                  appender.
- * - `truncated`  — the recorded head no longer exists at the end of the chain.
+ * - `inserted`   — a row links to a hash the chain never produced (contiguous ids).
+ * - `forged`     — the digest is self-consistent but the MAC is not: the row was
+ *                  rewritten by something without the key.
+ * - `unkeyed`    — a keyed row is followed by an unkeyed one: the chain was
+ *                  downgraded after D31.
+ * - `unknown-key`— a row names a key id the key ring does not hold (fail closed).
+ * - `truncated`  — the recorded head is not at the end of the chain.
+ * - `replaced`   — the head does not match a caller-supplied `expectHead`: the
+ *                  database is not the one that was anchored.
  * - `unhashed`   — a row inside the chained region has no `entry_hash` at all.
  */
 export function verifyAuditChain(
   db: Database.Database,
-  options: { limitRows?: number; afterId?: number } = {},
+  options: {
+    limitRows?: number;
+    afterId?: number;
+    /** A head recorded outside the database, from `npm run audit -- head`. */
+    expectHead?: { id: number; hash: string } | null;
+    keyring?: AuditKeyring | null;
+  } = {},
 ): ChainVerification {
   const limit = Math.min(Math.max(options.limitRows ?? 5000, 1), MAX_VERIFY_ROWS);
   const afterId = Math.max(options.afterId ?? 0, 0);
+  const ring = options.keyring === undefined ? chainKeyring : options.keyring;
   const meta = auditChainMeta(db);
   const metaHeadId = meta.head_id ? Number(meta.head_id) : null;
   const metaHeadHash = meta.head_hash ?? null;
   const anchorRows = Number(meta.legacy_row_count ?? '0');
   const chainFirstId = meta.chain_first_id ? Number(meta.chain_first_id) : null;
+  const expectedHead = options.expectHead ?? null;
 
   const result: ChainVerification = {
     ok: true,
     algorithm: CHAIN_ALGORITHM,
     genesis: GENESIS_HASH,
+    assurance: 'empty',
+    coverage: { chained_rows: 0, mac_rows: 0, unkeyed_rows: 0, legacy_rows: 0 },
+    key: {
+      active: ring?.active ?? null,
+      id: ring?.active ?? null,
+      source: ring?.source ?? null,
+      env_ignored: ring?.env_ignored ?? false,
+    },
+    anchor: { expected: expectedHead, matches: null },
     rows_checked: 0,
     complete: false,
     next_after_id: null,
     first_broken: null,
     head: { id: null, hash: null, matches_meta: false },
     legacy: { rows: 0, covered: false, anchor_row_count: anchorRows, altered: false },
+    append_failures_since_start: appendFailures,
   };
 
   // Rows that predate the chain must be a prefix. Count them by id, which is
@@ -379,6 +502,7 @@ export function verifyAuditChain(
   } else {
     result.legacy.rows = anchorRows;
   }
+  result.coverage.legacy_rows = result.legacy.rows;
 
   if (result.legacy.altered) {
     result.ok = false;
@@ -412,10 +536,24 @@ export function verifyAuditChain(
 
   let expectedPrev = GENESIS_HASH;
   let prevId: number | null = null;
+  let seenMac = false;
+  let keyedSeen = false;
+
+  /** Assurance reflects what was observed, including on a break at the first MAC'd row. */
+  const finish = (): ChainVerification => {
+    if (result.coverage.chained_rows === 0 && result.legacy.rows === 0) {
+      result.assurance = 'empty';
+    } else if (!keyedSeen) {
+      result.assurance = 'unkeyed';
+    } else {
+      result.assurance = result.coverage.unkeyed_rows === 0 ? 'keyed' : 'mixed';
+    }
+    return result;
+  };
   if (afterId > 0) {
     const anchor = db
-      .prepare('SELECT id, entry_hash FROM audit_log WHERE id = ?')
-      .get(afterId) as { id: number; entry_hash: string | null } | undefined;
+      .prepare('SELECT id, entry_hash, entry_mac FROM audit_log WHERE id = ?')
+      .get(afterId) as { id: number; entry_hash: string | null; entry_mac: string | null } | undefined;
     if (!anchor || !anchor.entry_hash) {
       result.ok = false;
       result.first_broken = {
@@ -427,13 +565,14 @@ export function verifyAuditChain(
     }
     expectedPrev = anchor.entry_hash;
     prevId = anchor.id;
+    seenMac = Boolean(anchor.entry_mac);
     result.head = { id: anchor.id, hash: anchor.entry_hash, matches_meta: false };
   }
 
   const rows = db
     .prepare(
       `SELECT id, actor, role, authenticated, method, path, status_code, action,
-              detail, created_at, prev_hash, entry_hash
+              detail, created_at, prev_hash, entry_hash, key_id, entry_mac
          FROM audit_log
         WHERE entry_hash IS NOT NULL AND id > ?
         ORDER BY id ASC
@@ -443,6 +582,7 @@ export function verifyAuditChain(
 
   for (const row of rows) {
     result.rows_checked += 1;
+    result.coverage.chained_rows += 1;
 
     if (row.prev_hash !== expectedPrev) {
       const contiguous = prevId !== null ? row.id === prevId + 1 : true;
@@ -454,7 +594,7 @@ export function verifyAuditChain(
           ? `row ${row.id} links to a hash the chain never produced (prev_hash mismatch)`
           : `row ${row.id} does not follow row ${prevId} — row(s) were deleted`,
       };
-      return result;
+      return finish();
     }
 
     if (row.entry_hash !== entryHash(row)) {
@@ -464,7 +604,48 @@ export function verifyAuditChain(
         classification: 'modified',
         detail: `row ${row.id} no longer hashes to its stored entry_hash`,
       };
-      return result;
+      return finish();
+    }
+
+    if (row.entry_mac) {
+      keyedSeen = true;
+      const key = findKey(ring, row.key_id);
+      if (!key) {
+        result.ok = false;
+        result.first_broken = {
+          id: row.id,
+          classification: 'unknown-key',
+          detail:
+            `row ${row.id} is MAC'd with key ${String(row.key_id)}, which the key ring ` +
+            'does not hold — cannot verify',
+        };
+        return finish();
+      }
+      const expected = auditMac(key.material, key.id, canonical(row));
+      if (!hexEqual(expected, row.entry_mac)) {
+        result.ok = false;
+        result.first_broken = {
+          id: row.id,
+          classification: 'forged',
+          detail:
+            `row ${row.id} is internally consistent but its MAC does not verify — ` +
+            'it was rewritten without the audit key',
+        };
+        return finish();
+      }
+      result.coverage.mac_rows += 1;
+      seenMac = true;
+    } else {
+      if (seenMac) {
+        result.ok = false;
+        result.first_broken = {
+          id: row.id,
+          classification: 'unkeyed',
+          detail: `row ${row.id} has no MAC after keyed rows — the chain was downgraded`,
+        };
+        return finish();
+      }
+      result.coverage.unkeyed_rows += 1;
     }
 
     expectedPrev = row.entry_hash as string;
@@ -478,18 +659,17 @@ export function verifyAuditChain(
 
   result.complete = rows.length < limit;
   result.next_after_id = result.complete ? null : prevId;
-
   if (result.complete) {
     // The tail must be exactly where the appender left it; otherwise rows were
-    // removed from the end, which no forward link can reveal.
+    // removed from the end, which no forward link can reveal. With the key held by
+    // the operator, a truncation that also rewrites this metadata is caught by the
+    // `expectHead` anchor instead — and only by it.
     const headId = result.head.id;
     const headHash = result.head.hash;
-    // A resumed page that ends exactly on the recorded head (rows.length === 0)
-    // must report a match, not the placeholder set when the anchor was read.
-    result.head.matches_meta = metaHeadId !== null && headId === metaHeadId && headHash === metaHeadHash;
+    result.head.matches_meta =
+      metaHeadId !== null && headId === metaHeadId && headHash === metaHeadHash;
     if (metaHeadId !== null && (headId !== metaHeadId || headHash !== metaHeadHash)) {
       result.ok = false;
-      result.head.matches_meta = false;
       result.first_broken = {
         id: metaHeadId,
         classification: 'truncated',
@@ -498,8 +678,6 @@ export function verifyAuditChain(
           `${metaHeadId} — rows were removed from the end`,
       };
     } else if (metaHeadId === null && result.head.id !== null) {
-      // Chained rows with no recorded head: the chain metadata was cleared or is
-      // missing. Fail closed rather than reporting a chain nobody anchored.
       result.ok = false;
       result.first_broken = {
         id: result.head.id,
@@ -507,7 +685,23 @@ export function verifyAuditChain(
         detail: 'chained rows exist but no head is recorded — the chain metadata is missing or was cleared',
       };
     }
+
+    if (expectedHead) {
+      const matches = headId === expectedHead.id && headHash === expectedHead.hash;
+      result.anchor.matches = matches;
+      if (!matches) {
+        result.ok = false;
+        result.first_broken = {
+          id: expectedHead.id,
+          classification: 'replaced',
+          detail:
+            `the chain head is ${headId ?? 'none'}:${headHash ?? 'none'} but the anchored ` +
+            `head is ${expectedHead.id}:${expectedHead.hash} — this is not the database ` +
+            'that was anchored (restored backup, truncated tail, or a replaced log)',
+        };
+      }
+    }
   }
 
-  return result;
+  return finish();
 }

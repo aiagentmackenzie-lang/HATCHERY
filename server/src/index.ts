@@ -14,6 +14,7 @@ import { isOpen, readTokens, requiredRole, resolveRequest, roleSatisfies } from 
 import { recordAudit, shouldAudit } from './security/audit.js';
 import { allowedOrigins, describeAllowList, isOriginAllowed } from './security/cors.js';
 import { countTokens } from './security/tokens.js';
+import { auditKeyring } from './security/audit.js';
 
 const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
 // Bind to loopback by default. This API stores live malware samples and serves
@@ -33,8 +34,17 @@ const ALLOWED_ORIGINS = allowedOrigins();
 
 const app = Fastify({ logger: false });
 
-// Initialize DB on startup
-const db = getDb();
+// Initialize DB on startup. An unusable audit key ring throws here: the API must
+// not start and answer requests whose audit trail it cannot authenticate (D31).
+let db: ReturnType<typeof getDb>;
+try {
+  db = getDb();
+} catch (error) {
+  console.error(
+    `[hatchery] refusing to start: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(1);
+}
 
 /**
  * Name a refusal in the server log, never the credential (D30).
@@ -63,6 +73,31 @@ app.register(cors, {
 });
 
 console.warn(`[hatchery] CORS allow-list — ${describeAllowList(ALLOWED_ORIGINS)}`);
+
+{
+  const ring = auditKeyring();
+  if (ring) {
+    console.warn(
+      `[hatchery] audit chain keyed — key ${ring.active} (${ring.source})` +
+        (ring.env_ignored
+          ? '; HATCHERY_AUDIT_KEY is IGNORED because the key ring already exists'
+          : ''),
+    );
+    if (ring.source === 'generated') {
+      console.warn(
+        `[hatchery] the audit key is at ${ring.path}, beside the database. It stops a ` +
+          'database-only rewrite; it does not stop a reader of that directory. Point ' +
+          'HATCHERY_AUDIT_KEY_FILE outside the data directory for that, and record ' +
+          '`npm run audit -- head` somewhere else to detect a deliberate truncation.',
+      );
+    }
+  } else {
+    console.warn(
+      '[hatchery] audit chain is UNKEYED — no audit key was resolved. ' +
+        'GET /api/audit/verify will report assurance=unkeyed.',
+    );
+  }
+}
 
 if (isOpen(TOKENS, db)) {
   // Off by default so the local dashboard keeps working, but never silently: a

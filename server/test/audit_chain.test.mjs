@@ -70,7 +70,12 @@ test('appending rows produces a valid chain that verifies from the genesis ancho
   assert.equal(result.complete, true);
   assert.equal(result.next_after_id, null);
   assert.equal(result.genesis, GENESIS_HASH);
-  assert.equal(result.algorithm, 'sha256(json-array-v1)');
+  assert.equal(result.algorithm, 'sha256(json-array-v1)+hmac-sha256(json-array-v1,v2)');
+  // No key ring is configured in this unit database, so the rows are digest-only
+  // and the verifier says so instead of implying an authenticated chain (D31).
+  assert.equal(result.assurance, 'unkeyed');
+  assert.equal(result.coverage.mac_rows, 0);
+  assert.equal(result.coverage.chained_rows, 5);
   assert.equal(result.head.id, 5);
   assert.equal(result.head.matches_meta, true);
   assert.equal(result.legacy.rows, 0);

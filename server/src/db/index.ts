@@ -2,7 +2,8 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initAuditChain } from '../security/audit.js';
+import { configureAuditKeyring, initAuditChain } from '../security/audit.js';
+import { resolveAuditKeyring } from '../security/auditKey.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,35 +34,99 @@ function findSchemaPath(): string {
 
 let db: Database.Database | null = null;
 
+/**
+ * The database is a credential store (token hashes) and the audit record, so it
+ * must not be world-readable. SQLite creates the file with the process umask —
+ * 0644 on a normal host — which would let any local account read every audit row
+ * and token hash. Create it `0600` before SQLite opens it, tighten an existing
+ * file, and create the directory we own `0700`. An operator-supplied directory is
+ * left as it is (their policy, not ours) but the file is always tightened.
+ */
+function prepareDatabasePath(dbPath: string): void {
+  const dir = path.dirname(dbPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  if (!fs.existsSync(dbPath)) {
+    try {
+      fs.closeSync(fs.openSync(dbPath, 'wx', 0o600));
+    } catch (error) {
+      // A concurrent starter won the race; fall through and tighten what exists.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
+  if (fs.existsSync(dbPath)) {
+    try {
+      fs.chmodSync(dbPath, 0o600);
+    } catch (error) {
+      console.warn(
+        `[hatchery] could not tighten permissions on ${dbPath}: ` +
+          `${error instanceof Error ? error.message : String(error)} — the audit log and ` +
+          'token hashes may be readable by other local accounts',
+      );
+    }
+  }
+  // The WAL/SHM sidecars are created by SQLite with the database's mode; tighten
+  // them if an older build left them looser.
+  for (const suffix of ['-wal', '-shm']) {
+    if (fs.existsSync(`${dbPath}${suffix}`)) {
+      try {
+        fs.chmodSync(`${dbPath}${suffix}`, 0o600);
+      } catch {
+        // best effort; the main file is what matters
+      }
+    }
+  }
+}
+
+/** The resolved database path. The audit key ring lives beside it (D31). */
+export function databasePath(): string {
+  return DB_PATH;
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
 
-  // Ensure data directory exists
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  prepareDatabasePath(DB_PATH);
 
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  const opened = new Database(DB_PATH);
+  opened.pragma('journal_mode = WAL');
+  opened.pragma('foreign_keys = ON');
   // D30: two writers (the API and the token CLI, or two API processes on one
   // database) must wait for the write lock rather than fail instantly. Without a
   // busy timeout the loser of a concurrent audit append gets SQLITE_BUSY and the
   // row is lost; `BEGIN IMMEDIATE` only serialises writers if they can wait.
-  db.pragma('busy_timeout = 5000');
+  opened.pragma('busy_timeout = 5000');
 
   // Run schema on first create
   const schema = fs.readFileSync(findSchemaPath(), 'utf-8');
-  db.exec(schema);
+  opened.exec(schema);
 
-  migrate(db);
+  migrate(opened);
 
   // Record the pre-chain audit boundary once (D30). Rows that existed before the
   // hash chain are left exactly as they are: not backfilled, not claimed to be
   // tamper-evident.
-  initAuditChain(db);
+  initAuditChain(opened);
 
+  // Resolve the audit chain's keys (D31) *before* anything can append. With nothing
+  // configured a `0600` key ring is generated beside the database and announced —
+  // there is no silent unkeyed mode in the server path. An unusable key ring (bad
+  // format, loose permissions, a symlink, an unreadable file) throws: the caller
+  // must refuse to run rather than answer requests whose audit trail cannot be
+  // authenticated.
+  let ring;
+  try {
+    ring = resolveAuditKeyring(DB_PATH);
+  } catch (error) {
+    opened.close();
+    throw new Error(
+      `audit key ring unusable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  configureAuditKeyring(ring);
+
+  db = opened;
   return db;
 }
 
@@ -118,6 +183,14 @@ function migrate(database: Database.Database): void {
   }
   if (!auditColumns.some((c) => c.name === 'entry_hash')) {
     database.exec('ALTER TABLE audit_log ADD COLUMN entry_hash TEXT');
+  }
+  // D31: the keyed MAC. Added additively; pre-D31 rows keep NULL and verification
+  // reports them as unkeyed rather than pretending they were authenticated.
+  if (!auditColumns.some((c) => c.name === 'key_id')) {
+    database.exec('ALTER TABLE audit_log ADD COLUMN key_id TEXT');
+  }
+  if (!auditColumns.some((c) => c.name === 'entry_mac')) {
+    database.exec('ALTER TABLE audit_log ADD COLUMN entry_mac TEXT');
   }
   // The metadata table is created by schema.sql for both new and old databases;
   // this is belt-and-braces for a checkout whose schema.sql predates D30.

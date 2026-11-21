@@ -296,6 +296,40 @@ else
   fail "api/ingest-after-worker" "task did not reconcile to a published result"
 fi
 
+# D31: the API's own database is a credential store and an audit record. It must not
+# be world-readable, and its audit chain must verify as a *keyed* chain (a chain that
+# silently wrote unkeyed rows would claim less than the operator is told).
+if [ "$(stat -f '%Lp' "$WORK/api/hatchery.db" 2>/dev/null)" = "600" ]; then
+  pass "api/db-permissions" "API database is 0600 (audit log and token hashes)"
+else
+  fail "api/db-permissions" "API database mode is $(stat -f '%Lp' "$WORK/api/hatchery.db" 2>/dev/null), expected 600"
+fi
+
+audit_report="$WORK/api/audit-verify.json"
+if node "$ROOT/server/scripts/audit.mjs" verify --json --db "$WORK/api/hatchery.db" >"$audit_report" 2>"$WORK/api/audit-verify.err"; then
+  if "$PY" - "$audit_report" <<'PYCHECK'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["ok"] is True, report.get("first_broken")
+assert report["assurance"] == "keyed", report["assurance"]
+assert report["coverage"]["mac_rows"] == report["coverage"]["chained_rows"], report["coverage"]
+assert report["append_failures_since_start"] == 0, report
+PYCHECK
+  then
+    pass "api/audit-chain-keyed" "audit chain verifies as keyed, every row MAC'd"
+  else
+    fail "api/audit-chain-keyed" "verification output was not keyed/intact (see $audit_report)"
+  fi
+else
+  fail "api/audit-chain-keyed" "audit verification failed: $(tail -2 "$WORK/api/audit-verify.err" | tr '\n' ' ')"
+fi
+
+if grep -q 'audit chain keyed' "$WORK/api.log" 2>/dev/null; then
+  pass "api/audit-key-announced" "startup names the audit key id and never the material"
+else
+  fail "api/audit-key-announced" "startup did not report the audit key (see $WORK/api.log)"
+fi
+
 # ---------------------------------------------------------------------------
 # 3b. D29: key rotation and a restorable backup of the live store + queue
 # ---------------------------------------------------------------------------

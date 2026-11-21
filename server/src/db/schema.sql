@@ -90,8 +90,11 @@ CREATE INDEX IF NOT EXISTS idx_iocs_type ON iocs(ioc_type);
 -- D30 adds an append-only hash chain: `prev_hash` is the previous row's
 -- `entry_hash` (or the documented genesis constant for the first chained row) and
 -- `entry_hash` is SHA-256 over a canonical encoding of the row's stored fields.
--- Both are nullable because rows written before D30 are left untouched: they were
--- not tamper-evident then and are not claimed to be now.
+-- D31 adds `key_id`/`entry_mac`: an HMAC-SHA-256 over the same canonical form,
+-- keyed by the local audit key ring, so recomputing the digests is not enough to
+-- forge the log. All four are nullable because rows written before their migration
+-- are left untouched: they were not tamper-evident then and are not claimed to be
+-- now (verification reports their coverage honestly).
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor TEXT NOT NULL DEFAULT 'anonymous',
@@ -104,7 +107,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     prev_hash TEXT,            -- previous entry_hash, or the genesis constant (D30)
-    entry_hash TEXT            -- sha256 of this row's canonical encoding (D30)
+    entry_hash TEXT,           -- sha256 of this row's canonical encoding (D30)
+    key_id TEXT,               -- audit key id that produced entry_mac (D31)
+    entry_mac TEXT             -- hmac-sha256 of the same canonical encoding (D31)
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
