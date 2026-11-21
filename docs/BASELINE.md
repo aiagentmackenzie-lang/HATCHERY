@@ -1,11 +1,12 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `34565f7` (Phase 4b: the key
-ring, rotation and recoverable backups, D29). The D28 store baseline was
-`be9386d`, whose clean-copy transcript is in
+Verified **21 November 2026** on top of revision `e374cb3` (Phase 4c: the token
+lifecycle, the CORS allow-list and the audit hash chain, D30). The D28 store
+baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
-[`BACKUP.md`](BACKUP.md#captured-transcript). The detector scorecard is
-unchanged from `4b48490`.
+[`BACKUP.md`](BACKUP.md#captured-transcript); the D30 transcript is in
+[`API-SECURITY.md`](API-SECURITY.md#captured-transcript). The detector scorecard
+is unchanged from `4b48490`.
 
 This document is evidence, not a roadmap. It records what a clean checkout can
 do today, the exact acceptance inputs, and the defects that remain. Product
@@ -26,9 +27,14 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
   dashboard, and passes the full Python suite: **795 passed, 17 skipped,
-  3 xfailed** (was 771/17/3 at `be9386d`; 24 tests cover key rotation,
+  3 xfailed** (unchanged from `34565f7`; 24 tests cover key rotation,
   retirement, backup and restore). `ruff` is clean and `mypy engine/` reports
   no issues in 83 source files.
+- **The server suite is 69 node tests, 0 failing** (was 34 at `34565f7`; 35 new
+  cover token lifecycle, CORS and the audit chain). The compiled server is built
+  first — the tests import from `server/dist/`. The 3 cross-language queue tests
+  (`node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs`) also
+  pass, and the dashboard builds.
 - `tests/fixtures/acceptance/` holds deterministic inputs (checked in, generated
   from byte templates, no compiler or download) with a manifest of SHA-256 and
   expected outcomes. `--check` fails if either the bytes or the expectations
@@ -94,9 +100,23 @@ silently.
 
 Docker detonation, the gVisor tier, Windows PE emulation, replay comparison,
 LLM triage, MCP, STIX push, campaign clustering and the sample store's
-key/retention semantics have their own suites and CI jobs. This baseline is
-about installation, packaging, normal entry points and static acceptance inputs;
-it does not re-certify those features. The store's storage/retention guarantees
+key/retention semantics have their own suites and CI jobs. The API's credential
+lifecycle, its CORS allow-list and the audit hash chain are covered by the server
+suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
+installation, packaging, normal entry points and static acceptance inputs; it
+does not re-certify those features.
+
+### Known gaps introduced or inherited by D30
+
+| Gap | What it means |
+|---|---|
+| The audit chain is unkeyed | SHA-256 with no secret. It detects partial, accidental and naive edits; an attacker with write access who recomputes every hash from their edit onwards **and** the recorded head produces a chain that verifies. No KMS/HSM, no external anchor. |
+| Pre-D30 rows are not covered | The migration does not backfill. Rows written before the chain existed keep `NULL` hashes and are reported as `legacy`/`covered: false`; their count is anchored so a later deletion is visible, but no retroactive tamper-evidence is claimed. |
+| A failed audit append is invisible to the chain | `recordAudit` never throws (D25). A write that fails before it happens is logged and the request is answered; the chain can only see rows that exist. |
+| Single-host token store | Tokens and the chain live in one SQLite file. There is no multi-host token database, no propagation and no coordinated rotation across hosts; the CLI and the server sharing the file (WAL + a 5 s busy timeout) is the tested case. |
+| No create endpoint | Token creation is `npm run token -- create` on the host. An admin who is only reachable over HTTP cannot mint a token; that is deliberate (a secret must not cross the wire), but it is an operational constraint. |
+| CORS is not authentication | An unlisted origin is prevented from *reading* a response by the browser; it still reaches the API and still needs a token. No browser matrix was run. |
+| The API database is a credential store | `HATCHERY_DB_PATH` (default `data/hatchery.db`) holds the token hashes and the audit chain; it needs the same care as the sample-store key. It is in `.gitignore` (`data/`), but nothing backs it up automatically. | The store's storage/retention guarantees
 and the D28 transcript are in [`RETENTION.md`](RETENTION.md); key rotation,
 retirement, backup/restore, their known gaps (KMS/escrow, multi-host, scheduled
 rotation, secure erase, a signed manifest, Windows ACLs, the replay staging
@@ -117,6 +137,10 @@ scripts/verify_setup.sh
 
 # the store on its own (temporary root; no repository state is touched)
 HATCHERY_SAMPLE_STORE=/tmp/hatchery-store python -m engine.cli store status --json
+
+# the API's credentials, on their own (temporary database; no repository state)
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs create --role viewer --expires-in 1h
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs list --json
 ```
 
 Expected: `795 passed, 17 skipped, 3 xfailed`; the fixture scorecard
