@@ -693,9 +693,363 @@ and the ring are `0600` in a `0700` directory. The truncation test pins the rema
 limit *as a limit*: the same shortened log verifies without an anchor and fails
 `replaced` with one.
 
-**Not done, deliberately.** No KMS/HSM, remote signing or external anchor service: the key is a local `0600` file and the anchor is an operator procedure, not a daemon. The default generated ring sits beside the database, which protects against database-only tampering (a `sqlite3` edit, a copied `.db`, a backup that includes the database but not the key) and **not** against an attacker who can read that directory; `HATCHERY_AUDIT_KEY_FILE` outside it is the stronger posture and the startup banner says so. No encryption of the audit log itself (it is now readable only by its owner, not encrypted at rest). No key retirement (see above). No automatic rotation schedule. The append-failure counter is per process and in memory, so a restart forgets the count while the server log keeps the lines. A root attacker who can read the key, rewrite the database and rewrite every backup consistently is out of scope, and so is a host whose clock is wrong (timestamps are covered by the MAC but not monotonic). A browser CORS matrix and Windows ACLs are still unverified.
+**Not done, deliberately.** No KMS/HSM, remote signing or external anchor service: the key is a local `0600` file and the anchor is an operator procedure, not a daemon. The default generated ring sits beside the database, which protects against database-only tampering (a `sqlite3` edit, a copied `.db`, a backup that includes the database but not the key) and **not** against an attacker who can read that directory; `HATCHERY_AUDIT_KEY_FILE` outside it is the stronger posture and the startup banner says so. No encryption of the audit log itself (it is now readable only by its owner, not encrypted at rest). No key retirement (see above). No automatic rotation schedule. *(Superseded by D32: the count is persisted in `audit_chain_meta` on a best-effort basis, so a restart no longer forgets it — and the report says when it could not be written.)* The count is still per process for the rows lost **by that process**, and a database that is completely unwritable at failure time cannot record the failure either; the server log remains the fallback. A root attacker who can read the key, rewrite the database and rewrite every backup consistently is out of scope, and so is a host whose clock is wrong (timestamps are covered by the MAC but not monotonic). A browser CORS matrix and Windows ACLs are still unverified.
+
+*Superseded by D32 on two points.* (1) The log is no longer unbounded: a documented, off-by-default retention policy and `npm run audit -- compact` archive a segment and hand the chain off, and the disk-growth guard makes the remaining growth visible. (2) The `expect_head` anchor now means "the head I recorded is still part of this log" rather than "nothing has been appended since" — D31's strict equality made an anchor unusable after one append and could not distinguish an append from a rewritten tail. Read D32 for both.
 
 ---
+
+## D32 — The audit log is finite without becoming a lie: segmented retention, archived handoff, and a growth guard (2026-11-21)
+
+**Decision.** Make `audit_log` finite **without rewriting a single hash**. A compaction
+archives the oldest segment into a self-contained file plus a manifest written last, and
+hands the chain off so the live chain's first `prev_hash` names the archived tail. The
+serving process never deletes an audit row. Retention is a documented policy, off by
+default, applied only by `npm run audit -- compact`, and every claim the verifier makes
+stays true across the boundary.
+
+D31 made the chain unforgeable without the key and made a truncated tail detectable
+against an anchor recorded elsewhere. It did not make the log *finite*: nothing pruned
+it, and the obvious prune — `DELETE` old rows — is exactly what a hash chain cannot
+survive. The next row's `prev_hash` points into the deleted region, so verification
+breaks; "fixing" it by rewriting hashes is the forgery the chain exists to detect. An
+always-on API on an operator's machine with unbounded growth is a defect, and "we
+documented that it grows" is not a retention policy. So the slice is not "add a DELETE";
+it is **make the log finite without making it a lie**.
+
+### 1. The retention policy
+
+| Knob | Meaning | Default |
+|:--|:--|:--|
+| `--older-than 30d` / `HATCHERY_AUDIT_RETENTION_DAYS` | archive rows created more than this long ago (`s`/`m`/`h`/`d`/`w` or seconds) | unset |
+| `--max-rows N` / `HATCHERY_AUDIT_RETENTION_MAX_ROWS` | archive everything beyond the newest N chained rows | unset |
+| `--keep-rows N` / `HATCHERY_AUDIT_KEEP_ROWS` | always keep the newest N chained rows live — the anchor | `1` |
+| `--max-segment-rows N` / `HATCHERY_AUDIT_MAX_SEGMENT_ROWS` | at most N rows archived per run | `50000` |
+| `--apply` | actually archive and delete | dry run |
+| `--gzip`, `--out DIR` | compress with Node's zlib; write elsewhere | off, `<db dir>/audit-archives` |
+
+- **Off by default, and never applied by the server.** With no rule configured,
+  `status` says `policy: OFF` and `compact` refuses with a usage error rather than
+  guessing a number. There is no timer, no scheduled task and no request path that
+  reaches the compaction code — a bare `npm run audit -- compact --apply` is the only
+  thing that removes a row, and it is a host-local operator action.
+- **A run is bounded** to `--max-segment-rows` rows. That bounds the archive file, the
+  verification cost and the time the write lock is held; `status` reports how many rows
+  remain eligible so the operator runs it again deliberately.
+- **The rule accounts for the row it appends.** A compaction writes an `audit.compacted`
+  row into the live chain, so `--max-rows N` archives `live - N + 1` rows and the next
+  run finds nothing to do. Without that, every run would archive one row and add one
+  back, for ever.
+- **The policy always leaves a live anchor row.** `--keep-rows` is at least 1, so
+  `--max-rows 0` is clamped to "keep the newest chained row" and `status` says so
+  (`would_archive.clamp`). The alternative — refusing outright — was considered; a
+  documented anchor row is more useful than a refusal, because the resulting chain still
+  has a live head that the next append links to. Nothing silently archives the head.
+- **Pre-chain (pre-D30) rows are never archived.** They have no `entry_hash`, so they
+  cannot be verified, and the `legacy_row_count` anchor that makes their deletion
+  visible would have to move. `status` reports them as `pre-chain` and `compact` leaves
+  them. They are a one-time, small, bounded set by construction.
+
+### 2. What a compaction writes
+
+An archive of the window is written **first**, then a manifest, then the rows are
+deleted. All three steps are idempotent.
+
+**Archive** (`audit-000001-000021.jsonl`, optionally `.gz`). One JSON object per line,
+containing **exactly the columns `audit_log` stores** and nothing else: `id`, `actor`,
+`role`, `authenticated`, `method`, `path`, `status_code`, `action`, `detail`,
+`created_at`, `prev_hash`, `entry_hash`, `key_id`, `entry_mac`. No token, header, request
+body, sample byte or key material can appear, because none of them was ever in a row.
+Fixed key order, so the same rows always produce the same bytes.
+
+**Manifest** (`audit-000001-000021.manifest.json`), written **last** — temp + `fsync` +
+rename + directory `fsync` — so an interrupted run has no manifest and cannot be mistaken
+for a complete archive:
+
+```json
+{
+  "format": "hatchery.audit-archive",
+  "manifest_version": 1,
+  "created_at": "2026-11-21T13:16:40.000Z",
+  "contains": "exactly the audit_log fields for the window below; no token, header, body or sample byte",
+  "algorithm": "sha256(json-array-v1)+hmac-sha256(json-array-v1,v2)",
+  "genesis": "000…0",
+  "archive": { "path": "audit-archives/audit-000001-000021.jsonl", "file": "…",
+               "sha256": "4c39f5a4…", "size": 11469, "compression": "none", "rows": 21 },
+  "window":  { "first_id": 1, "last_id": 21, "rows": 21, "from": "…", "to": "…",
+               "policy": { "older_than_seconds": null, "max_rows": 20, "keep_rows": 1,
+                           "max_segment_rows": 50000 } },
+  "first":   { "id": 1, "prev_hash": "000…0", "entry_hash": "…", "entry_mac": "…", "key_id": "…" },
+  "tail":    { "id": 21, "entry_hash": "…", "entry_mac": "…", "key_id": "…", "created_at": "…" },
+  "key_ids": ["e077858dd512e855"],
+  "database": { "head_id": 40, "head_hash": "…" }
+}
+```
+
+Nothing in it is a secret: key **ids**, not material. The SHA-256 is of the archive file
+as written, so a modified byte is detectable without HATCHERY, and the tail
+`entry_hash`/`entry_mac` are what an offline verifier compares against the live chain.
+
+**Both files are 0600** in a directory the command creates `0700`, and both are listed in
+`.gitignore` — an archive is operator evidence, never repository content.
+
+### 3. The chain handoff
+
+The invariant is one sentence: **the first live chained row's `prev_hash` is the archived
+tail's `entry_hash`.** That is true whether the row after the window is a surviving live
+row or the `audit.compacted` record the compaction itself appends, so an offline verifier
+holding the archive can prove the join with two hashes.
+
+1. Read the window `first_id … last_id`. Refuse unless the row after it links to the
+   window's tail — a join that cannot be proven means nothing is archived.
+2. Write the archive (atomic, deterministic).
+3. Write the manifest (last, atomic). Hash the manifest file itself.
+4. In **one `BEGIN IMMEDIATE` transaction**: re-read the window and refuse if it changed;
+   append `action: "audit.compacted"` naming the archive path, the manifest SHA-256 and
+   the archived tail; `DELETE` exactly the archived rows and assert the count; record
+   `archive_segments`, `archived_row_total`, `archive_last_*`, the live
+   `chained_row_count` and `last_compacted_at` in `audit_chain_meta`.
+
+Nothing is re-hashed and nothing is rewritten. The live chain keeps its own
+`entry_hash`es and MACs, and the archived rows keep exactly the ones they were written
+with — which is the whole point: a compaction must not be able to "fix" evidence.
+
+`audit_chain_meta` therefore also carries a **cumulative** `chained_rows_total` (maintained
+by the appender, never by the compaction) so verification can prove that every row that
+ever existed is either live or archived:
+
+```
+chained_rows_total == live chained rows + archived_row_total
+```
+
+A row that is in neither was deleted outside a compaction, and that is a `deleted` break.
+
+### 4. Crash-resume
+
+The archive and the manifest are deterministic and are **adopted, not rewritten**, when a
+re-run produces the same window and content. That is what makes every interruption
+resumable to the same hashes:
+
+| Interrupted | On disk | A second `compact` |
+|:--|:--|:--|
+| during the archive write | a `.tmp-` file only | ignores it, writes the archive, continues |
+| after the archive rename, before the manifest | archive, no manifest, rows intact | re-derives the same bytes, **reuses** the archive, writes the manifest, continues |
+| after the manifest, before the transaction | archive + manifest, rows intact | adopts the manifest (same SHA-256), completes the delete |
+| inside the transaction | rolled back: rows intact, no `audit.compacted` row | re-runs the transaction |
+
+A file with the expected name but different content is **refused**, not overwritten, and
+an existing manifest that does not describe the archive is refused too. A second run
+never double-archives and never loses a row — the tests interrupt at each step, then
+check that the union of live ids and archived ids is exactly the set that existed before.
+
+### 5. Concurrency
+
+- **The write lock is the serialisation point.** The transaction takes `BEGIN IMMEDIATE`
+  before it re-checks the window, so a concurrent append cannot be lost and a concurrent
+  compaction either wins or observes the rows already gone and aborts having deleted
+  nothing (`another compaction or a deletion got there first`). Busy is retried five
+  times with a bounded backoff.
+- **File I/O happens outside the lock.** The archive and the manifest are written before
+  the transaction, so the window in which appends can be blocked is a few SQLite
+  statements, not an `fsync` of a 50 000-row file.
+- **Verified against a real server.** 30 concurrent `GET /api/tasks` against the built
+  server while a real `npm run audit -- compact --apply` runs: every request is answered
+  200, `chained_rows_total` grows by exactly 31 (30 request rows + the `audit.compacted`
+  row) or the difference is in `append_failure_total`, the archives and the live chain
+  splice, and the log verifies. No append is lost silently.
+
+### 6. Verification across the boundary
+
+`GET /api/audit/verify` and `npm run audit -- verify` now report, in addition to the
+existing fields:
+
+```json
+{
+  "segments": { "live_rows": 20, "archived_rows": 21, "archived_segments": 1,
+                "live_first_prev_hash": "5641e3a7…", "archived_tail_hash": "5641e3a7…",
+                "join": "proven" },
+  "archive":  { "recorded": true, "present": true, "checked": true, "verified": true,
+                "mode": "full", "segments": 1, "rows": 21,
+                "manifest_sha256": "8f3f7385…", "archive_sha256": "4c39f5a4…",
+                "tail": { "id": 21, "entry_hash": "…", "entry_mac": "…", "key_id": "…" },
+                "join": "proven", "missing": [], "error": null, "reason": null },
+  "archive_verified": true
+}
+```
+
+- **`assurance` still describes the live rows only** and does not change because history
+  moved: a keyed log stays `keyed`. That is deliberate — compaction must not silently
+  weaken the claim — and `archive.checked`/`archive.verified` say separately whether the
+  archived rows were read. A verifier that did not read the archive reports
+  `archive_verified: false` and never claims otherwise.
+- **The join is checked from the metadata even when the archive is not read** (live
+  first `prev_hash` vs the recorded tail). Reading the archive adds the file hash, the
+  per-row digests and MACs, the counts and the tail.
+- **Each archive failure has its own classification**, and none of them is `ok`:
+
+  | Classification | What happened |
+  |:--|:--|
+  | `archive-missing` | a recorded archive file or manifest is gone — history was removed, not archived |
+  | `archive-mismatch` | the file hashes to something other than the manifest records (and every row still verifies internally) |
+  | `archive-modified` | an archived row's digest or MAC does not verify — reported at that row, with the manifest-hash mismatch named |
+  | `archive-truncated` | archived rows are missing from the middle or the end, or the tail moved |
+  | `archive-invalid` | the archive, the manifest or the segment metadata cannot be parsed |
+  | `join-mismatch` | the live chain's first `prev_hash` is not the archived tail |
+
+- **Bounded and paged as before.** The archive is read on a complete pass from the start
+  of the live chain; a resumed page (`after=`) reports `archive.reason` saying it was not
+  read on that page. `?archive=presence` (CLI `--no-archive`) stats the files and reports
+  `checked: false` — and refuses to confirm an anchor that lives in an unread archive.
+- **Verification still stops at the first break.** A break in the live segment is named
+  there and the archive is not read after it; the response says so
+  (`archive.checked: false`) rather than reporting a verified archive it never opened.
+
+### 7. Anchors, corrected
+
+D31's `verify --expect-head <id>:<hash>` compared the anchored head to the current head
+for **equality**. That made an anchor unusable after a single append — you had to verify
+at the exact moment you recorded the head — and it could not distinguish "more rows were
+written" from "the tail was truncated and the head rewritten". It contradicted D31's own
+documentation, which described the anchor as "the log I saw yesterday is still a prefix of
+the log today". D32 implements what D31 documented:
+
+- the anchored row must **exist with the anchored hash**, in the live chain or in a
+  verified archive;
+- `anchor.found_in` (`live` | `archive`) and `anchor.head_at_anchor` make it explicit
+  where it was found and whether it is still the newest row;
+- an anchor that is present nowhere is `replaced`, and still fails;
+- an anchor that is inside an archive that was **not** read is `matches: null` and the CLI
+  exits non-zero — "unconfirmed" is not a pass.
+
+This is a correction, not a weakening: strict equality provided no truncation detection
+that the `truncated` check and the live/archived accounting do not provide, and it made
+the one control the docs recommended useless in practice.
+
+### 8. The disk-growth guard
+
+| Variable | Default | Meaning |
+|:--|:--|:--|
+| `HATCHERY_AUDIT_WARN_ROWS` | `500000` | warn at this many audit rows (`0` disables) |
+| `HATCHERY_AUDIT_WARN_BYTES` | `268435456` (256 MiB) | warn at this database size, db + WAL (`0` disables) |
+
+Reported by `npm run audit -- status` (row count, oldest/newest id and date, database
+size, archive state and what a run would remove), by every verify response (`growth`), and
+by the **startup banner** when a threshold is crossed. The response carries
+`enforced: false` because the guard never deletes: it makes growth visible before it
+hurts, and the operator decides. That is the whole difference between a retention policy
+and a self-pruning log.
+
+**A failed append is recorded, counted, and now survives a restart.** The counter is kept
+in `audit_chain_meta` (`append_failure_total`) in the same database the chain already
+uses — no second store, no second daemon. It is best effort by construction: a failure is
+usually a full disk or a lock that cannot be taken, and in exactly that case the write
+that records the failure can fail too. The report says which case you have:
+`append_failures_since_start`, `append_failures_total`, `append_failures_persisted`.
+
+**When the disk is actually full**, concretely:
+
+| Path | What happens |
+|:--|:--|
+| request handling | unaffected: the response is already sent when the audit hook runs (`onResponse`) |
+| audit append | throws; `recordAudit` logs one line (no credential), increments the counter, answers nothing — the request already has its 200. **D25 is intact: auditing never turns a completed request into a 500.** |
+| failure persistence | may fail for the same reason; `append_failures_persisted: false` says the total is understated and the server log is the record |
+| live verification | still works (reads), but the chain cannot see a row that was never written — the counter is how the operator learns a hole exists |
+| compaction | refuses: the archive or the manifest write throws and **no row is deleted**; the error names the path |
+| sample store / queue | their own errors (`no space left on device`), unchanged by this slice |
+
+So the loss is: one audit row per failed append, visible in the server log and in the
+counter, never silently dropped, and never traded for space.
+
+### 9. What this does not weaken
+
+- **D8/D25/D30/D31 unchanged.** Loopback default, open-mode warning, constant-time token
+  comparison, admin-only `/api/audit`, `/api/audit/verify`, `/api/tokens`, the generic 401
+  with the precise reason in the row, per-row HMAC + `key_id`, `BEGIN IMMEDIATE` appends,
+  `assurance`/`coverage`/`key`/`anchor`, the 0600 database in a 0700 directory. The key
+  ring's read rules are untouched; archives are verified with the same ring and the same
+  MAC function.
+- **D26–D29 untouched.** Replay, the queue (still the single writer of job state), the
+  sample store and its key ring/rotation/backup are not read or written by this slice
+  except as the audit log records requests about them.
+- **No new dependency, daemon or network service.** Node's `crypto`, `zlib`, `fs`.
+- **No archive contains a secret.** The archive is a projection of `audit_log`, which
+  never held a token, header, body or sample byte; the manifest holds key ids only. The
+  test asserts both, field by field.
+
+### Evidence — clean copy of the code+tests commit
+
+Transcript: [`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript). No `.venv`,
+`node_modules`, `data/`, `results/`, `uploads/` or caches in the archive.
+
+```
+$ python -m pytest -q
+795 passed, 17 skipped, 3 xfailed        # unchanged
+$ python scripts/verify_fixtures.py
+13 passed, 0 failed, 3 known defects     # unchanged; no defect was "fixed"
+$ (cd server && npm run typecheck && npm run build && npm test)
+ℹ tests 97                               # was 84; 13 new (8 compaction e2e, 5 resume/concurrency)
+ℹ pass 97
+$ (cd server && node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs)
+ℹ tests 3 · pass 3
+$ scripts/verify_setup.sh
+26 passed, 0 failed                      # was 24; +api/audit-compaction, +api/audit-archive-verified
+$ ruff check engine/ tests/ scripts/     # All checks passed!
+$ mypy engine/                           # 83 source files, no issues
+$ hatchery rules lint                    # passed
+$ (cd dashboard && npm run build)        # built
+```
+
+The 13 new tests use the real built server as a subprocess, the real CLI as a subprocess,
+real SQLite files and real archive files in temporary roots. Pinned properties, not
+prose: a compacted log reports the archived count, the manifest hash and a proven join and
+still verifies `keyed`; a second segment splices onto the first; the union of live and
+archived ids is exactly what existed before; an archive verifies offline with no database
+and an edited / shortened / truncated / manifest-less one is caught **at the right row**
+with the manifest-hash mismatch named; a deleted archive file is `archive-missing` and the
+CLI exits 1; a head captured before a compaction still verifies (found in the archive) and
+so does one captured after (found live), while an absent one is `replaced`; a dry run
+writes nothing and `--apply` removes exactly the reported window; `--max-rows 0` is
+clamped to the anchor row; growth is reported by `status`, the verify response and the
+startup banner and deletes nothing; a digest-rewrite forgery and a keyed→unkeyed downgrade
+are still caught in a compacted log; an interrupted run at each of the three steps resumes
+without double-archiving or losing a row; a 30-request burst during a compaction produces
+one valid chain with the accounting closed; a simulated storage failure neither fails the
+request nor disappears from the counter, which survives a restart; and no archive or
+manifest contains key material, a bearer token or an unexpected field.
+
+**Not done, deliberately.**
+
+- **Not encrypted and not signed.** An archive is owner-readable (0600), not encrypted at
+  rest, and its manifest is not signed — same posture as the database and the D29 backup.
+  An attacker who can rewrite the archive **and** its manifest consistently can present a
+  different internally consistent archive; the tail hash recorded in
+  `audit_chain_meta` and in the `audit.compacted` row is what makes that visible against
+  the live database. Encrypting archives is a separate decision, and it would not help
+  against an attacker who can read the key ring.
+- **No remote or off-host storage.** `--out` is a directory on this host. Nothing ships an
+  archive anywhere, and nothing prunes an archive: the operator owns the archive lifecycle
+  (copy it, expire it) and this slice does not invent a second retention policy for files.
+- **No archive rotation or compression policy beyond `--gzip`.** No re-packing, no
+  re-compression, no splitting of an existing archive.
+- **Compaction under a second writer of the same database** is exercised as "a concurrent
+  compaction aborts cleanly" (by construction: the window is re-read under the write lock)
+  and as two real processes appending during a compaction — but not as two `compact`
+  processes racing, which is refused by the same check and is not separately tested.
+- **A multi-host or shared-filesystem database** is out of scope, as it was for D30/D31.
+  Single host, one SQLite file, `WAL` + a busy timeout.
+- **An archive on a different filesystem or a network share** was not exercised. `fsync`
+  semantics there are the operator's storage's business, and the code cannot verify them.
+- **An archive format change mid-stream** is refused, not migrated: the manifest carries
+  `manifest_version: 1` and the verifier rejects anything else. There is one version.
+- **Windows ACLs** are not verified; the 0600/0700 posture is POSIX.
+- **A root attacker** who can rewrite the database, the key ring, the archives and every
+  backup consistently is out of scope, as before. So is a host whose clock is wrong: the
+  `--older-than` window is evaluated against the local clock, and a skewed clock moves the
+  boundary (it cannot corrupt the chain).
+- **No scheduled or automatic compaction.** By design: retention is an operator decision.
+  An operator who never runs it gets a warning, not a surprise.
+- **Result-bundle retention, queue/job retention, the sample-store TTL (D28) and key
+  lifecycle (D29)** are untouched. This slice is the audit log only.
 
 ## What was deliberately not done
 
@@ -709,7 +1063,7 @@ limit *as a limit*: the same shortened log verifies without an anchor and fails
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
 - **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. What remains undone inside it: KMS/HSM or escrow, multi-host stores/rotation, scheduled rotation/expiry, secure erase, Windows ACL verification, and removing the single-use replay staging file. Result-bundle retention is still out of scope.
-- **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation schedule, and no encryption of the audit log — it is owner-readable, not encrypted at rest.
+- **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 
 ---

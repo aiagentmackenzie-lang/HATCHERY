@@ -1,12 +1,12 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `511a978` (Phase 4c: the token
-lifecycle and CORS allow-list, D30; the keyed audit chain, its anchor and the file
-posture, D31). The D28 store
+Verified **21 November 2026** on top of revision `c82ad5e` (Phase 4d: segmented audit-log
+retention, archived chain handoff and the disk-growth guard, D32). The D28 store
 baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
 [`BACKUP.md`](BACKUP.md#captured-transcript); the D30/D31 transcript is in
-[`API-SECURITY.md`](API-SECURITY.md#captured-transcript). The detector scorecard
+[`API-SECURITY.md`](API-SECURITY.md#captured-transcript); the D32 transcript is in
+[`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript). The detector scorecard
 is unchanged from `4b48490`.
 
 This document is evidence, not a roadmap. It records what a clean checkout can
@@ -31,11 +31,13 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   3 xfailed** (unchanged from `34565f7`; 24 tests cover key rotation,
   retirement, backup and restore). `ruff` is clean and `mypy engine/` reports
   no issues in 83 source files.
-- **The server suite is 84 node tests, 0 failing** (was 34 at `34565f7`; 35 cover
+- **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
-  anchoring and the file posture). The compiled server is built
-  first — the tests import from `server/dist/`. The 3 cross-language queue tests
-  (`node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs`) also
+  anchoring and the file posture, and 13 cover D32 compaction: cross-segment
+  verification, offline archive tamper detection, crash-resume, a concurrent append
+  burst during a compaction, the growth guard and the failed-append path). The compiled
+  server is built first — the tests import from `server/dist/`. The 3 cross-language
+  queue tests (`node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs`) also
   pass, and the dashboard builds.
 - `tests/fixtures/acceptance/` holds deterministic inputs (checked in, generated
   from byte templates, no compiler or download) with a manifest of SHA-256 and
@@ -46,8 +48,9 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **24 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30, plus D31's
-  `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`).
+  state: **26 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
+  `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; D32 adds
+  `api/audit-compaction` and `api/audit-archive-verified`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -66,6 +69,10 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   - **A backup restores (D29).** The manifest is written last, every blob hash
     matches, `--include-key` is `0600`, a restore into a temporary root verifies,
     and the restored queue keeps its job ids.
+  - **A compacted audit log verifies across the boundary (D32).** A real segment is
+    archived `0600` with the manifest written last, the live chain hands off to the
+    archived tail, and `verify` reads the archives and reports a proven join with the
+    same `keyed` assurance for the live rows.
   - The repository's databases, results, uploads and every file under `samples/`
     are checksummed before and after and must be unchanged.
 
@@ -116,13 +123,16 @@ does not re-certify those features.
 | The audit chain is keyed **locally** | HMAC-SHA-256 from a local key ring (D31). A database-only attacker cannot forge a row, but an attacker who can also read the key file — which by default sits beside the database — can. `HATCHERY_AUDIT_KEY_FILE` outside the data directory is the stronger posture; the startup banner says so. No KMS/HSM and no remote signer. |
 | Completeness needs an anchor | A truncation that also rewrites the stored head, and a restored older database, are internally consistent. Only a head recorded outside the database detects them (`npm run audit -- head` → `verify --expect-head`). Without that procedure, the verifier reports `ok` on a shortened log and says nothing false — but nothing protective either. |
 | Audit key rotation only moves forward | Old keys stay in the ring (bounded at 32) so history verifies; there is no retirement, because removing a key would un-authorise the rows it MAC'd. A ring at the 32-key limit must be archived and restarted deliberately, which is not automated. |
-| The append-failure counter is per process | `append_failures_since_start` is in memory. A restart resets the count; the server log keeps the lines. |
+| The append-failure counter is per process | `append_failures_since_start` is in memory. The **total** is persisted in `audit_chain_meta` (D32) so a restart no longer forgets it, but the write that records the failure can fail for the same reason the append did — `append_failures_persisted: false` says the total is understated and the server log is the record. |
 | Pre-D30/D31 rows are not covered | The migrations do not backfill. Rows written before the chain existed keep `NULL` hashes (reported as `legacy`), and rows written between D30 and D31 keep `NULL` MACs (reported as `unkeyed`/`mixed`, never upgraded in the telling). |
 | A failed audit append is invisible to the chain | `recordAudit` never throws (D25). A write that fails before it happens is logged and the request is answered; the chain can only see rows that exist. |
 | Single-host token store | Tokens and the chain live in one SQLite file. There is no multi-host token database, no propagation and no coordinated rotation across hosts; the CLI and the server sharing the file (WAL + a 5 s busy timeout) is the tested case. |
 | No create endpoint | Token creation is `npm run token -- create` on the host. An admin who is only reachable over HTTP cannot mint a token; that is deliberate (a secret must not cross the wire), but it is an operational constraint. |
 | CORS is not authentication | An unlisted origin is prevented from *reading* a response by the browser; it still reaches the API and still needs a token. No browser matrix was run. |
 | The API database is a credential store | `HATCHERY_DB_PATH` (default `data/hatchery.db`) holds the token hashes and the audit chain; it is created `0600` in a `0700` directory (D31) and needs the same care as the sample-store key. It is in `.gitignore` (`data/`), but nothing backs it up automatically. Windows ACLs are not verified. |
+| Audit retention is an operator action | `audit_log` never shrinks on its own (D32). Nothing compacts it, nothing schedules a compaction, and nothing deletes an archive; an operator who never runs `npm run audit -- compact --apply` gets a growth warning and an unbounded log. Pre-D30 rows are never archived. |
+| Audit archives are owner-readable, not encrypted | The archive and manifest are `0600` and contain exactly the `audit_log` columns plus key **ids** — no token, header, body, sample byte or key material — but they are not encrypted at rest and the manifest is not signed. An archive replaced wholesale together with its manifest is caught by the tail recorded in `audit_chain_meta`, against a live database you still trust. There is no off-host shipping and no multi-host story. |
+| Compaction under a second writer is bounded by the write lock | Concurrent *appends* during a compaction are tested with a real burst; a concurrent *compaction* is refused by the window re-check under `BEGIN IMMEDIATE`, but two racing `compact` processes are not separately exercised. An archive on a different filesystem or a network share (`fsync`/rename semantics) was not verified. |
 | The dashboard has no auth flow | The bundled dashboard sends no credential of its own. With auth closed it works through the Vite dev proxy's `HATCHERY_DASHBOARD_TOKEN`; a hosted/production dashboard would need its own token handling, which is not built. | The store's storage/retention guarantees
 and the D28 transcript are in [`RETENTION.md`](RETENTION.md); key rotation,
 retirement, backup/restore, their known gaps (KMS/escrow, multi-host, scheduled
@@ -149,10 +159,17 @@ HATCHERY_SAMPLE_STORE=/tmp/hatchery-store python -m engine.cli store status --js
 HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs create --role viewer --expires-in 1h
 HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs list --json
 HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   # exit 0, assurance keyed
+
+# retention and an archive, on the same temporary database
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs status --max-rows 3
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs compact --max-rows 3 --apply
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   # archive.join=proven
+node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
 Expected: `795 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `24 passed, 0 failed`.
+`13 passed, 0 failed, 3 known defects`; the setup check `26 passed, 0 failed`; the
+server suite `97 passed, 0 failing`.
 
 ## Maintenance
 

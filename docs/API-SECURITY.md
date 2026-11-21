@@ -6,6 +6,13 @@ This is the operator's guide to Phase 4c. The decision records are
 private); D8 remains authoritative for the API's defaults and D25 for roles and the
 audit log's contents. The clean-copy transcript is at the end of this page.
 
+**The log is now finite (D32).** Retention, compaction, the archive format, the chain
+handoff, crash-resume, verification across the boundary, offline archive verification
+and the disk-growth guard have their own operator guide and clean-copy transcript:
+[`AUDIT-RETENTION.md`](AUDIT-RETENTION.md). Everything on this page still holds; D32
+adds `segments`, `archive`, `archive_verified` and `growth` to the verify response and
+corrects what `--expect-head` means (see below).
+
 The phase exists because the API's own security record could not be trusted or
 changed without downtime. D25 gave the API roles but left the credential as two
 long-lived environment variables: a leaked token could only be replaced by editing
@@ -157,6 +164,11 @@ curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:3002/api/audit/verif
 }
 ```
 
+D32 adds four fields to this response — `segments`, `archive`, `archive_verified` and
+`growth` — plus the persisted `append_failures_total`/`append_failures_persisted`, and
+`anchor` gains `found_in` and `head_at_anchor`. They are documented with their
+classifications in [`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#verifying-across-the-boundary).
+
 `first_broken.classification` is causal, not cosmetic:
 
 | Classification | How it is recognised |
@@ -168,8 +180,14 @@ curl -s -H "Authorization: Bearer $ADMIN" 'http://127.0.0.1:3002/api/audit/verif
 | `unkeyed` | a keyed row is followed by an unkeyed one — the chain was downgraded after D31 |
 | `unknown-key` | a row names a key id the ring does not hold (fail closed) |
 | `truncated` | the recomputed tail is not the recorded head |
-| `replaced` | the head does not match the `expect_head` you supplied — this is not the database you anchored |
+| `replaced` | the anchored head is in neither the live chain nor a verified archive — this is not the log you anchored |
 | `unhashed` | a row inside the chained region has no `entry_hash` |
+| `archive-missing` | a recorded archive file or manifest is gone (D32) — history was removed, not archived |
+| `archive-mismatch` | the archive file is not the one its manifest recorded (D32) |
+| `archive-modified` | an archived row's digest or MAC does not verify, reported at that row (D32) |
+| `archive-truncated` | archived rows are missing from the middle or the end (D32) |
+| `archive-invalid` | the archive or its manifest cannot be parsed (D32) |
+| `join-mismatch` | the live chain does not link to the archived tail (D32) |
 
 The endpoint is bounded: 5 000 rows per call by default, 50 000 maximum, keyset
 paging via `after`; an incomplete pass returns `next_after_id`. Verification is
@@ -192,6 +210,14 @@ were is a separate field, because a log verified without MACs is a different cla
 `append_failures_since_start` counts appends that failed and were logged instead of
 written (a full disk, or a lock held past the busy timeout). A non-zero failure count
 is a hole the chain cannot see, so it is reported rather than left in the log.
+
+**`assurance` describes the live rows and nothing else.** A compaction moves history to
+an archive; it must not silently weaken the claim, so a compacted-but-intact log still
+reports `keyed`. Whether the archive was read is a separate field:
+`archive.checked`/`archive.verified` and the top-level `archive_verified`. Read them
+together. A verifier that did not read the archive (a presence-only check, a resumed
+page, or a break before the archive) reports `archive_verified: false` and never claims
+otherwise, and it refuses to confirm an anchor that lives in an archive it did not open.
 
 ## The audit key
 
@@ -237,6 +263,13 @@ curl -s -H "Authorization: Bearer $ADMIN" \
 The test suite pins this as a limit rather than claiming it away: the same shortened
 log verifies `ok` without an anchor and fails `replaced` with one.
 
+**What an anchor means, exactly (corrected by D32).** It says *the head I recorded is
+still part of this log*, not *nothing has been appended since*. The anchored row must
+exist with the anchored hash, in the live chain or in a verified archive; the response
+says where (`anchor.found_in`) and whether it is still the newest row
+(`anchor.head_at_anchor`). That is what lets an anchor survive a compaction — and an
+ordinary append, which D31's strict head equality did not.
+
 ### Pre-D30 and pre-D31 rows
 
 The migrations are additive and do **not** backfill. Rows written before D30 keep
@@ -280,6 +313,10 @@ token. Nothing in this repository claims otherwise.
 - [ ] Read `assurance` as well as `ok`, and `append_failures_since_start`. `unkeyed` or
       `mixed` means part of the log is not authenticated; a non-zero failure count
       means a row was lost and logged instead of written.
+- [ ] Watch growth and compact deliberately: `npm run audit -- status`, then
+      `npm run audit -- compact --apply` when the policy says so. Nothing compacts the
+      log for you, and the growth warning never deletes anything. See
+      [`AUDIT-RETENTION.md`](AUDIT-RETENTION.md).
 - [ ] Keep the audit key off the data directory when you can
       (`HATCHERY_AUDIT_KEY_FILE=/etc/hatchery/audit.key`, `0600`, no symlink), and
       rotate it with the rest of your credentials.
@@ -420,7 +457,16 @@ Nothing outside /tmp was written.
   the database, `audit_chain_meta` and every backup consistently.
 - **Audit appends that never happen.** A failed append is logged, counted in the
   process and reported as `append_failures_since_start`; the chain itself cannot detect
-  a row that was never written, and the counter resets when the process restarts.
+  a row that was never written. D32 persists the **total** in `audit_chain_meta` so a
+  restart no longer forgets it, but the write that records the failure can fail for the
+  same reason the append did — `append_failures_persisted: false` says the total is
+  understated and the server log is the record.
+- **A deleted or lost archive.** D32 makes a missing archive a break rather than a
+  shorter green history, but an archive copied off the host (or leaked) is not something
+  the verifier can see, and archives are neither encrypted nor signed. An attacker who
+  can rewrite an archive *and* its manifest consistently is caught by the tail recorded
+  in `audit_chain_meta`, against a live database you still trust — not by the archive
+  alone.
 - **The key beside the database.** The default generated key ring sits in the data
   directory. That was tested for its permissions (`0600`) and for tamper detection with
   a database-only attacker; an attacker who can read both the database **and** the key
