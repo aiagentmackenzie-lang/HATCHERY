@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from engine.queue.store import FAILED, RUNNING, Job, JobStore
+from engine.store import SampleStore, SampleStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +60,33 @@ def build_job_command(
     job: Job,
     *,
     python: Optional[str] = None,
+    store_ref: Optional[str] = None,
 ) -> list[str]:
     """The ``hatchery submit`` command that executes a queued job.
 
     Paths are absolute (resolved at enqueue), so the command is independent of
-    the worker's working directory.
+    the worker's working directory. With a store reference (D28) the command
+    reads the sample from the encrypted store instead of the recorded path, so
+    deleting the original after enqueue does not break the job. The original
+    path is still passed as a *hint* — it is recorded in the bundle for a human
+    and for replay, and is never read by the worker.
     """
     executable = python or sys.executable
-    command = [
-        executable, "-m", "engine.cli", "submit", job.sample_path,
-        "-o", job.output_dir,
-    ]
+    # A job that carries a store reference always runs from the store: that is
+    # what makes deleting the original path safe.
+    ref = store_ref if store_ref is not None else job.sample_store_ref
+    if ref:
+        command = [
+            executable, "-m", "engine.cli", "submit",
+            "--from-store", ref,
+            "--sample-hint", job.sample_path,
+            "-o", job.output_dir,
+        ]
+    else:
+        command = [
+            executable, "-m", "engine.cli", "submit", job.sample_path,
+            "-o", job.output_dir,
+        ]
     emulate = bool(job.args.get("emulate"))
     for key in SUBMIT_FLAG_OPTIONS:
         # An emulation-only flag without --emulate cannot take effect; refuse to
@@ -137,11 +154,19 @@ class Worker:
         config: Optional[WorkerConfig] = None,
         *,
         runner: Optional[SubmitRunner] = None,
+        sample_store: Optional[SampleStore] = None,
     ) -> None:
         self.store = store
         self.config = config or WorkerConfig()
         self._runner = runner or self._default_runner
         self._root = engine_root()
+        self._sample_store = sample_store
+
+    @property
+    def sample_store(self) -> SampleStore:
+        if self._sample_store is None:
+            self._sample_store = SampleStore()
+        return self._sample_store
 
     # -- public API --------------------------------------------------------
 
@@ -210,8 +235,74 @@ class Worker:
             thread.join()
         return [outcome for outcome in results if outcome is not None]
 
+    def _ensure_store_reference(self, job: Job) -> "tuple[str, str]":
+        """Return ``(store_ref, problem)`` for a job's sample.
+
+        A D28 job carries its content address; the blob is read (and
+        authenticated) before the run starts. A pre-D28 job that still points at
+        an original path is adopted — hashed, copied into the store and recorded
+        on the job — rather than silently dropped. If neither a store copy nor a
+        readable original exists, the job fails with the reason: a missing
+        sample is never a reason to report success.
+        """
+        store = self.sample_store
+        if job.sample_store_ref:
+            try:
+                store.read(job.sample_store_ref)
+            except SampleStoreError as exc:
+                if not Path(job.sample_path).is_file():
+                    return "", (
+                        f"the stored sample {job.sample_store_ref} is unusable "
+                        f"({exc.reason}: {exc.message}) and the original sample path "
+                        f"{job.sample_path} is gone"
+                    )
+                logger.warning(
+                    "Job %s: stored sample %s is unusable (%s); recovering from %s",
+                    job.job_id, job.sample_store_ref, exc.reason, job.sample_path,
+                )
+            else:
+                return job.sample_store_ref, ""
+
+        original = Path(job.sample_path)
+        if not original.is_file():
+            return "", (
+                "no store copy of the sample and the original path "
+                f"{job.sample_path} is gone; refusing to run the job"
+            )
+        try:
+            record = store.put_file(original)
+        except SampleStoreError as exc:
+            return "", (
+                f"the sample at {job.sample_path} could not be copied into the "
+                f"store ({exc.reason}: {exc.message})"
+            )
+        if job.sample_sha256 and record.sha256 != job.sample_sha256:
+            return "", (
+                f"the sample at {job.sample_path} now has sha256 {record.sha256}, "
+                f"but the job recorded {job.sample_sha256}; refusing to analyse "
+                "different bytes"
+            )
+        attached = self.store.attach_sample(
+            job.job_id,
+            sha256=record.sha256,
+            store_ref=record.sha256,
+            worker_id=self.config.worker_id,
+        )
+        if not attached:  # pragma: no cover - the job is ours unless the lease was lost
+            logger.warning("Job %s: could not record the store reference", job.job_id)
+        logger.info(
+            "Job %s: sample adopted into the store as %s (pre-D28 job or lost blob)",
+            job.job_id, record.sha256[:16],
+        )
+        return record.sha256, ""
+
     def _execute(self, job: Job) -> JobOutcome:
-        command = build_job_command(job, python=self.config.python)
+        store_ref, sample_problem = self._ensure_store_reference(job)
+        if sample_problem:
+            self.store.fail(job.job_id, self.config.worker_id, error=sample_problem)
+            logger.error("Job %s failed: %s", job.job_id, sample_problem)
+            return JobOutcome(job_id=job.job_id, status=FAILED, detail=sample_problem)
+        command = build_job_command(job, python=self.config.python, store_ref=store_ref)
         logger.info("Job %s: %s", job.job_id, " ".join(command))
         heartbeat = self._start_heartbeat(job)
         try:

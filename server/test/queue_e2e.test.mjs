@@ -66,13 +66,13 @@ async function waitForHealth(baseUrl, timeoutMs = 20000) {
   return false;
 }
 
-function runWorker(queueDb) {
+function runWorker(queueDb, extraEnv = {}) {
   return spawnSync(
     enginePython,
     ['-m', 'engine.cli', 'worker', '--once', '--concurrency', '1', '--queue', queueDb],
     {
       cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: repoRoot, HATCHERY_QUEUE_DB: queueDb },
+      env: { ...process.env, PYTHONPATH: repoRoot, HATCHERY_QUEUE_DB: queueDb, ...extraEnv },
       encoding: 'utf-8',
       timeout: 300000,
     },
@@ -87,6 +87,7 @@ test('a submission is queued, and a worker completes it into the API', { skip: e
   const queueDb = path.join(dir, 'queue.db');
   const resultsRoot = path.join(dir, 'results');
   const samplesDir = path.join(dir, 'samples');
+  const storeDir = path.join(dir, 'store');
   fs.mkdirSync(samplesDir, { recursive: true });
   const samplePath = path.join(samplesDir, 'queued-sample.txt');
   fs.writeFileSync(samplePath, 'hello hatchery queue\n');
@@ -102,6 +103,7 @@ test('a submission is queued, and a worker completes it into the API', { skip: e
       HATCHERY_RESULTS_ROOT: resultsRoot,
       HATCHERY_ALLOWED_SAMPLE_ROOTS: samplesDir,
       HATCHERY_ENGINE_PYTHON: enginePython,
+      HATCHERY_SAMPLE_STORE: storeDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -129,14 +131,19 @@ test('a submission is queued, and a worker completes it into the API', { skip: e
     assert.equal(pending.queue.status, 'queued');
     assert.equal(pending.queue.job_id, taskId);
 
-    // A real worker executes the real submit pipeline.
-    const worked = runWorker(queueDb);
+    // A real worker executes the real submit pipeline, reading the encrypted
+    // copy the enqueue put in the store (D28).
+    const worked = runWorker(queueDb, { HATCHERY_SAMPLE_STORE: storeDir });
     assert.equal(worked.status, 0, worked.stdout + worked.stderr);
 
     const completed = await (await fetch(`${baseUrl}/api/tasks/${taskId}`)).json();
     assert.equal(completed.task.status, 'completed', JSON.stringify(completed.task));
     assert.equal(completed.queue.status, 'completed');
     assert.equal(completed.queue.attempts, 1);
+    assert.ok(
+      completed.queue.sample_store_ref,
+      'the job must record the content address it ran',
+    );
     assert.ok(completed.task.sha256, 'the bundle must have been ingested');
     assert.ok(completed.static_results, 'static results must exist after ingest');
 
@@ -160,6 +167,7 @@ test('a job that cannot produce a bundle is reflected as failed, not running', {
   const queueDb = path.join(dir, 'queue.db');
   const resultsRoot = path.join(dir, 'results');
   const samplesDir = path.join(dir, 'samples');
+  const storeDir = path.join(dir, 'store');
   fs.mkdirSync(samplesDir, { recursive: true });
   const samplePath = path.join(samplesDir, 'vanishing.txt');
   fs.writeFileSync(samplePath, 'here for now\n');
@@ -175,6 +183,7 @@ test('a job that cannot produce a bundle is reflected as failed, not running', {
       HATCHERY_RESULTS_ROOT: resultsRoot,
       HATCHERY_ALLOWED_SAMPLE_ROOTS: samplesDir,
       HATCHERY_ENGINE_PYTHON: enginePython,
+      HATCHERY_SAMPLE_STORE: storeDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -191,10 +200,15 @@ test('a job that cannot produce a bundle is reflected as failed, not running', {
     assert.equal(submitted.status, 200, submittedText);
     const taskId = JSON.parse(submittedText).task_id;
 
-    // The sample disappears before a worker sees it: submit cannot produce a
-    // bundle, so the job must fail rather than sit "running" forever.
+    // The submission copied the bytes into the store, so deleting the original
+    // path is not enough to break it (D28). The stored copy disappears too:
+    // now the job genuinely cannot run and must fail, not sit "running".
     fs.unlinkSync(samplePath);
-    const worked = runWorker(queueDb);
+    const storeFiles = fs.existsSync(storeDir) ? fs.readdirSync(storeDir) : [];
+    for (const name of storeFiles) {
+      if (name.endsWith('.sample')) fs.unlinkSync(path.join(storeDir, name));
+    }
+    const worked = runWorker(queueDb, { HATCHERY_SAMPLE_STORE: storeDir });
     assert.notEqual(
       worked.status,
       0,

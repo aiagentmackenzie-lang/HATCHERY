@@ -32,6 +32,15 @@ from typing import Any, Iterator, Optional
 
 DEFAULT_QUEUE_DB = Path("data") / "queue.db"
 
+# D27 created the queue at user_version 0 (SQLite's default). D28 adds the
+# sample-store reference as an additive column and stamps version 2. The
+# migration only ever ADDs columns: job ids, states and timestamps written by a
+# pre-D28 build must survive untouched.
+QUEUE_SCHEMA_VERSION = 2
+ADDITIVE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("sample_store_ref", "TEXT"),
+)
+
 QUEUED = "queued"
 RUNNING = "running"
 COMPLETED = "completed"
@@ -46,6 +55,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status          TEXT NOT NULL DEFAULT 'queued',
     sample_path     TEXT NOT NULL,
     sample_sha256   TEXT,
+    sample_store_ref TEXT,
     output_dir      TEXT NOT NULL,
     args_json       TEXT NOT NULL DEFAULT '{}',
     attempts        INTEGER NOT NULL DEFAULT 0,
@@ -99,6 +109,7 @@ class Job:
     sample_path: str
     output_dir: str
     sample_sha256: Optional[str] = None
+    sample_store_ref: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
     attempts: int = 0
     max_attempts: int = 3
@@ -119,6 +130,7 @@ class Job:
             "status": self.status,
             "sample_path": self.sample_path,
             "sample_sha256": self.sample_sha256,
+            "sample_store_ref": self.sample_store_ref,
             "output_dir": self.output_dir,
             "args": self.args,
             "attempts": self.attempts,
@@ -149,6 +161,7 @@ class Job:
             sample_path=row["sample_path"],
             output_dir=row["output_dir"],
             sample_sha256=row["sample_sha256"],
+            sample_store_ref=row["sample_store_ref"] if "sample_store_ref" in row.keys() else None,
             args=args,
             attempts=int(row["attempts"] or 0),
             max_attempts=int(row["max_attempts"] or 3),
@@ -188,6 +201,34 @@ class JobStore:
         if raw != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    # -- schema migration --------------------------------------------------
+
+    def _migrate(self) -> None:
+        """Additive, versioned migration for queue databases from D27 and earlier.
+
+        A pre-D28 database has no ``sample_store_ref`` column. It is added with
+        ``ALTER TABLE ... ADD COLUMN``: existing rows keep their id, status,
+        attempts, lease and timestamps, and simply have no store reference until
+        a worker or ``hatchery store migrate --queue`` adopts them.
+        """
+        version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > QUEUE_SCHEMA_VERSION:
+            raise JobError(
+                f"queue database {self.path} declares schema version {version}; "
+                f"this build understands {QUEUE_SCHEMA_VERSION}. Refusing to "
+                "write to a queue created by a newer build."
+            )
+        columns = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(jobs)")
+        }
+        for name, sql_type in ADDITIVE_COLUMNS:
+            if name in columns:
+                continue
+            self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {sql_type}")
+        if version < QUEUE_SCHEMA_VERSION:
+            self._conn.execute(f"PRAGMA user_version = {QUEUE_SCHEMA_VERSION}")
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -224,6 +265,7 @@ class JobStore:
         output_dir: Optional[Path | str] = None,
         args: Optional[dict[str, Any]] = None,
         sample_sha256: Optional[str] = None,
+        sample_store_ref: Optional[str] = None,
         max_attempts: int = 3,
         job_id: Optional[str] = None,
         requeue: bool = False,
@@ -272,22 +314,24 @@ class JobStore:
                         lease_expires_at = NULL, started_at = NULL, finished_at = NULL,
                         exit_code = NULL, error = NULL, run_dir = NULL, task_id = NULL,
                         sample_path = ?, output_dir = ?, args_json = ?,
-                        sample_sha256 = COALESCE(?, sample_sha256), updated_at = ?
+                        sample_sha256 = COALESCE(?, sample_sha256),
+                        sample_store_ref = COALESCE(?, sample_store_ref), updated_at = ?
                     WHERE job_id = ?
                     """,
-                    (QUEUED, sample_abs, out_abs, payload, sample_sha256, _iso(moment), job_id),
+                    (QUEUED, sample_abs, out_abs, payload, sample_sha256,
+                     sample_store_ref, _iso(moment), job_id),
                 )
             else:
                 self._conn.execute(
                     """
                     INSERT INTO jobs (
-                        job_id, status, sample_path, sample_sha256, output_dir,
-                        args_json, attempts, max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                        job_id, status, sample_path, sample_sha256, sample_store_ref,
+                        output_dir, args_json, attempts, max_attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
                     (
-                        job_id, QUEUED, sample_abs, sample_sha256, out_abs,
-                        payload, max_attempts, _iso(moment), _iso(moment),
+                        job_id, QUEUED, sample_abs, sample_sha256, sample_store_ref,
+                        out_abs, payload, max_attempts, _iso(moment), _iso(moment),
                     ),
                 )
         job = self.get(job_id)
@@ -408,6 +452,43 @@ class JobStore:
                 (FAILED, _iso(moment), _iso(moment), exit_code, error[:2000],
                  job_id, worker_id, RUNNING),
             )
+        return cursor.rowcount == 1
+
+    def attach_sample(
+        self,
+        job_id: str,
+        *,
+        sha256: str,
+        store_ref: str,
+        worker_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Record the content address and store reference on a job.
+
+        The queue is the single writer of job state; the *sample* state lives in
+        the store, so this only records where the worker should read the bytes.
+        With ``worker_id`` the update is owner-checked (a worker adopting the
+        sample it is about to run); without it the caller is adopting a queued
+        job (``hatchery store migrate --queue``).
+        """
+        moment = now if now is not None else time.time()
+        with self._lock, self._write_txn():
+            if worker_id is None:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE jobs SET sample_sha256 = ?, sample_store_ref = ?, updated_at = ?
+                    WHERE job_id = ? AND status = ?
+                    """,
+                    (sha256, store_ref, _iso(moment), job_id, QUEUED),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE jobs SET sample_sha256 = ?, sample_store_ref = ?, updated_at = ?
+                    WHERE job_id = ? AND worker_id = ? AND status = ?
+                    """,
+                    (sha256, store_ref, _iso(moment), job_id, worker_id, RUNNING),
+                )
         return cursor.rowcount == 1
 
     def recover_expired(self, *, now: Optional[float] = None) -> list[str]:

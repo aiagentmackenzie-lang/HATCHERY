@@ -41,6 +41,9 @@ export interface QueueJob {
   job_id: string;
   status: string;
   sample_path: string;
+  sample_sha256: string | null;
+  /** D28: the content address the worker executes (null for a pre-D28 job). */
+  sample_store_ref: string | null;
   output_dir: string;
   attempts: number;
   max_attempts: number;
@@ -131,7 +134,8 @@ export function readQueueJob(jobId: string): QueueJob | null {
     queue.pragma('busy_timeout = 5000');
     const row = queue
       .prepare(
-        `SELECT job_id, status, sample_path, output_dir, attempts, max_attempts,
+        `SELECT job_id, status, sample_path, sample_sha256, sample_store_ref,
+                output_dir, attempts, max_attempts,
                 worker_id, lease_expires_at, created_at, started_at, finished_at,
                 updated_at, exit_code, error, run_dir, task_id
          FROM jobs WHERE job_id = ?`,
