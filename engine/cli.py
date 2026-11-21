@@ -1966,7 +1966,7 @@ def store_verify(
 @store.command("migrate")
 @_store_common_options
 @click.option("--dry-run", is_flag=True, help="Report what would be encrypted without writing")
-@click.option("--queue/--no-queue", "adopt_queue", default=True,
+@click.option("--adopt-queue/--no-adopt-queue", "adopt_queue", default=True,
               help="Also adopt pre-D28 queued jobs into the store (default: on)")
 def store_migrate(
     store_root: Optional[Path], results_root: Optional[Path],

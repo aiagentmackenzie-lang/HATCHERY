@@ -137,7 +137,7 @@ def test_migrate_dry_run_then_apply_is_idempotent(tmp_path: Path) -> None:
 
     dry = _run(
         ["store", "migrate", "--dry-run", "--json", "--store", str(store_root),
-         "--results", str(_results(tmp_path)), "--no-queue"],
+         "--results", str(_results(tmp_path)), "--no-adopt-queue"],
         env, tmp_path,
     )
     assert dry.returncode == 0, dry.stderr
@@ -148,7 +148,7 @@ def test_migrate_dry_run_then_apply_is_idempotent(tmp_path: Path) -> None:
 
     applied = _run(
         ["store", "migrate", "--json", "--store", str(store_root),
-         "--results", str(_results(tmp_path)), "--no-queue"],
+         "--results", str(_results(tmp_path)), "--no-adopt-queue"],
         env, tmp_path,
     )
     assert applied.returncode == 0, applied.stderr
@@ -157,7 +157,7 @@ def test_migrate_dry_run_then_apply_is_idempotent(tmp_path: Path) -> None:
 
     again = _run(
         ["store", "migrate", "--json", "--store", str(store_root),
-         "--results", str(_results(tmp_path)), "--no-queue"],
+         "--results", str(_results(tmp_path)), "--no-adopt-queue"],
         env, tmp_path,
     )
     assert again.returncode == 0

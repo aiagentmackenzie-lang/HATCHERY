@@ -174,7 +174,7 @@ Options for `queue`: `--json`, `--status STATE`, `--limit N`, `--recover` (reque
 
 Options for `replay`: `--output/-o DIR`, `--no-sandbox`, `--allow-host-emulation`, `--sample PATH`, `--timeout SECONDS`, `--json`.
 
-Options for `store`: `--store DIR` (else `HATCHERY_SAMPLE_STORE`), `--results DIR`, `--queue PATH`, `--json`. `status` and `prune` take `--ttl SECONDS` (0 disables; else `HATCHERY_SAMPLE_TTL`); `prune` deletes only with `--apply`; `verify` takes `--sha`; `migrate` takes `--dry-run` and `--queue/--no-queue`; `keygen -o PATH` writes a 0600 key file. Exit codes: 0 success, 1 operational error, 2 verification/retention failure (including a refused prune). JSON goes to stdout, diagnostics to stderr, and no command prints a key.
+Options for `store`: `--store DIR` (else `HATCHERY_SAMPLE_STORE`), `--results DIR`, `--queue PATH`, `--json`. `status` and `prune` take `--ttl SECONDS` (0 disables; else `HATCHERY_SAMPLE_TTL`); `prune` deletes only with `--apply`; `verify` takes `--sha`; `migrate` takes `--dry-run` and `--adopt-queue/--no-adopt-queue`; `keygen -o PATH` writes a 0600 key file. Exit codes: 0 success, 1 operational error, 2 verification/retention failure (including a refused prune). JSON goes to stdout, diagnostics to stderr, and no command prints a key.
 
 ### Emulation (Windows PE)
 
