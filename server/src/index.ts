@@ -8,9 +8,12 @@ import { reportRoutes } from './routes/report.js';
 import { iocRoutes } from './routes/iocs.js';
 import { analysisRoutes } from './routes/analysis.js';
 import { auditRoutes } from './routes/audit.js';
+import { tokenRoutes } from './routes/tokens.js';
 import { getDb } from './db/index.js';
-import { isOpen, readTokens, requiredRole, resolveActor, roleSatisfies } from './security/auth.js';
+import { isOpen, readTokens, requiredRole, resolveRequest, roleSatisfies } from './security/auth.js';
 import { recordAudit, shouldAudit } from './security/audit.js';
+import { allowedOrigins, describeAllowList, isOriginAllowed } from './security/cors.js';
+import { countTokens } from './security/tokens.js';
 
 const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
 // Bind to loopback by default. This API stores live malware samples and serves
@@ -18,18 +21,50 @@ const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
 // default. Set HATCHERY_HOST=0.0.0.0 deliberately, and set HATCHERY_API_TOKEN.
 const HOST = process.env.HATCHERY_HOST ?? '127.0.0.1';
 // Roles, not just a shared secret (D25). HATCHERY_API_TOKEN is still accepted as
-// a back-compatible admin token; HATCHERY_READ_TOKEN adds a read-only role.
+// a back-compatible admin token; HATCHERY_READ_TOKEN adds a read-only role. These
+// are the **bootstrap** pair: stored tokens live in the database (D30) and are
+// checked after them, so retiring every stored token can never lock an operator
+// out of a host they can already reach.
 const TOKENS = readTokens();
+// CORS is an allow-list, not a reflection (D30). `origin: true` let any web origin
+// call the API from a browser; the list is exact-match, and a request with no
+// Origin header (curl, the worker, the CLI) is unaffected either way.
+const ALLOWED_ORIGINS = allowedOrigins();
 
 const app = Fastify({ logger: false });
 
 // Initialize DB on startup
-getDb();
+const db = getDb();
 
-// CORS for dashboard
-app.register(cors, { origin: true });
+/**
+ * Name a refusal in the server log, never the credential (D30).
+ *
+ * The reason and the stored token id are operational facts; the presented token is
+ * not, and is never in scope here. `no-credential` is the ordinary "you forgot the
+ * header" case and would flood the log on a port scan, so it stays in the audit log
+ * only — where it belongs, and where it is admin-readable.
+ */
+function logAuthRefusal(reason: string, tokenId: string | null, method: string, path: string) {
+  if (reason === 'no-credential') return;
+  const target = tokenId ? ` token ${tokenId}` : '';
+  const line = `[hatchery] auth denied: ${reason}${target} (${method} ${path})`;
+  if (reason === 'token-store-unreadable') console.error(line);
+  else console.warn(line);
+}
 
-if (isOpen(TOKENS)) {
+app.register(cors, {
+  origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow: boolean) => void) => {
+    callback(null, isOriginAllowed(requestOrigin, ALLOWED_ORIGINS));
+  },
+  credentials: false,
+  methods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type', 'X-HATCHERY-Token'],
+  maxAge: 600,
+});
+
+console.warn(`[hatchery] CORS allow-list — ${describeAllowList(ALLOWED_ORIGINS)}`);
+
+if (isOpen(TOKENS, db)) {
   // Off by default so the local dashboard keeps working, but never silently: a
   // malware-sandbox API with no auth is worth saying out loud at every start.
   console.warn(
@@ -37,14 +72,18 @@ if (isOpen(TOKENS)) {
       'Set HATCHERY_ADMIN_TOKEN (full access) or HATCHERY_READ_TOKEN (read-only).',
   );
 } else {
+  const stored = countTokens(db);
   console.warn(
-    `[hatchery] API auth enabled — roles: admin=${TOKENS.admin ? 'yes' : 'no'}, ` +
-      `viewer=${TOKENS.viewer ? 'yes' : 'no'}`,
+    `[hatchery] API auth enabled — bootstrap roles: admin=${TOKENS.admin ? 'yes' : 'no'}, ` +
+      `viewer=${TOKENS.viewer ? 'yes' : 'no'}; stored tokens: ${stored.live} live of ` +
+      `${stored.total} total (lifecycle: npm run token -- list)`,
   );
 }
 
 // AuthN + authZ, then an append-only audit row for the outcome. Reads need the
-// viewer role; anything that changes state needs admin.
+// viewer role; anything that changes state needs admin. The token store is read per
+// request (D30), so a create/retire takes effect on the next request with no
+// restart; a request already authenticated keeps the actor it resolved.
 app.addHook('onRequest', async (request: any, reply: any) => {
   const headers = request.headers as Record<string, unknown>;
   const path = String(request.url).split('?')[0];
@@ -56,13 +95,20 @@ app.addHook('onRequest', async (request: any, reply: any) => {
     return;
   }
 
-  const actor = resolveActor(headers, TOKENS);
+  const resolution = resolveRequest(headers, TOKENS, db);
+  const actor = resolution.actor;
   if (!actor) {
+    logAuthRefusal(resolution.reason, resolution.tokenId, request.method, path);
     if (shouldAudit(path)) {
-      recordAudit(getDb(), {
+      // The reason and token id are precise here and admin-only to read; the HTTP
+      // response below stays generic, so the API never becomes a token oracle. The
+      // presented credential is never part of this row.
+      recordAudit(db, {
         actor: 'unknown', role: 'anonymous', authenticated: false,
         method: request.method, path, statusCode: 401, action: 'auth.denied',
-        detail: 'missing or invalid token',
+        detail: resolution.tokenId
+          ? `auth denied: ${resolution.reason} (token ${resolution.tokenId})`
+          : `auth denied: ${resolution.reason}`,
       });
     }
     request.hatcheryAudited = true;
@@ -72,7 +118,7 @@ app.addHook('onRequest', async (request: any, reply: any) => {
   request.hatcheryActor = actor;
   if (!roleSatisfies(actor.role, required)) {
     if (shouldAudit(path)) {
-      recordAudit(getDb(), {
+      recordAudit(db, {
         actor: actor.name, role: actor.role, authenticated: actor.authenticated,
         method: request.method, path, statusCode: 403, action: 'request.forbidden',
         detail: `requires ${required}`,
@@ -93,7 +139,7 @@ app.addHook('onResponse', async (request: any, reply: any) => {
   const actor = request.hatcheryActor ?? {
     name: 'anonymous', role: 'anonymous', authenticated: false,
   };
-  recordAudit(getDb(), {
+  recordAudit(db, {
     actor: actor.name,
     role: actor.role,
     authenticated: actor.authenticated,
@@ -114,6 +160,7 @@ app.register(reportRoutes);
 app.register(iocRoutes);
 app.register(analysisRoutes);
 app.register(auditRoutes);
+app.register(tokenRoutes);
 
 // WebSocket for real-time behavioral event streaming
 app.register(websocket);
@@ -177,7 +224,7 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   console.log(`🔥 HATCHERY API running on http://${HOST}:${PORT}`);
   console.log(`   WebSocket:    ws://${HOST}:${PORT}/ws`);
   console.log(`   Dashboard:    http://localhost:5173 (run: cd dashboard && npm run dev)`);
-  if (isOpen(TOKENS)) {
+  if (isOpen(TOKENS, db)) {
     console.warn(
       '⚠  No API token is set: this API is unauthenticated. ' +
       'It accepts sample submissions and serves sample artefacts. ' +
