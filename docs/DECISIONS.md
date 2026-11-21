@@ -489,7 +489,8 @@ And a job that cannot produce a bundle fails loudly: the sample was deleted afte
 
 ```
 $ python -m pytest -q
-771 passed, 17 skipped, 3 xfailed        # was 702/17/3; 68 new tests
+771 passed, 17 skipped, 3 xfailed        # was 702/17/3; 68 new test functions,
+                                         # plus one queue e2e test split into two cases
 
 $ scripts/verify_setup.sh
 19 passed, 0 failed                      # was 17/0; store/encrypted-at-rest
