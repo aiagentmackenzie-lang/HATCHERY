@@ -27,6 +27,12 @@ samples/*.elf
 samples/*.dll
 data/
 
+# D32 audit archives: operator evidence, never committed.
+audit-archives/
+audit-*.jsonl
+audit-*.jsonl.gz
+audit-*.manifest.json
+
 # Node
 node_modules/
 dashboard/dist/

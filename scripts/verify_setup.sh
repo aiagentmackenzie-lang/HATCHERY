@@ -65,7 +65,7 @@ GUARD_BEFORE="$(guard_digest)"
 
 echo "HATCHERY baseline verification"
 echo "repo:   $ROOT"
-echo "python: $($PY -V 2>&1) ($(command -v "$PY"))"
+echo "python: $("$PY" -V 2>&1) ($(command -v "$PY"))"
 echo "node:   $(node -v 2>/dev/null || echo 'not found') / npm $(npm -v 2>/dev/null || echo 'not found')"
 echo
 
@@ -328,6 +328,74 @@ if grep -q 'audit chain keyed' "$WORK/api.log" 2>/dev/null; then
   pass "api/audit-key-announced" "startup names the audit key id and never the material"
 else
   fail "api/audit-key-announced" "startup did not report the audit key (see $WORK/api.log)"
+fi
+
+# D32: the audit log is finite without becoming a lie. Compact a real segment out of
+# the API's own database: the archive is 0600, the manifest is written last, the live
+# chain hands off to the archived tail, and the verifier reads the archive instead of
+# reporting a shorter green history.
+# Give the log enough history to compact. Each `token create` writes one chained
+# `token.created` row, through the real CLI and the real appender.
+for index in 1 2 3 4 5 6; do
+  node "$ROOT/server/scripts/token.mjs" create --role viewer --name "setup-$index" \
+    --db "$WORK/api/hatchery.db" >/dev/null 2>&1 || true
+done
+COMPACT_OUT="$WORK/api/audit-compact.json"
+if node "$ROOT/server/scripts/audit.mjs" compact --json --db "$WORK/api/hatchery.db" \
+    --max-rows 3 --apply >"$COMPACT_OUT" 2>"$WORK/api/audit-compact.err"; then
+  if "$PY" - "$COMPACT_OUT" <<'CHECKCOMPACT'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["applied"] is True, report
+assert report["reason"] is None, report
+assert report["window"]["rows"] >= 1, report
+assert report["join"]["proven"] is True, report
+assert report["tail"]["entry_hash"], report
+assert report["archive"]["sha256"], report
+assert report["manifest"]["sha256"], report
+assert report["archive"]["compression"] in ("none", "gzip"), report
+assert report["remaining_eligible"] >= 0, report
+CHECKCOMPACT
+  then
+    archive_rel="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["archive"]["path"])' "$COMPACT_OUT")"
+    if [ "$(stat -f '%Lp' "$WORK/api/$archive_rel" 2>/dev/null)" = "600" ]; then
+      pass "api/audit-compaction" "segment archived 0600, manifest written last, chain handed off"
+    else
+      fail "api/audit-compaction" "archive mode is $(stat -f '%Lp' "$WORK/api/$archive_rel" 2>/dev/null), expected 600"
+    fi
+  else
+    fail "api/audit-compaction" "compaction report did not describe a proven handoff (see $COMPACT_OUT)"
+  fi
+else
+  fail "api/audit-compaction" "compaction failed: $(tail -2 "$WORK/api/audit-compact.err" | tr '\n' ' ')"
+fi
+
+COMPACTED_VERIFY="$WORK/api/audit-verify-compacted.json"
+if node "$ROOT/server/scripts/audit.mjs" verify --json --db "$WORK/api/hatchery.db" \
+    >"$COMPACTED_VERIFY" 2>"$WORK/api/audit-verify-compacted.err"; then
+  if "$PY" - "$COMPACTED_VERIFY" "$COMPACT_OUT" <<'CHECKSEGMENTS'
+import json, sys
+report = json.load(open(sys.argv[1]))
+archive = json.load(open(sys.argv[2]))
+assert report["ok"] is True, report.get("first_broken")
+assert report["assurance"] == "keyed", report["assurance"]
+seg = report["archive"]
+assert seg["recorded"] is True, seg
+assert seg["checked"] is True, seg
+assert seg["verified"] is True, seg
+assert seg["join"] == "proven", seg
+assert seg["manifest_sha256"] == archive["manifest"]["sha256"], (seg, archive)
+assert seg["rows"] == archive["window"]["rows"], (seg, archive)
+assert report["segments"]["live_first_prev_hash"] == archive["tail"]["entry_hash"], report["segments"]
+assert report["archive_verified"] is True, report
+CHECKSEGMENTS
+  then
+    pass "api/audit-archive-verified" "live chain verifies across the boundary; archived rows were read"
+  else
+    fail "api/audit-archive-verified" "cross-segment verification was not intact (see $COMPACTED_VERIFY)"
+  fi
+else
+  fail "api/audit-archive-verified" "verification failed: $(tail -2 "$WORK/api/audit-verify-compacted.err" | tr '\n' ' ')"
 fi
 
 # ---------------------------------------------------------------------------

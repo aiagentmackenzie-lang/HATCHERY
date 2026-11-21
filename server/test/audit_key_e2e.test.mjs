@@ -364,6 +364,12 @@ test('a truncation that rewrites the stored head verifies — until it is anchor
     db.prepare('DELETE FROM audit_log WHERE id > 3').run();
     db.prepare("UPDATE audit_chain_meta SET value = ? WHERE key = 'head_id'").run(String(row3.id));
     db.prepare("UPDATE audit_chain_meta SET value = ? WHERE key = 'head_hash'").run(row3.entry_hash);
+    // A thorough database-level attacker rewrites the cumulative count too, otherwise
+    // the D32 accounting check (live + archived == every row ever chained) catches the
+    // deletion without any anchor. The limit this test pins is the *anchor* limit, so
+    // the attacker is given everything the database holds.
+    db.prepare("UPDATE audit_chain_meta SET value = ? WHERE key = 'chained_rows_total'").run('3');
+    db.prepare("UPDATE audit_chain_meta SET value = ? WHERE key = 'chained_row_count'").run('3');
   } finally {
     db.close();
   }
@@ -419,8 +425,15 @@ test('the HTTP verifier reports the same assurance and honours expect_head', asy
     );
     assert.equal(stale.status, 200);
     const staleBody = await stale.json();
-    assert.equal(staleBody.anchor.matches, false);
-    assert.equal(staleBody.first_broken.classification, 'replaced');
+    // D32 corrected the anchor semantics: an anchor says "the head I recorded is still
+    // part of this log", not "nothing has been appended since". A strict equality made
+    // an anchor unusable after one append — let alone a compaction — and it could not
+    // distinguish "more rows were written" from "the tail was truncated". Staleness is
+    // still visible: the row is found live and `head_at_anchor` is false.
+    assert.equal(staleBody.anchor.matches, true);
+    assert.equal(staleBody.anchor.found_in, 'live');
+    assert.equal(staleBody.anchor.head_at_anchor, false);
+    assert.equal(staleBody.first_broken, null);
 
     const current = cliJson(dbPath, ['audit', 'head']);
     const anchored = await fetch(
