@@ -620,7 +620,80 @@ $ python scripts/verify_fixtures.py
 
 The 35 new server tests are `token_lifecycle_e2e` (7), `cors_e2e` (3), `audit_chain` (13), `audit_chain_migration` (2), `audit_chain_concurrency` (1) and `token_store` (9). Every server test boots the **real built server** as a subprocess against a throwaway database and temporary sample store; token creation and expiry go through the real CLI as a subprocess. Pinned properties, not prose: create → authenticate → retire with no restart while a second live token keeps working; an in-flight `POST /api/submit` completing after the credential it used was retired; bootstrap/stored coexistence with bootstrap precedence demonstrated (a stored row claiming the bootstrap hash does not become the actor) and recovery after every stored token is retired; `HATCHERY_API_TOKEN` still admin; expired and revoked tokens refused with a byte-identical 401 while the audit row carries the exact reason and token id; the token id, prefix, truncation and wrong secret all refused; no secret in the database file, its WAL, the audit log, a listing, a response, or any CLI stderr; admin-only lifecycle endpoints and a 404 for `POST /api/tokens`; the dashboard origin allowed and unlisted origins never reflected, including preflight and `null`; wildcard/path entries refused with the reason named in the startup log; a modified row detected at its id as `modified`, a deleted one as `deleted`, an appended non-linking one as `inserted`, a stripped hash as `unhashed`, a removed tail as `truncated`; bounded paging with a tamper found in a later page; a pre-D30 database keeping every row, anchoring the chain and starting the real server; and two servers writing one database producing exactly one head.
 
-**Not done, deliberately.** No per-user accounts, OIDC/SSO or a central identity service: a token is a credential with a role, not an identity. No TTL sweeper — expiry is evaluated per request, so an expired row is inert without a background job (the row is kept, so the audit trail of when it existed survives). No KMS/HSM or external secret manager; the hash is unkeyed SHA-256, so an attacker with write access who recomputes **every** hash from their edit onwards (and the recorded head) produces a chain that verifies — the chain detects partial, accidental and naive edits and makes consistent forgery a deliberate whole-log rewrite, and that limit is written down rather than implied away. Tokens are not scoped to a single endpoint or a project. Rotation is not coordinated across multiple hosts sharing one database (single host only). No automatic rotation schedule. An audit append that fails (disk full, a lock held past the busy timeout) is logged and the request is still answered — that is D25's rule, and the consequence is stated: an append that never happened leaves no row for the chain to detect, only a server log line. The chain does not protect against a root attacker who can rewrite the database, the `audit_chain_meta` head and any backups consistently. Windows ACLs on the database are not verified. Browser-specific CORS behaviour (a real Chrome/Firefox/Safari preflight matrix) was not exercised — the header behaviour is tested over HTTP, not in a browser.
+**Not done, deliberately.** No per-user accounts, OIDC/SSO or a central identity service: a token is a credential with a role, not an identity. No TTL sweeper — expiry is evaluated per request, so an expired row is inert without a background job (the row is kept, so the audit trail of when it existed survives). The chain as shipped here is **unkeyed** SHA-256, so an attacker with write access who recomputes every hash from their edit onwards (and the recorded head) produces a chain that verifies. That is not left as a caveat: **D31 keys the chain and anchors its head**, and also fixes the `0644` database this record shipped. Read D31 for what replaced this section. Tokens are not scoped to a single endpoint or a project. Rotation is not coordinated across multiple hosts sharing one database (single host only). No automatic rotation schedule. An audit append that fails (disk full, a lock held past the busy timeout) is logged and the request is still answered — that is D25's rule, and the consequence is stated: an append that never happened leaves no row for the chain to detect, only a server log line. The chain does not protect against a root attacker who can rewrite the database, the `audit_chain_meta` head and any backups consistently. Windows ACLs on the database are not verified. Browser-specific CORS behaviour (a real Chrome/Firefox/Safari preflight matrix) was not exercised — the header behaviour is tested over HTTP, not in a browser.
+
+---
+
+## D31 — The audit chain is keyed, its completeness is anchored, and the database is private (2026-11-21)
+
+**Decision.** Close the three holes D30 left open, because each of them made a stated
+guarantee false in practice.
+
+1. **The chain is keyed.** Every row carries `entry_mac` (HMAC-SHA-256 over the same canonical form the digest covers) and `key_id` (the key that produced it), from a local, rotatable key ring. Recomputing the digests is no longer enough to forge the log.
+2. **Completeness can be anchored.** `npm run audit -- head` prints the current head and `verify --expect-head <id>:<hash>` enforces it, which is the only way to detect a truncation that also rewrites the stored head — or a whole-database rollback.
+3. **The database is private.** It is created `0600` (sidecars tightened, a directory we create `0700`). D30 shipped it at `0644` in a `0755` directory: on any multi-user host every local account could read the audit log and the token hashes, which made the rest of the argument moot.
+
+**Why now.** D30's "not done" list said the chain was unkeyed. That was honest, but the
+consequence was not small: the *first* thing a database-level attacker tries — edit a row,
+recompute every digest, rewrite the stored head — produced `ok: true`. A log that calls
+itself tamper-evident and cannot detect the obvious forgery is worse than an unkeyed one
+that says so, because an operator will rely on it. The same applies to truncation: a
+deleted tail plus a rewritten head is internally consistent by construction, and only a
+value held outside the database can say otherwise. And file modes are not a feature, but a
+`0644` credential-and-evidence store is a defect.
+
+- **MAC format.** `entry_mac = HMAC-SHA256(key, "hatchery.audit.mac.v1\0" || key_id || canonical)` where `canonical` is the D30 JSON array. `entry_hash`/`prev_hash` are **unchanged**, so a D30 log still verifies — the verifier reports it as `unkeyed` (or `mixed` once new rows are keyed) rather than silently upgrading the claim. A row's `key_id` is part of the MAC input, so a row cannot be relabelled to another key in the ring.
+- **Key ring, and why it looks like D28/D29.** `<db dir>/.audit-keyring`: versioned JSON, `0600`, at most 64 KiB and 32 keys, read with the sample-store rules (regular file, no symlink, no group/other bits); each key's id is `sha256("hatchery.audit.key-id.v1"||material)[:16]` and is **verified against the material on load**, so a hand-edited id is refused rather than trusted. Resolution: `HATCHERY_AUDIT_KEY` (64 hex), then `HATCHERY_AUDIT_KEY_FILE`, then the ring — and **the ring is authoritative once it exists**, because history can only be verified with the keys it names; a configured env key the ring does not hold is reported as ignored. With nothing configured the first start generates a ring with `O_EXCL` (two processes starting on a fresh database must agree on one key, or one process's rows become unverifiable) and announces it.
+- **Rotation, and no retirement.** `npm run audit -- key rotate` adds a new active key and keeps the old ones; new rows use the new key and every historical row still verifies by the id it names. Nothing is re-MAC'd — rewriting evidence to make it verify under a new key is exactly the rewrite the chain exists to detect. There is deliberately **no key retirement**: removing a key would make the rows it authenticated unverifiable, which is the opposite of what an operator wants after a leak. The ring is bounded at 32 keys, which is 32 rotations.
+- **Fail closed.** A malformed `HATCHERY_AUDIT_KEY`, a loose or symlinked key file, a ring at a newer version, a ring whose id does not match its material, a loose ring, or an unreadable ring **stops the API from starting** (`refusing to start: audit key ring unusable: …`). A row MAC'd with a key the ring does not hold is `unknown-key`, never a pass. A keyed row followed by an unkeyed one is a `unkeyed` downgrade — an unkeyed prefix is legitimate history, a hole in the middle is not. A busy append is retried three times (40 ms, 120 ms) before being logged and counted.
+- **Verification states its own strength.** The response is no longer a bare `ok`:
+  - `assurance`: `empty` (nothing chained), `unkeyed` (no MACs), `mixed` (a keyed suffix over unkeyed history), `keyed` (every chained row authenticated);
+  - `coverage`: `chained_rows`, `mac_rows`, `unkeyed_rows`, `legacy_rows`;
+  - `key`: active id and source (`env`/`file`/`ring`/`generated`), `env_ignored` — **never material**;
+  - `anchor`: the expected head and whether it matched;
+  - `append_failures_since_start`: appends this process logged instead of writing, so a hole caused by a full disk or an exhausted busy timeout is visible rather than silent;
+  - `first_broken.classification`: `modified`, `deleted`, `inserted`, `forged` (digest consistent, MAC not — the row was rewritten without the key), `unkeyed`, `unknown-key`, `truncated`, `replaced` (does not match the anchored head), `unhashed`.
+
+  `ok` means "no break found in the checks that were possible". The strength of those checks is `assurance`, and the docs say so in those words.
+- **Anchoring is a procedure, not magic.** `GET /api/audit/verify?expect_head=<id>:<hash>` and `npm run audit -- verify --expect-head …` accept a head the operator recorded elsewhere (a log collector, a ticket, a signed note). That is what turns "internally consistent" into "the log I saw yesterday is still a prefix of the log today". Without it, a deliberate truncation plus metadata rewrite is undetectable — and the verifier's own output is what makes that limit visible rather than implied.
+- **File posture.** `prepareDatabasePath` creates the data directory `0700` when it creates it, creates the database `0600`, tightens an existing database and its `-wal`/`-shm` sidecars, and warns (without failing) when an operator-supplied path cannot be tightened. The key ring is `0600`. Nothing in this slice changes where the data lives.
+- **The dashboard keeps working with auth on.** The API requires a credential as soon as one is configured, but the dashboard sends none — so D30's "the dashboard still works" was true only in open mode. The Vite dev proxy now injects `HATCHERY_DASHBOARD_TOKEN` into `/api` and `/ws`, which is a development convenience (the token lives in the operator's environment, never in the bundle) and is stated as such: the dashboard ships no auth flow of its own.
+
+**Evidence — test counts and real commands.** Clean copy of `511a978`; the transcript is
+in [`API-SECURITY.md`](API-SECURITY.md#captured-transcript).
+
+```
+$ python -m pytest -q
+795 passed, 17 skipped, 3 xfailed      # unchanged
+$ python scripts/verify_fixtures.py
+13 passed, 0 failed, 3 known defects   # unchanged
+$ (cd server && npm run typecheck && npm run build && npm test)
+ℹ tests 84        # was 69; 15 new (8 keyed-chain e2e, 7 key-config)
+ℹ pass 84
+$ scripts/verify_setup.sh
+24 passed, 0 failed                    # was 21; +db permissions, +keyed chain,
+                                       # +key announcement
+$ ruff check engine/ tests/ scripts/   # All checks passed!
+$ mypy engine/                         # 83 source files, no issues
+```
+
+The 15 new tests attack the log the way D30 could not survive and require each attack to
+be caught at the right row: a full digest rewrite (edit, recompute every `entry_hash` and
+every `prev_hash`, fix the stored head) is `forged` at the edited row, by both the CLI and
+the HTTP endpoint; deleting the key ring is `unknown-key` rather than a shorter green
+history; a keyed chain with a stripped MAC in the middle is a `unkeyed` downgrade; an
+unkeyed prefix is reported as `mixed` with exact coverage; rotation leaves every
+historical row verifiable across two keys; two processes racing to create a ring agree on
+one key id; a key file that is group-readable or a symlink and a ring at a newer version
+or with a mismatched id **stop the API from starting**; `HATCHERY_AUDIT_KEY` is used as-is
+and never copied beside the database, and a wrong key fails closed; the ring wins over a
+later env key and the startup log says the env key is ignored; key material never appears
+in stdout, stderr, a response, a log line or the database; and the database, its sidecars
+and the ring are `0600` in a `0700` directory. The truncation test pins the remaining
+limit *as a limit*: the same shortened log verifies without an anchor and fails
+`replaced` with one.
+
+**Not done, deliberately.** No KMS/HSM, remote signing or external anchor service: the key is a local `0600` file and the anchor is an operator procedure, not a daemon. The default generated ring sits beside the database, which protects against database-only tampering (a `sqlite3` edit, a copied `.db`, a backup that includes the database but not the key) and **not** against an attacker who can read that directory; `HATCHERY_AUDIT_KEY_FILE` outside it is the stronger posture and the startup banner says so. No encryption of the audit log itself (it is now readable only by its owner, not encrypted at rest). No key retirement (see above). No automatic rotation schedule. The append-failure counter is per process and in memory, so a restart forgets the count while the server log keeps the lines. A root attacker who can read the key, rewrite the database and rewrite every backup consistently is out of scope, and so is a host whose clock is wrong (timestamps are covered by the MAC but not monotonic). A browser CORS matrix and Windows ACLs are still unverified.
 
 ---
 
@@ -636,7 +709,7 @@ The 35 new server tests are `token_lifecycle_e2e` (7), `cors_e2e` (3), `audit_ch
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
 - **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. What remains undone inside it: KMS/HSM or escrow, multi-host stores/rotation, scheduled rotation/expiry, secure erase, Windows ACL verification, and removing the single-use replay staging file. Result-bundle retention is still out of scope.
-- **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit hash chain with a bounded verifier. There is deliberately still no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM-backed (keyed) chain, no multi-host token database and no automatic rotation schedule. The chain detects partial, accidental or naive edits; an attacker who recomputes every hash and the recorded head produces one that verifies.
+- **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation schedule, and no encryption of the audit log — it is owner-readable, not encrypted at rest.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 
 ---

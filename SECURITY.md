@@ -77,23 +77,40 @@ described here in the terms an auditor would use.
   bootstrap token and no stored token row the API is unauthenticated and says so at
   startup; actions are recorded as `authenticated: 0`. Creating a token closes it
   immediately; retiring the last token does **not** re-open it.
-- **The audit log is a hash chain.** Each new row carries `prev_hash` (the previous
-  row's hash, or 64 zeros genesis) and `entry_hash = sha256(canonical JSON array of
-  [domain, id, prev_hash, actor, role, authenticated, method, path, status_code,
+- **The audit log is a keyed hash chain.** Each new row carries `prev_hash` (the
+  previous row's hash, or 64 zeros genesis), `entry_hash = sha256(canonical JSON array
+  of [domain, id, prev_hash, actor, role, authenticated, method, path, status_code,
   action, detail, created_at])` — exactly the stored fields, no token, header, body or
-  sample byte. The head read and the insert share one `BEGIN IMMEDIATE` transaction,
-  so two API processes or the API plus the CLI cannot fork the chain; the verifier is
-  tested against two servers writing one database.
+  sample byte — and `entry_mac = HMAC-SHA256(key, "hatchery.audit.mac.v1" || key_id ||
+  canonical)` from the local audit key ring (D31). The head read, the insert and the MAC
+  share one `BEGIN IMMEDIATE` transaction, so two API processes or the API plus the CLI
+  cannot fork the chain; the verifier is tested against two servers writing one database.
+- **The audit key.** `HATCHERY_AUDIT_KEY` (64 hex) or `HATCHERY_AUDIT_KEY_FILE` (regular
+  file, not a symlink, no group/other bits), else a generated `<db dir>/.audit-keyring`
+  (`0600`, versioned, at most 64 KiB and 32 keys, key ids verified against their
+  material). The ring is authoritative once it exists — a later env key that the ring
+  does not hold is ignored and reported, because history verifies only with the keys it
+  names. Rotation (`npm run audit -- key rotate`) adds a new active key and keeps the
+  old ones, so no row is ever re-MAC'd; there is no retirement, because deleting a key
+  would make the rows it authenticated unverifiable. Key material is never written to
+  the database, a log, a response, a listing or a command line — only the derived id.
+  An unreadable, loose, symlinked or newer-version ring, or a malformed env key,
+  **stops the API from starting** rather than silently writing unkeyed rows.
 - **What the chain does and does not prove.** `GET /api/audit/verify` (admin-only,
   itself audited, bounded to 5 000 rows per call by default and 50 000 maximum)
-  recomputes the chain and reports the first `modified`, `deleted`, `inserted`,
-  `truncated` or `unhashed` row, with the recorded head. The hash is **unkeyed**: an
-  attacker with write access who recomputes every subsequent hash *and* the recorded
-  head produces a chain that verifies. The chain detects partial, accidental and naive
-  edits and makes consistent forgery a deliberate whole-log rewrite; there is no KMS,
-  no HMAC key and no remote anchor. A root attacker who rewrites the database and every
-  backup consistently is out of scope, and so is an append that failed before it was
-  written (it is logged and the request is still answered — D25's rule).
+  recomputes the chain and reports the first `forged` (digest consistent, MAC not — the
+  row was rewritten without the key), `modified`, `deleted`, `inserted`, `unkeyed`
+  (a keyed row followed by an unkeyed one), `unknown-key`, `truncated` or `replaced`
+  (does not match an anchored head) row. It also reports `assurance`
+  (`empty`/`unkeyed`/`mixed`/`keyed`), `coverage`, the key id/source (never material),
+  the anchor and `append_failures_since_start`, because a bare `ok` overstates what was
+  checked. **A deliberate truncation that also rewrites the stored head, or a restored
+  older database, is internally consistent**: only a head recorded outside the database
+  detects it, which is what `npm run audit -- head` + `verify --expect-head` are for.
+  A root attacker who can read the key, rewrite the database and rewrite every backup
+  consistently is out of scope; so is an append that failed before it was written (it is
+  logged and counted, and the request is still answered — D25's rule). The log is
+  readable by its owner, not encrypted at rest.
 - **Pre-D30 history is honest about itself.** The migration is additive and does not
   backfill: older rows keep `NULL` hashes, the migration records the pre-chain
   boundary once, and the chain starts at the documented genesis anchor. `verify`
@@ -146,7 +163,11 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 - [ ] Keep the bootstrap `HATCHERY_ADMIN_TOKEN` set even when stored admin tokens exist. It is the recovery path when a token is lost, expired or the token table is damaged.
 - [ ] Treat the API's database (`HATCHERY_DB_PATH`, default `data/hatchery.db`) as a credential store: it holds the token hashes and the audit chain. Back it up and read-protect it like the sample-store key.
 - [ ] Read the audit log (`GET /api/audit`) after an incident — it records who did what, without storing the credential itself — then run `GET /api/audit/verify` and confirm `ok: true`. A break names the row and whether it was modified, deleted, inserted, truncated or unhashed; a break in the middle means every row after it is suspect.
-- [ ] Remember what the chain cannot do: it is unkeyed. An attacker with write access who rewrites every hash and the recorded head is not detected. Ship the audit log or its head somewhere else (a syslog collector, a read-only copy) if that matters.
+- [ ] Keep the audit key off the database directory if you can: point `HATCHERY_AUDIT_KEY_FILE` at a `0600` file (no symlink) outside the data directory, or set `HATCHERY_AUDIT_KEY` from your secret store. The generated key beside the database stops a database-only rewrite, not a reader of that directory.
+- [ ] Rotate the audit key when you rotate credentials (`npm run audit -- key rotate`): old keys stay so history still verifies. Never delete a key by hand — a key that is gone takes the verifiability of every row it MAC'd with it.
+- [ ] Record the chain head somewhere the database writer cannot rewrite (`npm run audit -- head` into your log collector or a ticket), and run `verify --expect-head <id>:<hash>` after a restore or a suspected incident. Without an anchor, a truncated tail plus a rewritten head verifies — that is the one limit keying does not remove.
+- [ ] Read `assurance`, not just `ok`: `unkeyed` or `mixed` means part of the log is not authenticated (pre-D31 history), and `append_failures_since_start` above zero means an audit row was lost and logged instead of written.
+- [ ] Treat `data/hatchery.db` as a credential store and check its mode is `0600` (it is created that way; a copy or a restore may change it).
 - [ ] List `HATCHERY_ALLOWED_ORIGINS` explicitly if you serve a dashboard from anywhere other than the documented `5173` origin. Do not try `*` — it is refused. CORS does not protect an API with no token; the token does.
 - [ ] Keep `HATCHERY_HOST=127.0.0.1` unless you have a specific reason and a token set.
 - [ ] Restrict `HATCHERY_ALLOWED_SAMPLE_ROOTS` to your real intake directory.
@@ -171,7 +192,10 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 | Token lifecycle | `npm run token -- create\|list\|retire\|expire` locally; `GET /api/tokens`, `POST /api/tokens/:id/retire` and `POST /api/tokens/:id/expire` for admins; rotation needs no restart; expiry and revocation checked per request; refusals are a generic 401 with the reason in the audit row only |
 | Secrets in storage/logs | the raw token is never stored, printed twice, logged, audited or returned in a response; only `sha256(domain \|\| token)` and the id/prefix are persisted |
 | Audit log | every answered request is recorded in `audit_log` (actor, role, authenticated, method, path minus query, status). No token, header, body or sample byte is stored. `GET /api/audit` is admin-only |
-| Audit integrity | append-only hash chain (`prev_hash`/`entry_hash`, SHA-256 over a canonical encoding of the stored fields), appended under `BEGIN IMMEDIATE`; `GET /api/audit/verify` is admin-only, bounded and classifies the first break. Unkeyed — a consistent whole-log rewrite is not detected. Pre-D30 rows are not covered and say so |
+| Audit integrity | append-only **keyed** hash chain: `prev_hash`/`entry_hash` (SHA-256) plus `entry_mac`/`key_id` (HMAC-SHA-256 from the audit key ring), appended under `BEGIN IMMEDIATE`; recomputing the digests is not enough to forge a row. `GET /api/audit/verify` is admin-only, bounded, classifies the first break (`forged`/`modified`/`deleted`/`inserted`/`unkeyed`/`unknown-key`/`truncated`/`replaced`) and reports `assurance`/`coverage` — a bare `ok` is never the whole answer |
+| Audit completeness | a truncation that rewrites the stored head, and a restored older database, are only detected against a head recorded elsewhere: `npm run audit -- head` → `verify --expect-head <id>:<hash>` |
+| Audit key | `HATCHERY_AUDIT_KEY` / `HATCHERY_AUDIT_KEY_FILE` / generated `<db dir>/.audit-keyring` (0600, ≤64 KiB, ≤32 keys); the ring is authoritative once it exists; no retirement; an unusable key stops the API rather than downgrading the chain |
+| Local state | the API database (token hashes + audit log) is `0600`, its `-wal`/`-shm` `0600`, and a data directory it creates `0700` |
 | CORS | explicit allow-list: the dashboard origin on 5173 plus `HATCHERY_ALLOWED_ORIGINS` (exact match, no wildcard, no reflection, no credentials). Not authentication |
 | Sample path submissions | restricted to `samples/` and `uploads/` |
 | Upload filenames | reduced to a bare name; traversal segments stripped |

@@ -1,10 +1,11 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `e374cb3` (Phase 4c: the token
-lifecycle, the CORS allow-list and the audit hash chain, D30). The D28 store
+Verified **21 November 2026** on top of revision `511a978` (Phase 4c: the token
+lifecycle and CORS allow-list, D30; the keyed audit chain, its anchor and the file
+posture, D31). The D28 store
 baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
-[`BACKUP.md`](BACKUP.md#captured-transcript); the D30 transcript is in
+[`BACKUP.md`](BACKUP.md#captured-transcript); the D30/D31 transcript is in
 [`API-SECURITY.md`](API-SECURITY.md#captured-transcript). The detector scorecard
 is unchanged from `4b48490`.
 
@@ -30,8 +31,9 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   3 xfailed** (unchanged from `34565f7`; 24 tests cover key rotation,
   retirement, backup and restore). `ruff` is clean and `mypy engine/` reports
   no issues in 83 source files.
-- **The server suite is 69 node tests, 0 failing** (was 34 at `34565f7`; 35 new
-  cover token lifecycle, CORS and the audit chain). The compiled server is built
+- **The server suite is 84 node tests, 0 failing** (was 34 at `34565f7`; 35 cover
+  token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
+  anchoring and the file posture). The compiled server is built
   first — the tests import from `server/dist/`. The 3 cross-language queue tests
   (`node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs`) also
   pass, and the dashboard builds.
@@ -44,7 +46,8 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **21 passed, 0 failed** (was 19/0).
+  state: **24 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30, plus D31's
+  `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -110,13 +113,17 @@ does not re-certify those features.
 
 | Gap | What it means |
 |---|---|
-| The audit chain is unkeyed | SHA-256 with no secret. It detects partial, accidental and naive edits; an attacker with write access who recomputes every hash from their edit onwards **and** the recorded head produces a chain that verifies. No KMS/HSM, no external anchor. |
-| Pre-D30 rows are not covered | The migration does not backfill. Rows written before the chain existed keep `NULL` hashes and are reported as `legacy`/`covered: false`; their count is anchored so a later deletion is visible, but no retroactive tamper-evidence is claimed. |
+| The audit chain is keyed **locally** | HMAC-SHA-256 from a local key ring (D31). A database-only attacker cannot forge a row, but an attacker who can also read the key file — which by default sits beside the database — can. `HATCHERY_AUDIT_KEY_FILE` outside the data directory is the stronger posture; the startup banner says so. No KMS/HSM and no remote signer. |
+| Completeness needs an anchor | A truncation that also rewrites the stored head, and a restored older database, are internally consistent. Only a head recorded outside the database detects them (`npm run audit -- head` → `verify --expect-head`). Without that procedure, the verifier reports `ok` on a shortened log and says nothing false — but nothing protective either. |
+| Audit key rotation only moves forward | Old keys stay in the ring (bounded at 32) so history verifies; there is no retirement, because removing a key would un-authorise the rows it MAC'd. A ring at the 32-key limit must be archived and restarted deliberately, which is not automated. |
+| The append-failure counter is per process | `append_failures_since_start` is in memory. A restart resets the count; the server log keeps the lines. |
+| Pre-D30/D31 rows are not covered | The migrations do not backfill. Rows written before the chain existed keep `NULL` hashes (reported as `legacy`), and rows written between D30 and D31 keep `NULL` MACs (reported as `unkeyed`/`mixed`, never upgraded in the telling). |
 | A failed audit append is invisible to the chain | `recordAudit` never throws (D25). A write that fails before it happens is logged and the request is answered; the chain can only see rows that exist. |
 | Single-host token store | Tokens and the chain live in one SQLite file. There is no multi-host token database, no propagation and no coordinated rotation across hosts; the CLI and the server sharing the file (WAL + a 5 s busy timeout) is the tested case. |
 | No create endpoint | Token creation is `npm run token -- create` on the host. An admin who is only reachable over HTTP cannot mint a token; that is deliberate (a secret must not cross the wire), but it is an operational constraint. |
 | CORS is not authentication | An unlisted origin is prevented from *reading* a response by the browser; it still reaches the API and still needs a token. No browser matrix was run. |
-| The API database is a credential store | `HATCHERY_DB_PATH` (default `data/hatchery.db`) holds the token hashes and the audit chain; it needs the same care as the sample-store key. It is in `.gitignore` (`data/`), but nothing backs it up automatically. | The store's storage/retention guarantees
+| The API database is a credential store | `HATCHERY_DB_PATH` (default `data/hatchery.db`) holds the token hashes and the audit chain; it is created `0600` in a `0700` directory (D31) and needs the same care as the sample-store key. It is in `.gitignore` (`data/`), but nothing backs it up automatically. Windows ACLs are not verified. |
+| The dashboard has no auth flow | The bundled dashboard sends no credential of its own. With auth closed it works through the Vite dev proxy's `HATCHERY_DASHBOARD_TOKEN`; a hosted/production dashboard would need its own token handling, which is not built. | The store's storage/retention guarantees
 and the D28 transcript are in [`RETENTION.md`](RETENTION.md); key rotation,
 retirement, backup/restore, their known gaps (KMS/escrow, multi-host, scheduled
 rotation, secure erase, a signed manifest, Windows ACLs, the replay staging
@@ -138,13 +145,14 @@ scripts/verify_setup.sh
 # the store on its own (temporary root; no repository state is touched)
 HATCHERY_SAMPLE_STORE=/tmp/hatchery-store python -m engine.cli store status --json
 
-# the API's credentials, on their own (temporary database; no repository state)
+# the API's credentials and its audit chain, on their own (temporary database)
 HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs create --role viewer --expires-in 1h
 HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/token.mjs list --json
+HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   # exit 0, assurance keyed
 ```
 
 Expected: `795 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `21 passed, 0 failed`.
+`13 passed, 0 failed, 3 known defects`; the setup check `24 passed, 0 failed`.
 
 ## Maintenance
 
