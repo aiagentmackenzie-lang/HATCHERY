@@ -13,6 +13,13 @@ build/
 results/
 uploads/
 samples/*.sample
+# D28 sample store: the index and the key are local state, never committed.
+samples/*.db
+samples/*.db-wal
+samples/*.db-shm
+samples/.sample-key
+samples/.tmp-*
+samples/.store.lock
 samples/*.exe
 samples/*.elf
 samples/*.dll

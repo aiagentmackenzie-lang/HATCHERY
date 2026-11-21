@@ -27,6 +27,11 @@ dependencies = [
     "aiofiles>=24.1",
     "httpx>=0.28",
     "pyyaml>=6.0",
+    # D28: encryption at rest for the sample store (AES-256-GCM). This was a
+    # transitive dev dependency before the store needed it at runtime; declaring
+    # it is what makes "encrypted at rest" a supported property rather than an
+    # accident of what a test extra happened to install.
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
