@@ -526,7 +526,15 @@ def _build_pdf(tmp_path: Path, *, attachment: bytes = b"evil embedded payload",
     writer.add_blank_page(width=200, height=200)
     writer.add_attachment(attachment_name, attachment)
     if javascript:
-        writer.add_js(javascript)
+        # pypdf 6 exposes add_js; pypdf 7 removed it in favour of
+        # add_open_action(JavaScript(...)). Keep the fixture builder usable on
+        # whichever version the dev extra resolves.
+        if hasattr(writer, "add_open_action"):
+            from pypdf.actions import JavaScript
+
+            writer.add_open_action(JavaScript(javascript))
+        else:
+            writer.add_js(javascript)
     path = tmp_path / "invoice.pdf"
     writer.write(str(path))
     return path

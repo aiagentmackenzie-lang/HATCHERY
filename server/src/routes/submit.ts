@@ -20,16 +20,36 @@ const UPLOADS_DIR = path.join(ENGINE_ROOT, 'uploads');
  * tool must not offer that. Override with HATCHERY_ALLOWED_SAMPLE_ROOTS
  * (colon-separated) if you have a different intake directory.
  */
+/**
+ * Canonicalise a path for comparison.
+ *
+ * macOS checkouts under /tmp are reached through the /private/tmp symlink, and
+ * a user may legitimately submit through a symlinked path. Comparing unresolved
+ * strings made the allowed-root check reject the same file it should accept, so
+ * resolve symlinks on both sides before comparing.
+ */
+function canonicalPath(candidate: string): string {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(candidate)), path.basename(candidate));
+    } catch {
+      return path.resolve(candidate);
+    }
+  }
+}
+
 function allowedSampleRoots(): string[] {
   const configured = process.env.HATCHERY_ALLOWED_SAMPLE_ROOTS;
   if (configured) {
-    return configured.split(path.delimiter).filter(Boolean).map((p) => path.resolve(p));
+    return configured.split(path.delimiter).filter(Boolean).map(canonicalPath);
   }
-  return [path.join(ENGINE_ROOT, 'samples'), UPLOADS_DIR].map((p) => path.resolve(p));
+  return [path.join(ENGINE_ROOT, 'samples'), UPLOADS_DIR].map(canonicalPath);
 }
 
 function isAllowedSamplePath(candidate: string): boolean {
-  const resolved = path.resolve(candidate);
+  const resolved = canonicalPath(candidate);
   return allowedSampleRoots().some(
     (root) => resolved === root || resolved.startsWith(root + path.sep),
   );
@@ -111,6 +131,9 @@ export async function submitRoutes(app: FastifyInstance) {
           allowed_roots: allowedSampleRoots(),
         });
       }
+      // Hand the worker the canonical path, so it reads the file that was
+      // actually validated rather than a symlink alias.
+      filePath = canonicalPath(filePath);
 
       if (!fs.existsSync(filePath)) {
         return reply.code(404).send({ error: 'File not found', path: filePath });

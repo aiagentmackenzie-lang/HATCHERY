@@ -138,72 +138,90 @@ class CapaScanner:
                 error="capa not available — install flare-capa",
             )
 
-        result = CapaResult(is_available=True)
         start = time.monotonic()
 
         try:
             # Use CLI for reliability
             if HAS_CAPA:
-                raw_output = self._run_capa_cli(file_path, format=format)
+                raw_output, error = self._run_capa_cli(file_path, format=format)
             else:
-                raw_output = self._run_capa_python(file_path)
-
-            if raw_output:
-                result = self._parse_output(raw_output, is_available=True)
-
+                raw_output, error = self._run_capa_python(file_path)
         except subprocess.TimeoutExpired:
-            result.error = "capa analysis timed out (>120s)"
-        except Exception as e:
-            result.error = f"capa analysis failed: {e}"
+            raw_output, error = None, "capa analysis timed out (>120s)"
+        except Exception as e:  # pragma: no cover - defensive
+            raw_output, error = None, f"capa analysis failed: {e}"
+
+        if raw_output is None:
+            # The detector could not run (missing ruleset, nonzero exit, bad
+            # JSON). Report that as unavailable with the diagnostic, never as a
+            # successful scan with zero capabilities.
+            result = CapaResult(
+                is_available=False,
+                error=error or "capa produced no output",
+            )
+        else:
+            try:
+                result = self._parse_output(raw_output, is_available=True)
+            except Exception as e:  # pragma: no cover - defensive
+                result = CapaResult(
+                    is_available=False,
+                    error=f"capa output parse failed: {e}",
+                )
 
         elapsed = time.monotonic() - start
         result.analysis_time_ms = elapsed * 1000
-        result.is_available = True
 
         logger.info(
-            "capa analysis of %s: %d capabilities in %.1fms",
+            "capa analysis of %s: %d capabilities in %.1fms (available=%s, error=%s)",
             file_path.name, len(result.capabilities), result.analysis_time_ms,
+            result.is_available, result.error,
         )
         return result
 
-    def _run_capa_cli(self, file_path: Path, format: Optional[str] = None) -> Optional[dict]:
-        """Run capa CLI and return parsed JSON output.
+    def _run_capa_cli(
+        self, file_path: Path, format: Optional[str] = None
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Run capa CLI and return parsed JSON output plus a diagnostic.
 
         Args:
             file_path: Path to the binary.
             format: Optional explicit input format passed as ``-f``.
 
         Returns:
-            Parsed JSON dict or None on failure.
+            (parsed JSON dict, None) on success, (None, reason) on failure.
         """
-        try:
-            command = ["capa", "-j"]
-            if format:
-                command += ["-f", format]
-            command.append(str(file_path))
-            proc = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if proc.returncode != 0:
-                logger.warning("capa returned non-zero: %s", proc.stderr[:500])
-                return None
+        command = ["capa", "-j"]
+        if format:
+            command += ["-f", format]
+        command.append(str(file_path))
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            stderr = " ".join(proc.stderr.split())[:400]
+            logger.warning("capa returned non-zero (%d): %s", proc.returncode, stderr)
+            return None, f"capa exited with status {proc.returncode}: {stderr}"
 
-            return json.loads(proc.stdout)
+        if not proc.stdout.strip():
+            return None, "capa produced empty output"
+
+        try:
+            return json.loads(proc.stdout), None
         except json.JSONDecodeError as e:
             logger.error("Failed to parse capa JSON: %s", e)
-            return None
+            return None, f"capa emitted invalid JSON: {e}"
 
-    def _run_capa_python(self, file_path: Path) -> Optional[dict]:
+    def _run_capa_python(self, file_path: Path) -> tuple[Optional[dict], Optional[str]]:
         """Run capa via Python API (fallback).
 
         Args:
             file_path: Path to the binary.
 
         Returns:
-            Parsed dict or None on failure.
+            (parsed dict, None) on success, (None, reason) on failure.
         """
         try:
             import capa
@@ -214,10 +232,10 @@ class CapaScanner:
 
             # Convert to JSON-serializable dict
             output = capa_json.render_capabilities(capabilities)
-            return json.loads(json.dumps(output))
+            return json.loads(json.dumps(output)), None
         except Exception as e:
             logger.error("capa Python API failed: %s", e)
-            return None
+            return None, f"capa Python API not usable: {e}"
 
     def _parse_output(self, raw: dict, is_available: bool = True) -> CapaResult:
         """Parse capa JSON output into structured CapaResult.
