@@ -1777,15 +1777,17 @@ def _store_root() -> Path:
     return resolve_store_root()
 
 
-def _store_command_failed(exc: Any, as_json: bool) -> NoReturn:
-    """Report a store error on stderr and exit 1 — never print key material."""
+def _store_command_failed(
+    exc: Any, as_json: bool, code: int = STORE_EXIT_ERROR
+) -> NoReturn:
+    """Report a store error on stderr and exit non-zero — never print key material."""
     reason = getattr(exc, "reason", "error")
     message = getattr(exc, "message", str(exc))
     if as_json:
         click.echo(json.dumps({"ok": False, "reason": reason, "message": message}), err=True)
     else:
         click.echo(f"HATCHERY store: {reason}: {message}", err=True)
-    raise SystemExit(STORE_EXIT_ERROR)
+    raise SystemExit(code)
 
 
 def _human_size(value: int) -> str:
@@ -1913,6 +1915,23 @@ def store_status(
     )
     if key.get("configured"):
         console.print(f"  Key: [cyan]{key['key_id']}[/cyan] from {key['source']}")
+        counts = key.get("per_key_blob_counts") or {}
+        if counts:
+            rendered = ", ".join(f"{name}×{count}" for name, count in sorted(counts.items()))
+            console.print(f"  Keys: {len(key.get('key_ids') or [])} in ring · blobs per key: {rendered}")
+        if key.get("retired_key_ids"):
+            console.print(
+                f"  Retired keys: {', '.join(key['retired_key_ids'])} "
+                "[dim](kept for reading; retire one only when no blob needs it)[/dim]"
+            )
+        if key.get("rotation_complete") is False:
+            console.print(
+                f"  [yellow]rotation incomplete[/yellow] — "
+                f"{key.get('rotation_pending', 0)} blob(s) still on a retired key; "
+                "run `hatchery store key rotate` (it resumes)"
+            )
+        else:
+            console.print("  Rotation: [green]complete[/green] (no blob needs a retired key)")
         if key.get("warning"):
             console.print(f"  [yellow]{key['warning']}[/yellow]")
     else:
@@ -1959,6 +1978,12 @@ def store_verify(
             f"verify: {report['checked']} checked, {report['passed']} passed, "
             f"{report['failed']} failed, {report['legacy']} legacy plaintext"
         )
+        ring = (report.get("key") or {})
+        if ring.get("configured") and ring.get("rotation_complete") is False:
+            console.print(
+                f"  [yellow]rotation incomplete[/yellow] — "
+                f"{ring.get('rotation_pending', 0)} blob(s) still on a retired key"
+            )
     if not report["ok"]:
         raise SystemExit(STORE_EXIT_FAILURES)
 
@@ -2100,6 +2125,311 @@ def store_keygen(output: Path) -> None:
     click.echo(
         json.dumps({"path": str(output), "key_id": key.key_id, "mode": "0600"})
     )
+
+
+# ---------------------------------------------------------------------------
+# hatchery store key — key ring, rotation and retirement (D29)
+# ---------------------------------------------------------------------------
+
+
+@store.group("key")
+def store_key() -> None:
+    """Key ring: active key, retired keys, per-blob resolution and rotation.
+
+    The envelope names its key id; decryption resolves that key by id, never by
+    trying keys until one works. `status` reports the ring and whether rotation
+    is complete, `rotate` re-wraps every blob onto a new active key (idempotent,
+    resumable and atomic per blob), and `retire` removes a retired key only when
+    no blob still needs it. No command prints key material.
+    """
+
+
+@store_key.command("status")
+@_store_common_options
+def store_key_status(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool,
+) -> None:
+    """Show the active key id, retired keys and per-key blob counts."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        report = {
+            "store_root": str(sample_store.root),
+            "key": sample_store.key_status(),
+            "rotation": sample_store.rotation_state(),
+        }
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+        return
+    key = report["key"]
+    rotation = report["rotation"]
+    if not key.get("configured"):
+        console.print(f"[yellow]No key configured.[/yellow] {key.get('note', '')}")
+        return
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Sample-store key ring\n"
+            f"Active:  [cyan]{key['active_key_id']}[/cyan] from {key['source']}\n"
+            f"Keys:    {len(key.get('key_ids') or [])} in ring"
+            + (f" · retired {', '.join(key['retired_key_ids'])}" if key.get("retired_key_ids") else "")
+            + "\n"
+            f"Blobs:   {rotation['blobs']} total · "
+            + (", ".join(f"{name}×{count}" for name, count in sorted(rotation['per_key_blob_counts'].items())) or "none")
+            + "\n"
+            "Rotation: "
+            + ("[green]complete[/green]" if rotation["rotation_complete"] else f"[yellow]incomplete[/yellow] ({rotation['rotation_pending']} pending)")
+            + (" · [yellow]in progress[/yellow]" if rotation.get("rotation_in_progress") else ""),
+            title="Key ring",
+        )
+    )
+    if key.get("warning"):
+        console.print(f"  [yellow]{key['warning']}[/yellow]")
+
+
+@store_key.command("rotate")
+@_store_common_options
+@click.option("--dry-run", is_flag=True, help="Report what would be re-wrapped without writing")
+@click.option("--key-file", "key_file", type=click.Path(path_type=Path), default=None,
+              help="Use this 0600 key file as the new active key (default: generate one)")
+def store_key_rotate(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, dry_run: bool,
+    key_file: Optional[Path],
+) -> None:
+    """Re-wrap every blob onto a new active key, atomically and resumably."""
+    from engine.store import SampleStoreError, load_key_file
+
+    sample_store = None
+    try:
+        new_key = load_key_file(key_file) if key_file is not None else None
+        sample_store = _open_store(store_root)
+        report = sample_store.rotate_key(new_key=new_key, dry_run=dry_run)
+    except SampleStoreError as exc:
+        code = STORE_EXIT_FAILURES if getattr(exc, "reason", "") in {
+            "unknown-key-id", "rotation-incomplete", "no-key",
+        } else STORE_EXIT_ERROR
+        _store_command_failed(exc, as_json, code)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        mode = "dry run" if dry_run else report.get("mode", "rotate")
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Key rotation ({mode})\n"
+                f"Active:  {report.get('active_before') or '(none)'} → "
+                f"[cyan]{report.get('new_key_id') or report.get('active_after') or '(would generate)'}[/cyan]\n"
+                f"Blobs:   {len(report.get('rotated') or [])} re-wrapped · "
+                f"{len(report.get('already_active') or [])} already active · "
+                f"{len(report.get('would_rotate') or [])} would rotate · "
+                f"{len(report.get('failed') or [])} failed",
+                title="Rotate",
+            )
+        )
+        for item in report.get("failed") or []:
+            console.print(
+                f"  [red]failed[/red] {item.get('sha256', '?')[:16]} "
+                f"({item.get('reason')}: {item.get('message')})"
+            )
+        if not dry_run:
+            if report.get("complete"):
+                console.print("  [green]Rotation complete[/green] — no blob references a retired key.")
+            else:
+                console.print(
+                    "  [yellow]Rotation incomplete[/yellow] — some blobs were left untouched. "
+                    "Run the command again to resume; nothing was deleted."
+                )
+    if dry_run:
+        if report.get("failed"):
+            raise SystemExit(STORE_EXIT_FAILURES)
+        return
+    if report.get("failed") or not report.get("complete"):
+        raise SystemExit(STORE_EXIT_FAILURES)
+
+
+@store_key.command("retire")
+@_store_common_options
+@click.argument("key_id")
+def store_key_retire(
+    store_root: Optional[Path], results_root: Optional[Path],
+    queue_db: Optional[Path], as_json: bool, key_id: str,
+) -> None:
+    """Remove a retired key from the ring; refused while any blob needs it."""
+    from engine.store import SampleStoreError
+
+    sample_store = None
+    try:
+        sample_store = _open_store(store_root)
+        report = sample_store.retire_key(key_id)
+    except SampleStoreError as exc:
+        code = STORE_EXIT_FAILURES if exc.reason in {
+            "key-in-use", "key-not-found", "rotation-incomplete",
+        } else STORE_EXIT_ERROR
+        _store_command_failed(exc, as_json, code)
+        return
+    finally:
+        if sample_store is not None:
+            sample_store.close()
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        console.print(
+            f"[green]Retired key {report['retired']}[/green]. Active: "
+            f"[cyan]{report['active_key_id']}[/cyan] · ring: "
+            f"{', '.join(report['key_ids'])}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# hatchery store backup / restore (D29)
+# ---------------------------------------------------------------------------
+
+
+@store.command("backup")
+@click.option("--output", "-o", "output", type=click.Path(path_type=Path), required=True,
+              help="Directory for the backup (manifest is written last)")
+@click.option("--include-key", is_flag=True,
+              help="Include the key ring (a secret) inside the backup; loudly warned")
+@click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None,
+              help="Queue database to include (default: data/queue.db or HATCHERY_QUEUE_DB)")
+@click.option("--store", "store_root", type=click.Path(path_type=Path), default=None,
+              help="Sample store root (default: HATCHERY_SAMPLE_STORE or <checkout>/samples)")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def store_backup(
+    output: Path, include_key: bool, queue_db: Optional[Path],
+    store_root: Optional[Path], as_json: bool,
+) -> None:
+    """Write a self-describing backup of the store (blobs + index) and the queue.
+
+    Live SQLite databases are copied with SQLite's backup API (never a file copy
+    of a WAL database), every blob is hashed as it is copied, and the manifest is
+    written last — an interrupted backup has no manifest. The key is excluded by
+    default; --include-key writes it 0600 inside the backup and says so loudly.
+    Exit codes: 0 success, 1 operational error, 2 a store state that cannot be
+    backed up safely (legacy plaintext, newer schema).
+    """
+    from engine.store import SampleStoreError, create_backup, resolve_store_root
+
+    _logs_to_stderr()
+    try:
+        report = create_backup(
+            resolve_store_root(store_root),
+            output,
+            include_key=include_key,
+            queue_db=_resolved_queue_db(queue_db),
+            warn=lambda message: click.echo(f"WARNING: {message}", err=True),
+        )
+    except SampleStoreError as exc:
+        code = STORE_EXIT_FAILURES if exc.reason in {
+            "backup-failed", "restore-schema-newer", "manifest-version",
+        } else STORE_EXIT_ERROR
+        _store_command_failed(exc, as_json, code)
+        return
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+        return
+    manifest = report
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Backup\n"
+            f"Output:   [cyan]{report['backup']}[/cyan]\n"
+            f"Manifest: [cyan]{report['manifest']}[/cyan]\n"
+            f"Samples:  [cyan]{manifest['counts']['samples']}[/cyan] "
+            f"({_human_size(manifest['sizes']['blobs_bytes'])}) · "
+            f"queue jobs: {manifest['counts']['queue_jobs']}\n"
+            f"Key:      "
+            + ("[red]INCLUDED — this backup contains a secret[/red]"
+               if manifest['key']['included']
+               else "[dim]not included[/dim]")
+            + " · "
+            + ("[green]restorable without the operator's key[/green]"
+               if manifest['key']['restorable_without_operator_key']
+               else "[yellow]needs the operator's key to restore[/yellow]"),
+            title="Backup",
+        )
+    )
+    if manifest["key"]["included"]:
+        console.print(f"  [red]{manifest['key']['warning']}[/red]")
+
+
+@store.command("restore")
+@click.argument("backup", type=click.Path(path_type=Path))
+@click.option("--target", "target_root", type=click.Path(path_type=Path), required=True,
+              help="Empty/new restore root; the store lands in TARGET/samples")
+@click.option("--force", is_flag=True,
+              help="Allow a non-empty target (a blob whose bytes differ is still refused)")
+@click.option("--queue", "queue_target", type=click.Path(path_type=Path), default=None,
+              help="Where to restore the queue (default: TARGET/queue.db)")
+@click.option("--store", "store_target", type=click.Path(path_type=Path), default=None,
+              help="Where to restore the store (default: TARGET/samples)")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def store_restore(
+    backup: Path, target_root: Path, force: bool, queue_target: Optional[Path],
+    store_target: Optional[Path], as_json: bool,
+) -> None:
+    """Restore a backup into an empty/new root, failing closed.
+
+    The backup is treated as hostile input: every path is validated, every size
+    is bounds-checked, every file hash is checked against the manifest and every
+    blob is authenticated against its content address before anything is
+    written. A corrupt, newer or traversing backup writes nothing. A restore
+    that completes with undecryptable entries exits 2 and says which key ids are
+    missing — it never declares success it cannot support.
+    """
+    from engine.store import SampleStoreError, restore_backup
+
+    _logs_to_stderr()
+    try:
+        report = restore_backup(
+            backup, target_root, force=force,
+            queue_target=queue_target, store_target=store_target,
+        )
+    except SampleStoreError as exc:
+        # A refused restore writes nothing: that is an operational refusal (1).
+        # A restore that completed with undecryptable entries exits 2 below.
+        _store_command_failed(exc, as_json, STORE_EXIT_ERROR)
+        return
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Restore\n"
+                f"Backup: [cyan]{report['backup']}[/cyan]\n"
+                f"Store:  [cyan]{report['store_root']}[/cyan]\n"
+                f"Queue:  [cyan]{report['queue_db'] or '(none in backup)'}[/cyan]\n"
+                f"Samples restored: {report['samples']} · queue jobs: {report['queue_jobs']}",
+                title="Restore",
+            )
+        )
+        for item in report.get("undecryptable") or []:
+            console.print(
+                f"  [yellow]undecryptable[/yellow] {item['sha256'][:16]} — "
+                f"{item['message']}"
+            )
+        for item in report.get("missing_sample_jobs") or []:
+            console.print(
+                f"  [red]job without its sample[/red] {item['job_id']} "
+                f"({item['reason']}); it will fail with that reason, not run silently"
+            )
+        console.print(
+            ("  [green]Restore verified.[/green]" if report["ok"]
+             else f"  [red]Restore incomplete.[/red] {report['message']}")
+        )
+    if not report.get("ok"):
+        raise SystemExit(STORE_EXIT_FAILURES)
 
 
 @cli.command()

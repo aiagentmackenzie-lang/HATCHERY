@@ -297,6 +297,77 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. D29: key rotation and a restorable backup of the live store + queue
+# ---------------------------------------------------------------------------
+ROTATE_OUT="$WORK/rotate.json"
+if "$PY" -m engine.cli store key rotate --json --store "$WORK/samples" \
+    >"$ROTATE_OUT" 2>"$WORK/rotate.log"; then
+  if "$PY" - "$ROTATE_OUT" <<'CHECKROTATE'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["complete"] is True, report
+assert report["rotated"], "nothing was re-wrapped"
+assert report["active_after"] and report["active_after"] != report["active_before"], report
+assert report["failed"] == [], report
+assert report["per_key_blob_counts"] == {report["active_after"]: len(report["rotated"])}, report
+CHECKROTATE
+  then
+    if "$PY" -m engine.cli store verify --json --store "$WORK/samples" \
+        >"$WORK/verify-after-rotate.json" 2>"$WORK/verify-after-rotate.log"; then
+      pass "store/key-rotation" "every blob re-wrapped; verify passes on the new active key"
+    else
+      fail "store/key-rotation" "store verify failed after rotation"
+      tail -5 "$WORK/verify-after-rotate.log"
+    fi
+  else
+    fail "store/key-rotation" "rotation did not complete on one key"
+  fi
+else
+  fail "store/key-rotation" "hatchery store key rotate failed; see $WORK/rotate.log"
+  tail -5 "$WORK/rotate.log"
+fi
+
+BACKUP_DIR="$WORK/backup"
+RESTORE_DIR="$WORK/restored"
+if "$PY" -m engine.cli store backup --json --include-key -o "$BACKUP_DIR" \
+    --store "$WORK/samples" --queue "$WORK/api/queue.db" \
+    >"$WORK/backup.json" 2>"$WORK/backup.log"; then
+  if "$PY" -m engine.cli store restore "$BACKUP_DIR" --target "$RESTORE_DIR" --json \
+      >"$WORK/restore.json" 2>"$WORK/restore.log"; then
+    if "$PY" - "$WORK/backup.json" "$WORK/restore.json" <<'CHECKRESTORE'
+import json, sqlite3, sys
+
+backup = json.load(open(sys.argv[1]))
+restore = json.load(open(sys.argv[2]))
+assert backup["counts"]["samples"] >= 1, backup
+assert backup["key"]["included"] is True, backup["key"]
+assert backup["key"]["restorable_without_operator_key"] is True, backup["key"]
+assert restore["ok"] is True, restore
+assert restore["verify"]["ok"] is True, restore["verify"]
+assert restore["samples"] == backup["counts"]["samples"], (restore, backup)
+assert restore["queue_jobs"] == backup["counts"]["queue_jobs"] >= 1, (restore, backup)
+connection = sqlite3.connect(restore["queue_db"])
+try:
+    ids = [row[0] for row in connection.execute("SELECT job_id FROM jobs")]
+finally:
+    connection.close()
+assert ids, "the restored queue lost its job ids"
+CHECKRESTORE
+    then
+      pass "store/backup-restore" "manifest hashes every blob; restored job ids and samples verify"
+    else
+      fail "store/backup-restore" "the restored backup did not verify"
+    fi
+  else
+    fail "store/backup-restore" "hatchery store restore failed; see $WORK/restore.log"
+    tail -5 "$WORK/restore.log"
+  fi
+else
+  fail "store/backup-restore" "hatchery store backup failed; see $WORK/backup.log"
+  tail -5 "$WORK/backup.log"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Dashboard dev server and proxy
 # ---------------------------------------------------------------------------
 (cd "$ROOT/dashboard" && exec npm run dev -- --port 5173 --strictPort) >"$WORK/dash.log" 2>&1 &

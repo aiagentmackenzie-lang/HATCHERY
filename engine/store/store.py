@@ -32,6 +32,7 @@ import errno
 import hashlib
 import logging
 import os
+import secrets
 import stat
 import threading
 import time
@@ -44,20 +45,28 @@ from engine.store.crypto import (
     ENVELOPE_LABEL,
     HEADER_LEN,
     KEY_FILE_NAME,
+    KEY_LEN,
     LEGACY_LABEL,
     MAX_DECLARED_PLAINTEXT,
+    KeyRing,
     SampleKey,
     decrypt,
     encrypt,
     is_envelope,
-    resolve_key,
+    key_id_for,
+    key_ring_path,
+    resolve_key_ring,
     verify_plaintext_hash,
+    write_key_ring_file,
 )
 from engine.store.errors import (
     EMPTY,
     EXPIRED,
     INDEX_ERROR,
     INVALID_SHA256,
+    KEY_IN_USE,
+    KEY_IS_ACTIVE,
+    KEY_NOT_FOUND,
     LEGACY_HASH_MISMATCH,
     NOT_A_FILE,
     NOT_EXPIRED,
@@ -68,6 +77,7 @@ from engine.store.errors import (
     SYMLINK,
     TOO_LARGE,
     TTL_DISABLED,
+    UNKNOWN_KEY_ID,
     SampleStoreError,
 )
 from engine.store.index import (
@@ -172,6 +182,7 @@ class SampleStore:
         self._clock = clock or time.time
         self._explicit_key = key
         self._key_cache: Optional[SampleKey] = None
+        self._ring_cache: Optional[KeyRing] = None
         self._key_lock = threading.Lock()
         self.generated_key_notice: Optional[str] = None
         self.index_path = Path(index_path) if index_path else self.root / INDEX_FILENAME
@@ -201,54 +212,179 @@ class SampleStore:
     # -- keys --------------------------------------------------------------
 
     def key(self, *, create: bool = False) -> Optional[SampleKey]:
+        ring = self.key_ring(create=create)
+        return ring.active if ring is not None else None
+
+    def key_ring(self, *, create: bool = False) -> Optional[KeyRing]:
+        """The active key plus every retired key this store may still need (D29).
+
+        An explicit ``key=`` (tests, embedding) is a one-key ring. Otherwise the
+        ring is resolved exactly as D28 resolved the single key, with a
+        ``.sample-keyring`` taking precedence once rotation has created one.
+        """
         if self.readonly:
             create = False
-        if self._explicit_key is not None:
-            return self._explicit_key
         with self._key_lock:
-            if self._key_cache is not None:
-                return self._key_cache
-            resolved = resolve_key(self.root, create=create)
+            if self._ring_cache is not None:
+                return self._ring_cache
+            if self._explicit_key is not None:
+                key = self._explicit_key
+                return KeyRing(active=key, keys={key.key_id: key}, source=key.source)
+            resolved = resolve_key_ring(self.root, create=create)
             if resolved is not None:
-                self._key_cache = resolved
-                if resolved.generated:
+                self._ring_cache = resolved
+                self._key_cache = resolved.active
+                if resolved.active.generated:
                     self.generated_key_notice = (
                         f"generated a new local sample-encryption key at "
-                        f"{resolved.source.split(':', 1)[-1]} (mode 0600). It is the only "
+                        f"{resolved.active.source.split(':', 1)[-1]} (mode 0600). It is the only "
                         "key that can decrypt samples written from now on; back it up, or "
                         "set HATCHERY_SAMPLE_KEY/HATCHERY_SAMPLE_KEY_FILE to use your own."
                     )
             return resolved
 
+    def _set_ring(self, ring: KeyRing) -> None:
+        """Record a ring this process just wrote (rotation/retire)."""
+        with self._key_lock:
+            self._ring_cache = ring
+            self._key_cache = ring.active
+
+    def blob_header(self, sha256: str) -> dict[str, Any]:
+        """Read one blob's envelope header. Legacy plaintext has no key id."""
+        info = self._lstat_blob(sha256)
+        path = self.blob_path(sha256)
+        with path.open("rb") as handle:
+            header = handle.read(HEADER_LEN)
+        if not is_envelope(header):
+            return {
+                "sha256": sha256,
+                "encryption": LEGACY_LABEL,
+                "encryption_version": 0,
+                "key_id": None,
+                "size": info.st_size,
+            }
+        offset = len(b"HATCHERY-SAMPLE\x00") + 1
+        return {
+            "sha256": sha256,
+            "encryption": ENVELOPE_LABEL,
+            "encryption_version": header[len(b"HATCHERY-SAMPLE\x00")],
+            "key_id": header[offset : offset + 8].hex(),
+            "size": info.st_size,
+        }
+
+    def blob_headers(self) -> list[dict[str, Any]]:
+        """Every blob's header, read from the blobs (the blobs are the truth)."""
+        headers: list[dict[str, Any]] = []
+        if not self.root.exists():
+            return headers
+        for entry in sorted(self.root.iterdir()):
+            if not entry.name.endswith(BLOB_SUFFIX):
+                continue
+            sha256 = entry.name[: -len(BLOB_SUFFIX)]
+            if not is_sha256(sha256) or entry.is_symlink() or not entry.is_file():
+                continue
+            try:
+                headers.append(self.blob_header(sha256))
+            except SampleStoreError:
+                continue
+        return headers
+
+    def rotation_state(self, ring: Optional[KeyRing] = None) -> dict[str, Any]:
+        """Per-key blob counts and whether any blob still needs a retired key.
+
+        Completeness is read from the blobs, never assumed from the index. A
+        legacy plaintext blob references no key and is reported separately; it
+        is a ``migrate`` problem, not a rotation one.
+        """
+        ring = ring if ring is not None else self.key_ring(create=False)
+        headers = self.blob_headers()
+        counts: dict[str, int] = {}
+        for header in headers:
+            label = header["key_id"] or LEGACY_LABEL
+            counts[label] = counts.get(label, 0) + 1
+        active_id = ring.active.key_id if ring is not None else None
+        known = set(ring.ids()) if ring is not None else set()
+        pending = [
+            header for header in headers
+            if header["key_id"] and header["key_id"] != active_id
+        ]
+        unknown = [
+            header for header in headers
+            if header["key_id"] and header["key_id"] not in known
+        ] if ring is not None else []
+        return {
+            "active_key_id": active_id,
+            "key_ids": sorted(known),
+            "retired_key_ids": ring.retired_ids() if ring is not None else [],
+            "ring": ring is not None and ring.ring_path is not None,
+            "per_key_blob_counts": counts,
+            "blobs": len(headers),
+            "encrypted_blobs": sum(1 for header in headers if header["key_id"]),
+            "plaintext_legacy": counts.get(LEGACY_LABEL, 0),
+            "rotation_pending": len(pending),
+            "rotation_pending_sha256": [header["sha256"] for header in pending],
+            "rotation_complete": not pending,
+            "unknown_key_ids": sorted({str(header["key_id"]) for header in unknown}),
+            "rotation_in_progress": bool(ring.rotation_in_progress) if ring is not None else False,
+        }
+
     def key_status(self) -> dict[str, Any]:
         # A misconfigured key is an error, not "no key": pretending it is absent
         # would turn a 0600 mistake or a bad env value into a silent refusal.
-        key = self.key(create=False)
-        if key is None:
+        ring = self.key_ring(create=False)
+        rotation = self.rotation_state(ring)
+        if ring is None:
             return {
                 "configured": False,
                 "source": None,
                 "key_id": None,
+                "active_key_id": None,
+                "key_ids": [],
+                "retired_key_ids": [],
+                "ring": False,
+                "rotation_complete": rotation["rotation_complete"],
+                "rotation_pending": rotation["rotation_pending"],
+                "per_key_blob_counts": rotation["per_key_blob_counts"],
                 "note": (
                     "no key is configured; the next write generates a local key at "
                     f"{self.root / KEY_FILE_NAME} (0600). Set HATCHERY_SAMPLE_KEY or "
                     "HATCHERY_SAMPLE_KEY_FILE to use an operator-held key."
                 ),
             }
-        generated_file = key.source.startswith("generated:")
-        inside_store = key.source.startswith("file:") and str(self.root) in key.source
+        key = ring.active
+        inside_store = (
+            key.source.startswith("generated:") or key.source.startswith("ring:")
+            or (key.source.startswith("file:") and str(self.root) in key.source)
+        )
         warning = None
-        if generated_file or inside_store:
+        if inside_store:
             warning = (
                 "the key is stored beside the encrypted samples: it protects against "
                 "plaintext at rest (backups, snapshots, accidental copies), not against "
                 "an attacker who can read the store directory. Point "
                 "HATCHERY_SAMPLE_KEY_FILE outside the store for a stronger posture."
             )
+        if ring.rotation_in_progress:
+            warning = (
+                (warning + " " if warning else "")
+                + "a key rotation is incomplete; no blob has been left unreadable, but "
+                "run `hatchery store key rotate` again (it resumes) and retire the old "
+                "key only when `store status` reports rotation_complete."
+            )
         return {
             "configured": True,
             "source": key.source,
             "key_id": key.key_id,
+            "active_key_id": key.key_id,
+            "key_ids": ring.ids(),
+            "retired_key_ids": ring.retired_ids(),
+            "ring": ring.ring_path is not None,
+            "env_ignored": ring.env_ignored,
+            "rotation_in_progress": ring.rotation_in_progress,
+            "rotation_complete": rotation["rotation_complete"],
+            "rotation_pending": rotation["rotation_pending"],
+            "per_key_blob_counts": rotation["per_key_blob_counts"],
+            "unknown_key_ids": rotation["unknown_key_ids"],
             "warning": warning,
         }
 
@@ -417,14 +553,20 @@ class SampleStore:
             )
         blob = self.blob_path(sha256).read_bytes()
         if is_envelope(blob):
-            key = self.key(create=False)
-            if key is None:
+            ring = self.key_ring(create=False)
+            if ring is None:
                 raise SampleStoreError(
                     NO_KEY,
                     "the sample is encrypted but no key is configured; set "
                     "HATCHERY_SAMPLE_KEY or HATCHERY_SAMPLE_KEY_FILE",
                 )
-            plaintext = decrypt(blob, key, max_bytes=min(self.max_bytes, MAX_DECLARED_PLAINTEXT))
+            # The envelope names its key; resolve it by id (never trial-decrypt).
+            plaintext = decrypt(
+                blob,
+                ring,
+                max_bytes=min(self.max_bytes, MAX_DECLARED_PLAINTEXT),
+                address=sha256,
+            )
             encryption = ENVELOPE_LABEL
         else:
             if len(blob) > self.max_bytes:
@@ -542,9 +684,14 @@ class SampleStore:
                 report["adopted"].append(sha256)
             else:
                 row = self.index.get(sha256)
-                if row is not None and row.encryption_version != sniffed:
-                    self._adopt(sha256)
-                    report["repaired"].append(sha256)
+                if row is not None:
+                    header = self.blob_header(sha256)
+                    if (
+                        row.encryption_version != sniffed
+                        or row.key_id != header["key_id"]
+                    ):
+                        self._adopt(sha256)
+                        report["repaired"].append(sha256)
         for row in self.index.all():
             if self.blob_path(row.sha256).exists():
                 if row.state == DELETING:
@@ -611,6 +758,7 @@ class SampleStore:
         return {
             "ok": ok,
             "store_root": str(self.root),
+            "key": self.key_status(),
             "checked": len(entries),
             "passed": sum(1 for entry in entries if entry.get("status") == "ok"),
             "failed": len(failures),
@@ -717,16 +865,291 @@ class SampleStore:
             jobs.close()
         return {"adopted": adopted, "skipped": skipped, "failed": failed}
 
+    # -- key lifecycle (D29) -----------------------------------------------
+
+    def rotate_key(
+        self,
+        *,
+        new_key: Optional[SampleKey] = None,
+        dry_run: bool = False,
+        now: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """Re-wrap every blob whose envelope names a key other than the active one.
+
+        The ring is written **before** any blob is re-wrapped, so a reader always
+        holds both keys and an interrupted rotation stays readable. Each blob is
+        decrypted with the key its envelope names, re-encrypted with the active
+        key and moved into place with the same ciphertext-temp → fsync → rename →
+        directory-fsync sequence a write uses. No plaintext is written anywhere.
+
+        Resumable: the ring records ``rotation.in_progress``; a later run with no
+        explicit key resumes that active key instead of generating another one,
+        and reconciles from the blobs rather than from an index assumption. A
+        blob whose key is missing, corrupt or unauthentic is reported and left
+        untouched — rotation never deletes or rewrites bytes it cannot verify.
+        """
+        self._require_writable("rotating a key")
+        moment = self.now(now)
+        report: dict[str, Any] = {
+            "applied": not dry_run,
+            "store_root": str(self.root),
+            "mode": "dry-run" if dry_run else "rotate",
+            "active_before": None,
+            "active_after": None,
+            "rotated": [],
+            "would_rotate": [],
+            "already_active": [],
+            "failed": [],
+            "skipped": [],
+            "new_key_id": None,
+            "ring": None,
+            "rotation_in_progress": False,
+            "complete": False,
+            "per_key_blob_counts": {},
+        }
+        with self.operation_lock():
+            report["reconcile"] = self.reconcile(now=moment)
+            ring = self.key_ring(create=False)
+            report["active_before"] = ring.active.key_id if ring is not None else None
+            headers = self.blob_headers()
+            encrypted = [header for header in headers if header["key_id"]]
+            report["skipped"] = [
+                {"sha256": header["sha256"], "reason": PLAINTEXT_LEGACY}
+                for header in headers if not header["key_id"]
+            ]
+
+            resume = bool(ring is not None and ring.rotation_in_progress and new_key is None)
+            if dry_run and ring is not None and ring.rotation_in_progress and new_key is None:
+                new_key = ring.active
+                report["mode"] = "dry-run (resume)"
+            if new_key is None and not dry_run:
+                if resume:
+                    assert ring is not None
+                    new_key = ring.active
+                    report["mode"] = "resume"
+                else:
+                    material = secrets.token_bytes(KEY_LEN)
+                    new_key = SampleKey(
+                        material,
+                        "ring",
+                        key_id_for(material),
+                        generated=True,
+                        created_at=iso(moment),
+                    )
+            report["new_key_id"] = new_key.key_id if new_key is not None else None
+            target_id = new_key.key_id if new_key is not None else None
+            targets = [
+                header for header in encrypted
+                if target_id is None or header["key_id"] != target_id
+            ]
+            report["already_active"] = [
+                header["sha256"] for header in encrypted
+                if target_id is not None and header["key_id"] == target_id
+            ]
+            if dry_run:
+                report["would_rotate"] = [header["sha256"] for header in targets]
+                for header in targets:
+                    if ring is None:
+                        reason = NO_KEY
+                        message = (
+                            f"the blob {header['sha256']} is encrypted but no key is "
+                            "configured"
+                        )
+                    elif header["key_id"] not in ring.keys:
+                        reason = UNKNOWN_KEY_ID
+                        message = (
+                            f"the blob {header['sha256']} names key id {header['key_id']}, "
+                            f"which is not in the key ring ({', '.join(ring.ids())})"
+                        )
+                    else:
+                        continue
+                    report["failed"].append(
+                        {"sha256": header["sha256"], "key_id": header["key_id"],
+                         "reason": reason, "message": message}
+                    )
+                report["new_key"] = "provided" if new_key is not None else "would-generate"
+                state = self.rotation_state(ring)
+                report["per_key_blob_counts"] = state["per_key_blob_counts"]
+                report["rotation_complete"] = state["rotation_complete"]
+                report["complete"] = state["rotation_complete"]
+                report["rotation_in_progress"] = state["rotation_in_progress"]
+                report["ring"] = state["ring"]
+                return report
+
+            assert new_key is not None  # dry_run handled above; else generated/resumed
+            base = ring if ring is not None else KeyRing(
+                active=new_key,
+                keys={},
+                source="ring",
+                ring_path=key_ring_path(self.root),
+            )
+            if resume:
+                next_ring = KeyRing(
+                    active=new_key,
+                    keys=base.keys,
+                    source=base.source,
+                    ring_path=base.ring_path or key_ring_path(self.root),
+                    env_ignored=base.env_ignored,
+                    rotation_in_progress=True,
+                    rotation_started_at=base.rotation_started_at or iso(moment),
+                    rotation_from=base.rotation_from,
+                )
+            else:
+                next_ring = KeyRing(
+                    active=new_key,
+                    keys=base.keys,
+                    source=base.source,
+                    ring_path=base.ring_path or key_ring_path(self.root),
+                    env_ignored=base.env_ignored,
+                    rotation_in_progress=True,
+                    rotation_started_at=iso(moment),
+                    rotation_from=report["active_before"],
+                )
+            # Ring first: every blob is readable with old + new from this instant.
+            write_key_ring_file(next_ring.ring_path or key_ring_path(self.root), next_ring)
+            self._set_ring(next_ring)
+            report["ring"] = True
+            report["active_after"] = new_key.key_id
+
+            for header in targets:
+                sha256 = str(header["sha256"])
+                old_key_id = str(header["key_id"])
+                old_key = next_ring.get(old_key_id)
+                if old_key is None:
+                    message = (
+                        f"the blob {sha256} names key id {old_key_id}, which is not in "
+                        f"the key ring ({', '.join(next_ring.ids())}); the blob was left "
+                        "untouched"
+                    )
+                    report["failed"].append(
+                        {"sha256": sha256, "key_id": old_key_id,
+                         "reason": UNKNOWN_KEY_ID, "message": message}
+                    )
+                    self.index.set_error(sha256, f"{UNKNOWN_KEY_ID}: {message}")
+                    continue
+                try:
+                    info = self._lstat_blob(sha256)
+                    if info.st_size > self.max_bytes + HEADER_LEN + 1024:
+                        raise SampleStoreError(
+                            TOO_LARGE,
+                            f"the stored blob for {sha256} is above the read limit; "
+                            "refusing to re-wrap it",
+                        )
+                    blob = self.blob_path(sha256).read_bytes()
+                    plaintext = decrypt(
+                        blob,
+                        old_key,
+                        max_bytes=min(self.max_bytes, MAX_DECLARED_PLAINTEXT),
+                        address=sha256,
+                    )
+                    verify_plaintext_hash(plaintext, sha256)
+                    envelope = encrypt(plaintext, new_key)
+                    self._write_atomic(sha256, envelope)
+                    self.index.upsert(
+                        sha256=sha256,
+                        size=len(plaintext),
+                        blob=self.blob_path(sha256).name,
+                        stored_at=iso(moment),
+                        encryption_version=1,
+                        key_id=new_key.key_id,
+                        last_checked_at=iso(moment),
+                    )
+                except SampleStoreError as exc:
+                    report["failed"].append(
+                        {"sha256": sha256, "key_id": old_key_id,
+                         "reason": exc.reason, "message": exc.message}
+                    )
+                    self.index.set_error(sha256, f"{exc.reason}: {exc.message}")
+                else:
+                    report["rotated"].append(
+                        {"sha256": sha256, "from_key_id": old_key_id,
+                         "key_id": new_key.key_id}
+                    )
+                    logger.info(
+                        "Re-wrapped sample %s from key %s to %s",
+                        sha256[:16], old_key_id, new_key.key_id,
+                    )
+
+            state = self.rotation_state(next_ring)
+            report["per_key_blob_counts"] = state["per_key_blob_counts"]
+            report["rotation_pending"] = state["rotation_pending"]
+            report["unknown_key_ids"] = state["unknown_key_ids"]
+            report["complete"] = bool(state["rotation_complete"])
+            report["rotation_complete"] = report["complete"]
+            if report["complete"] and next_ring.rotation_in_progress:
+                final_ring = KeyRing(
+                    active=next_ring.active,
+                    keys=next_ring.keys,
+                    source=next_ring.source,
+                    ring_path=next_ring.ring_path,
+                    env_ignored=next_ring.env_ignored,
+                    rotation_in_progress=False,
+                )
+                write_key_ring_file(next_ring.ring_path or key_ring_path(self.root), final_ring)
+                self._set_ring(final_ring)
+            report["rotation_in_progress"] = not report["complete"]
+        return report
+
+    def retire_key(self, key_id: str, *, now: Optional[float] = None) -> dict[str, Any]:
+        """Remove a retired key from the ring — refused while any blob needs it.
+
+        Removing a key is an explicit operator action. It is what makes a
+        rotation *irreversible*, so it is refused for the active key and refused
+        while the blob headers still name the key.
+        """
+        self._require_writable("retiring a key")
+        moment = self.now(now)
+        with self.operation_lock():
+            self.reconcile(now=moment)
+            ring = self.key_ring(create=False)
+            if ring is None:
+                raise SampleStoreError(
+                    KEY_NOT_FOUND, "the store has no key ring, so there is no key to retire"
+                )
+            if key_id == ring.active.key_id:
+                raise SampleStoreError(
+                    KEY_IS_ACTIVE,
+                    f"key {key_id} is the active key; rotate to a new key before retiring it",
+                )
+            if key_id not in ring.keys:
+                raise SampleStoreError(
+                    KEY_NOT_FOUND,
+                    f"key {key_id} is not in the ring ({', '.join(ring.ids())})",
+                )
+            users = [
+                header["sha256"] for header in self.blob_headers()
+                if header["key_id"] == key_id
+            ]
+            if users:
+                raise SampleStoreError(
+                    KEY_IN_USE,
+                    f"key {key_id} still decrypts {len(users)} blob(s) "
+                    f"(e.g. {', '.join(users[:3])}); rotate them to the active key "
+                    "before retiring it",
+                )
+            next_ring = ring.without_key(key_id)
+            write_key_ring_file(next_ring.ring_path or key_ring_path(self.root), next_ring)
+            self._set_ring(next_ring)
+        return {
+            "retired": key_id,
+            "active_key_id": next_ring.active.key_id,
+            "key_ids": next_ring.ids(),
+            "retired_key_ids": next_ring.retired_ids(),
+            "removed": True,
+        }
+
     # -- retention ---------------------------------------------------------
 
     @contextmanager
-    def operation_lock(self) -> Iterator[None]:
-        """Serialise prune/migrate/verify across processes.
+    def operation_lock(self, *, wait_seconds: float = 0.0) -> Iterator[None]:
+        """Serialise prune/migrate/verify/rotate/backup across processes.
 
-        A non-blocking ``flock`` on ``<store>/.store.lock``. Reading a sample
-        does not take it: a prune never invalidates bytes a replay already
-        decrypted, and a prune that wins the race simply removes a blob a reader
-        then reports as missing — fail-closed, not corrupt.
+        A ``flock`` on ``<store>/.store.lock``. By default it is non-blocking
+        (a second rotation reports ``store-locked``); a maintenance operation
+        that must not race (backup) may wait briefly for a prune to finish.
+        Reading a sample does not take it: a prune never invalidates bytes a
+        replay already decrypted, and a prune that wins the race simply removes
+        a blob a reader then reports as missing — fail-closed, not corrupt.
         """
         lock_path = self.root / LOCK_FILENAME
         fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
@@ -736,15 +1159,20 @@ class SampleStore:
             except ImportError:  # pragma: no cover - non-POSIX
                 yield
                 return
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                if exc.errno in (errno.EACCES, errno.EAGAIN):
-                    raise SampleStoreError(
-                        STORE_LOCKED,
-                        f"another store operation holds {lock_path}; retry when it finishes",
-                    ) from exc
-                raise
+            deadline = time.monotonic() + max(0.0, float(wait_seconds))
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise SampleStoreError(
+                            STORE_LOCKED,
+                            f"another store operation holds {lock_path}; retry when it finishes",
+                        ) from exc
+                    time.sleep(0.05)
             try:
                 yield
             finally:
@@ -819,6 +1247,7 @@ class SampleStore:
             "store_root": str(self.root),
             "index": str(self.index_path),
             "key": self.key_status(),
+            "keys": self.rotation_state(),
             "ttl_seconds": ttl_seconds,
             "ttl_enabled": ttl_seconds > 0,
             "samples": len(entries),

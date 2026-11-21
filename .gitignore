@@ -18,6 +18,8 @@ samples/*.db
 samples/*.db-wal
 samples/*.db-shm
 samples/.sample-key
+samples/.sample-keyring
+samples/.tmp-ring-*
 samples/.tmp-*
 samples/.store.lock
 samples/*.exe
