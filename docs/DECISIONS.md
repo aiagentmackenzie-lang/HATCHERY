@@ -503,7 +503,7 @@ The 68 new tests are ``test_sample_store_crypto.py`` (17), ``test_sample_store.p
 
 The properties that are actually pinned, not asserted in prose: TTL boundary with an injected clock (fresh kept, at-TTL kept, expired pruned, dry run deletes nothing); two runs sharing a sample; a queued and a running job pinning it; a legacy queued job protected by hashing its path; a prune that refuses when a job cannot be identified; wrong key, tampered ciphertext, tampered header, truncated envelope and unknown version each with their own reason; no plaintext in the store directory; a crashing rename leaving no blob, no row and no temp; an orphan blob adopted and a missing blob's row dropped; an interrupted delete recovered in both directions; migration idempotent, resumable and refusing to delete a corrupt legacy blob; a queue database migrated from D27 with ids/states preserved; enqueue → delete the original → worker runs → bundle hash matches → replay is reproducible; prune during replay not corrupting it; CLI JSON parseable with documented exit codes and no key material in stdout or stderr.
 
-**Not done, deliberately.** No KMS/HSM or network key service — the key is an env var or a local file. No key rotation: the envelope carries a key id so rotation is possible, but a re-wrap command is not built. *(Superseded by D29: rotation, retirement and backup/restore are now built.)* No multi-host story: the store is a local directory and the queue a local SQLite file, so the reference scan sees only this host's results tree and queue. File permissions are enforced with ``chmod``/``O_EXCL`` and tested on macOS/Linux only; Windows ACLs are not verified. Per-member encryption of extracted delivery children does not exist — children live only inside the run directory, and result-bundle retention is out of scope (this slice only reads bundles for references). The worker does not delete the API's ``uploads/`` intake copy; that is the operator's file. Prune never removes a sample whose reference scan failed, and a missing results root is therefore protective, not destructive. The staging file described above is a conscious deviation from "no plaintext temp file": eliminating it means teaching YARA/capa/delivery/``put_archive`` to read bytes instead of paths, which is a larger change than this slice and would touch D4's single-producer pipeline.
+**Not done, deliberately.** No KMS/HSM or network key service — the key is an env var or a local file. No key rotation: the envelope carries a key id so rotation is possible, but a re-wrap command is not built. *(Superseded by D29: rotation, retirement and backup/restore are now built.)* No multi-host story: the store is a local directory and the queue a local SQLite file, so the reference scan sees only this host's results tree and queue. File permissions are enforced with ``chmod``/``O_EXCL`` and tested on macOS/Linux only; Windows ACLs are not verified. Per-member encryption of extracted delivery children does not exist — children live only inside the run directory, and result-bundle retention is out of scope *(superseded by D33: bundles now carry a manifest and can be retained, and D28's reference scan is unchanged — it is what keeps a shared sample safe when a bundle is pruned)*. The worker does not delete the API's ``uploads/`` intake copy; that is the operator's file. Prune never removes a sample whose reference scan failed, and a missing results root is therefore protective, not destructive. The staging file described above is a conscious deviation from "no plaintext temp file": eliminating it means teaching YARA/capa/delivery/``put_archive`` to read bytes instead of paths, which is a larger change than this slice and would touch D4's single-producer pipeline.
 
 ---
 
@@ -1051,6 +1051,360 @@ manifest contains key material, a bearer token or an unexpected field.
 - **Result-bundle retention, queue/job retention, the sample-store TTL (D28) and key
   lifecycle (D29)** are untouched. This slice is the audit log only.
 
+## D33 — The run bundle is self-describing and finite: a hash manifest, an anchor, and retention that never lies (2026-11-21)
+
+**Decision.** Make `results/<run>/` — the artifact an analyst hands to a client — describe
+itself and become finite, without becoming a second producer of analysis data (D4) and
+without claiming an integrity guarantee it does not have.
+
+`results/<run>/manifest.json` is a **hash manifest**: SHA-256 per file, written **last** by
+the one writer every mutating stage calls. `hatchery results verify` recomputes every hash
+and names the first break with a classification and a path; `hatchery results seal` makes a
+run written before this slice verifiable; `hatchery results verify --expect-manifest` is
+the operator's anchor; `hatchery results prune` is an off-by-default, dry-run-by-default
+retention policy that never deletes a run it cannot verify; `hatchery results status`
+reports growth and never deletes. `hatchery replay` refuses to replay bytes that are not
+the run.
+
+D28 protected the *sample* at rest. D32 made the *access log* finite and verifiable. The
+analysis output itself was the last evidence store with no guarantees of its own:
+plaintext (attacker-controlled bytes: extracted strings, delivery children, pcaps,
+strace logs), unbounded (nothing ever removed an old run), and with no integrity record —
+nothing proved the `analysis.json` being read was the one HATCHERY produced, that a sandbox
+artifact had not been swapped after the fact, or that a file had not been quietly dropped.
+D28's prune also depends on scanning exactly these bundles for `sample.sha256`, so any
+retention added here changes what the sample store may safely delete. The slice is
+therefore not "add a prune": it is **make "this bundle is intact" a checkable claim, and
+make the directory finite without making a claim that is false.**
+
+### 1. The manifest is a hash manifest, not a signature
+
+It records SHA-256 per file. It is **not** MAC'd or signed, and no key is created.
+
+**Why.** The only key available to the process that writes a bundle is readable by any
+attacker who can write the bundle, so a MAC would defend against a strictly weaker
+attacker than the one that matters — and it would either duplicate D31's Node key-ring
+parser in Python (a second implementation of a security-critical parser: exactly the drift
+this project avoids) or repurpose D29's sample key ring, whose retirement rules would
+silently un-verify every manifest the retired key signed. Half-built signing is worse than
+none. Signing needs its own key lifecycle and is listed as not done below.
+
+### 2. The compensating control is an anchor, exactly like the chain head
+
+```bash
+hatchery results seal results/<run>                       # prints the manifest sha256
+hatchery results verify results/<run> --expect-manifest <sha256>
+```
+
+Record the hash when you deliver the run. A rewrite of an artifact **plus** its manifest is
+then caught (`replaced`), and a deleted manifest is unambiguous (`manifest-missing`). Without
+an anchor, an attacker who rewrites both is not detected — the same limit D31/D32 state for
+the chain head, in the same words, rather than a claim the manifest cannot support.
+
+### 3. The manifest lives at the run root
+
+`results/<run>/manifest.json` — **not** inside `bundle/`. Relative paths from the run root
+stay clean (`bundle/analysis.json`, `sandbox/strace/strace.log`), the run directory is the
+unit of retention, and — decisively — `bundle/` is listed and ingested by the API and read
+by replay, clustering and the MCP tools, so an extra file inside it would be a change to
+their input. A manifest at the run root is invisible to every existing reader.
+
+The manifest records `run_id` but **never compares it to the directory name**. A run copied
+to another machine (or to `/tmp/delivery/`) still verifies; the verification was exercised
+on a copied and renamed tree.
+
+**Nested replays are their own unit.** A replay writes `results/<run>/replay-xxxx/`, so the
+parent's file set must exclude it or every legitimate replay would turn into an `extra`
+break in the run it was replayed from. Direct child directories that are nested units
+(`replay-*`, or any directory holding its own bundle/manifest) are excluded from the parent's
+manifest and verified as their own run; a broken nested replay is reported at its own path
+(`replay-xxxx/bundle/...`), and an inconclusive replay's `replay.json` directory is reported
+as an `unsealed` nested unit rather than a silent extra file.
+
+### 4. The manifest describes the run as of its last HATCHERY stage, and every stage re-seals
+
+This is the constraint that makes the feature trustworthy. `submit` writes the run, `triage`
+patches `analysis.json` in place (and writes `triage.json`), `push` writes
+`push-<target>.json` next to it, `replay` writes a new run and patches its bundle. A manifest
+written only at submit time would report `modified` after a legitimate triage — a false
+break, and a false break is worse than no check.
+
+One function writes the manifest (`seal_run`), and every stage that mutates a run directory
+ends by calling it through one helper (`_reseal_after_stage` in the CLI, the same call in
+the MCP triage tool): **submit, triage, push, replay**. `triage` and `push` also verify the
+*incoming* state first and refuse to modify a run that no longer matches its manifest, so a
+later stage cannot launder an out-of-band edit into a fresh manifest; the explicit,
+loud `results seal --replace` is the deliberate path.
+
+The manifest records `stage: "submit" | "triage" | "push" | "replay" | "seal"` and
+`sealed_at`, and `verify` prints them. `seal` is a fifth value **on purpose**: the operator's
+explicit re-seal of a legacy run is a HATCHERY action that touched the directory, and
+recording `submit` for it would be a lie about which stage last wrote the manifest.
+
+**The honest claim:** the manifest proves the run directory has not changed since the last
+HATCHERY stage that touched it — not "since submit", and not "unmodified since delivery".
+After delivery, only the anchor says anything about later changes.
+
+### 5. The format
+
+Deterministic bytes — UTF-8, sorted paths, `json.dumps(sort_keys=True,
+separators=(",", ":"))` + `"\n"` — so `sha256(manifest bytes)` is reproducible and
+`--expect-manifest` means something. Written temp + `fsync` + rename + directory `fsync`,
+`0600`. A crash before the manifest leaves **no** manifest: never a half-manifested run
+reported complete.
+
+```json
+{"algorithm":"sha256",
+ "created_at":"2026-11-21T13:34:02.890004+00:00",
+ "file_count":8,
+ "files":[{"path":"bundle/analysis.json","sha256":"d9ec3abd…","size":5269},
+          {"path":"bundle/events.jsonl","sha256":"e3b0c442…","size":0},
+          {"path":"sandbox/strace/strace.log","sha256":"…","size":…}],
+ "format":"hatchery.result-manifest",
+ "hatchery_version":"0.1.0",
+ "manifest_version":1,
+ "run_id":"b860081a8960",
+ "sample":{"sha256":"275a021b…","store_ref":"275a021b…"},
+ "sealed_at":"2026-11-21T13:35:33.870426+00:00",
+ "stage":"submit",
+ "task_id":"b860081a8960",
+ "total_bytes":14663}
+```
+
+It is **files and provenance only**: format/version, run/task id, `created_at`, stage,
+`sealed_at`, the HATCHERY version, the sample's content address and store ref, then per file
+relative POSIX path, size and SHA-256, plus the count and total bytes. It contains **no**
+sample bytes, extracted strings, IOCs, verdicts, counts or any analysis fact — that would be
+a second source of truth (D4) and a second place to leak content to a client. `created_at` is
+the bundle's own `generated_at` (stable across stages); `sealed_at` moves with the stage.
+
+**Bounds and refusals.** A seal refuses (`too-many-files` above 50 000 files,
+`too-large` above 4 GiB) so it cannot become an unbounded operation. It refuses a symlink
+anywhere in the run directory (`symlink`), an unreadable file, and a run with no
+`bundle/analysis.json`. Verification refuses a manifest path that is absolute, contains
+`..`, a backslash or a NUL (`manifest-invalid`) instead of hashing outside the run, and
+refuses a manifest version it does not understand (`manifest-version`) rather than parsing
+it approximately.
+
+### 6. Verification names the break — and `unsealed` is not `ok`
+
+`hatchery results verify <run> [--json] [--expect-manifest <sha256>]`:
+
+| Classification | What happened |
+|:--|:--|
+| `modified` | a file's bytes differ from the manifest (same size) |
+| `truncated` | a file is shorter than the manifest records |
+| `missing` | a file the manifest lists is gone |
+| `extra` | a file on disk is not in the manifest |
+| `symlink` | a symlink anywhere in the run, or a symlinked manifest; never hashed through |
+| `manifest-invalid` | the manifest is unreadable, malformed, internally inconsistent, traversal-bearing, or does not describe `bundle/analysis.json` |
+| `manifest-version` | a manifest version this build does not understand |
+| `manifest-missing` | `--expect-manifest` was given and there is no manifest |
+| `replaced` | the manifest hash does not match `--expect-manifest` |
+| `unsealed` | no manifest at all — reported as a distinct **state**, never `ok` |
+
+`ok` is true only for `state: "intact"`. `unsealed` exits **0** so a pre-D33 corpus keeps
+working (D5's reasoning); `--expect-manifest` turns a missing manifest into
+`manifest-missing` and exit 1. Exit codes are 0 intact (or unsealed), 1 broken, 2 usage;
+`--json` writes one object to stdout and diagnostics go to stderr. The first break is
+deterministic (sorted by path), so the same tree always names the same break.
+
+### 7. Retention: off by default, applied by an operator, and it never deletes what it cannot prove
+
+| Knob | Meaning | Default |
+|:--|:--|:--|
+| `--older-than 30d` / `HATCHERY_RESULTS_RETENTION_DAYS` | delete runs sealed more than this long ago (`s`/`m`/`h`/`d`/`w` or seconds) | unset = no expiry |
+| `--keep-last N` / `HATCHERY_RESULTS_KEEP_LAST` | always keep the newest N runs — the anchor | `1`, minimum `1` |
+| `--apply` | actually delete | dry run |
+| `HATCHERY_RESULTS_WARN_RUNS` | warn at this many runs (`0` disables) | `2000` |
+| `HATCHERY_RESULTS_WARN_BYTES` | warn at this total size (`0` disables) | `10 GiB` |
+
+- **Nothing in submit, the worker or the API deletes a run.** No timer, no background task,
+  no auto-prune. `results prune --apply` is the only thing that removes a run directory.
+- **A run is the unit.** A replay nested inside it (`results/<run>/replay-xxxx/`) goes with
+  it; every decision records `nested_runs`, and `status` reports the total.
+- **The anchor is not optional.** `--keep-last 0` is **clamped** to 1 rather than refused
+  (report `clamped: true`, `keep_last_requested: 0`, the anchor run), and a policy whose
+  `--older-than` would remove every run leaves the newest one with reason `kept-last` and
+  `clamped: true`. Same semantics as D32's `--keep-rows`; an operator should not have to
+  learn two retention models.
+- **Fail closed.** A run with no manifest, an invalid manifest, or an unparseable
+  `bundle/analysis.json` is never deleted. `--apply` refuses the **whole plan** (as D28
+  refuses when a queued job's sample cannot be identified), reports the reason and the
+  break, deletes nothing, and exits 2. Seal the corpus first
+  (`hatchery results seal <run>`), then prune. A directory that is not a run at all (no
+  `bundle/`, no manifest) is reported as ignored, not refused.
+- **Age is the last stage's `sealed_at`**, not the directory's mtime: the manifest says when
+  HATCHERY last wrote the run, and that is the honest clock for "how old is this result".
+- **Dry run by default**, one decision per run with a reason (`expired`, `kept-last`,
+  `not-expired`, `no-manifest`, `manifest-invalid`, `unparseable`, `deleting-in-progress`
+  for a stray being resumed). `--apply` deletes exactly what the dry run reported.
+- **Rename, then remove.** The directory is renamed to `<run>.deleting-<ts>` before it is
+  removed, so a reader mid-replay fails cleanly (`not-found`) instead of reading a
+  half-deleted tree. A crash leaves a `.deleting-` directory; the next prune completes it
+  and records `resumed_strays`, and `results status` reports it as a stray in the
+  meantime.
+- **A non-blocking `flock` on `results/.results.lock`** serialises two prunes; the second
+  reports `results-locked` and deletes nothing. A reader is never blocked.
+- **Every prune appends one line to `results/.prune-log.jsonl`** (`0600`, append-only, one
+  object per invocation with `at`, `applied`, `policy`, `removed`, `bytes_freed`, one `kept`
+  entry per run with its reason, `refused`, `resumed_strays`, `clamped`, `anchor`). It is an
+  operator convenience, **not tamper-evident**: the audit chain covers API actions, not local
+  CLI maintenance — the same boundary D28 and D29 already have. A dry run logs its plan with
+  `applied: false`; a log line is not a deletion.
+
+### 8. The D28 interaction: pruning a run must not make a live sample prunable
+
+D28's `store prune` re-reads `<results>/<run>/bundle/analysis.json` (`sample.sha256`, and
+replays one level deeper) and every queued/running job at decision time; a sample referenced
+by two runs survives until both are gone. **`store prune` is not changed by this slice.**
+The interaction is tested in both directions against a real encrypted store:
+
+- runs A and B both reference one stored sample; pruning A leaves B's reference, so
+  `store prune --apply` still refuses and reports `referenced` (`run:run-b`);
+- pruning B too makes the sample prunable, and `store prune --apply` then deletes it;
+- a queued job still referencing the sample keeps it even after every run is gone;
+- a replay nested in a deleted run takes its reference with it, and the sample is released
+  only when the parent — and therefore the nested run — is gone.
+
+Deleting a run never makes an in-use sample prunable, because the reference scan is what
+decides and the run's bundle is what it reads.
+
+### 9. Crash and concurrency semantics
+
+| Interrupted | On disk | What happens next |
+|:--|:--|:--|
+| during `submit`, before the manifest | a run directory with no `manifest.json` | reported `unsealed`; never deleted; `verify` says so |
+| during a manifest write | old manifest or none, plus a `.manifest.tmp-*` | the temporary is excluded from the file set and reported as `stale_temporaries`; the next seal writes cleanly |
+| during `triage`/`push` after the bundle write | a manifest that does not match | the run reports `modified`; the stage refuses to launder it; `seal --replace` is the deliberate fix |
+| after the rename to `.deleting-`, before `rmtree` | a stray directory | the next prune completes it; `status` reports it |
+| two prunes at once | one lock holder | the second reports `results-locked`, deletes nothing |
+| a submission during a prune | a run with no manifest | the prune refuses the whole plan (fail closed) or does not see it yet; the run is never deleted |
+
+A burst of three real submissions against a real `results prune --apply` on the same root
+leaves every run intact, every manifest parseable and every run verifiable.
+
+### 10. The growth guard
+
+`results status` reports the run count, total bytes, oldest/newest run and date, nested
+replay runs, strays, what a prune would remove under the current policy, and whether
+`HATCHERY_RESULTS_WARN_RUNS` (2000) or `HATCHERY_RESULTS_WARN_BYTES` (10 GiB) is crossed —
+with `enforced: false` because the guard **never deletes**. That is the whole difference
+between a retention policy and a self-pruning corpus. `0` disables either threshold. It
+takes no lock and writes nothing, so it is safe while a prune runs.
+
+### 11. Replay: fail closed on a mismatching manifest, unchanged for a legacy run
+
+D5, implemented in the order the claim requires — the seal state is checked **before the
+bundle is loaded or the sample located**:
+
+- manifest present and matching → the replay proceeds, `bundle_manifest.state: "verified"`
+  (with the manifest hash and stage) is recorded in `replay.json` **and** in the replayed
+  bundle's `replay` section;
+- manifest present and **not** matching → INCONCLUSIVE, naming the classification and the
+  file (`modified` / `missing` / `extra` / `truncated` / `symlink` / `manifest-invalid`).
+  Replaying bytes that are not the run produces a verdict about fiction, so nothing is
+  submitted and the replay still writes `replay.json` with the reason;
+- manifest absent → the replay proceeds, the verdict is unchanged, and
+  `bundle_manifest.state: "unsealed"` is recorded with a limitation line. A slice that has
+  not sealed the existing corpus must not break it;
+- `--require-manifest` (off by default) turns `unsealed` into INCONCLUSIVE for operators who
+  seal everything.
+
+The verdict is about reproducibility; the seal state is a separate field — the same
+"`ok` is not the whole answer" rule as D31's `assurance`.
+
+### 12. What this does not weaken
+
+- **D4.** `engine/bundle.py` remains the only writer of `analysis.json`/`events.jsonl`. The
+  manifest is written beside it, by one function, and restates no analysis fact.
+- **D8/D25/D30/D31/D32.** Nothing in the API, the audit chain, the token store, the key
+  rings, the archive or the file posture is touched.
+- **D26–D29.** Replay keeps its verdict semantics (only the seal gate is new), the queue is
+  still the single writer of job state, and the sample store keeps its encryption, key ring,
+  rotation, backup/restore and reference-aware prune. `store backup` still excludes
+  `results/` and `store prune` still never deletes a bundle; this slice changes neither, and
+  the tests that pin both still pass.
+- **No new daemon, service, dependency or key material.** Stdlib only.
+- **Readers.** `report`, `status`, `iocs`, `push`, `triage`, `cluster`, the MCP tools and the
+  API's bundle ingest require no change: the manifest is at the run root, not in `bundle/`.
+  Verified, not assumed — clustering and the MCP `list_runs`/`get_report`/`get_iocs` tools are
+  exercised against sealed runs, and the setup verifier's worker → API ingest check runs on a
+  run the worker sealed.
+
+### Evidence — clean copy of the code+tests commit
+
+Transcript: [`RESULTS.md`](RESULTS.md#captured-transcript). No `.venv`, `node_modules`,
+`data/`, `results/`, `uploads/` or caches in the archive.
+
+```
+$ python -m pytest -q
+854 passed, 17 skipped, 3 xfailed       # was 795/17/3; 59 new tests
+$ python scripts/verify_fixtures.py
+13 passed, 0 failed, 3 known defects    # unchanged; no defect was "fixed"
+$ scripts/verify_setup.sh
+29 passed, 0 failed                     # was 26; +results/manifest-sealed,
+                                        # +results/tamper-detected, +results/prune-keeps-anchor
+$ ruff check engine/ tests/ scripts/    # All checks passed!
+$ mypy engine/                          # 86 source files, no issues
+$ (cd server && npm test)               # 97 passed (unchanged)
+$ (cd server && node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs)
+                                        # 3 passed (unchanged)
+$ (cd dashboard && npm run build)       # built (unchanged)
+```
+
+The new tests are `test_results_manifest.py` (23), `test_results_retention.py` (20),
+`test_results_replay.py` (6), `test_results_reference.py` (4), `test_results_stages.py` (3)
+and `test_results_readers.py` (3). They use real runs from the real CLI, real files, real
+archives and temporary roots; nothing in the repository's `data/`, `results/`, `uploads/` or
+`samples/` is written. Pinned properties, not prose: a real submit seals every file at the
+run root, written last and `0600`, with a stable hash; `modified`, `missing`, `extra`,
+`truncated` and `symlink` each name their path and exit 1, and a symlink's target is never
+read; a manifest with a traversal path is `manifest-invalid` and is not followed; an anchored
+verify passes, and an artifact rewritten **with** a regenerated manifest is `replaced` while
+the unanchored verify passes (the limit, pinned); a legacy run is `unsealed` and not `ok`,
+`seal` is idempotent, a mismatching `seal` refuses and `--replace` prints the old hash; a real
+`triage` re-seals at `stage: triage` so `verify` still passes, and an edit after that is
+`modified`; a stage refuses to launder a modified run; `push` re-seals even when the push
+fails; the dry run lists exactly what `--apply` removes; the newest run survives
+`--older-than 0s`; `--keep-last 0` is clamped; an unsealed, tampered or unparseable run
+blocks the whole apply; a crashed delete is reported as a stray and resumed; two concurrent
+prunes never half-delete; a burst of submissions during a prune all verify; the growth guard
+warns and never deletes; pruning run A leaves run B's sample protected and pruning B releases
+it; a queued job keeps its sample after every run is gone; replay is `reproducible` on a
+sealed run, INCONCLUSIVE on a tampered one naming the file, unchanged on an unsealed legacy
+run, and INCONCLUSIVE under `--require-manifest`; and the manifest contains no analysis fact,
+no sample byte and no unexpected field.
+
+**Not done, deliberately.**
+
+- **Not signed and not MAC'd.** The manifest is a hash manifest (D1/D2 above). An attacker who
+  rewrites an artifact *and* its manifest is caught only by an anchor recorded elsewhere.
+  Signing needs its own key lifecycle and a second parser; it is not half-built here.
+- **Results are not encrypted at rest.** `results/` is plaintext by design: every reader is
+  path-based, and `sandbox/` holds attacker-controlled bytes. Encryption is a separate
+  decision with its own key lifecycle. The manifest's job is integrity, not confidentiality.
+- **No KMS/HSM, escrow or remote anchor service.** The anchor is a hash the operator records
+  (a ticket, a log collector, a delivery note). Nothing ships it anywhere.
+- **No scheduled or automatic pruning.** Retention is an operator decision; an operator who
+  never runs it gets a warning, not a surprise.
+- **No off-host or multi-host retention.** A results tree on another machine is not
+  consulted — the same limit D28's reference scan and D29's backup already state.
+- **A run directory modified while a prune runs** is mitigated by rename-then-remove (a
+  reader sees the run or a clean `not-found`, never a torn tree) but not proven: there is no
+  filesystem lock that stops an unrelated process writing into the tree.
+- **A run on different storage** (a network share, a different filesystem for the temp
+  rename) was not exercised; `fsync`/rename semantics there are the storage's business.
+- **Windows ACLs** are not verified; the `0600` posture is POSIX.
+- **A root attacker** who can rewrite the run, the manifest and every copy of the anchor is
+  out of scope, as before. **Clock skew** moves the `--older-than` boundary (it cannot
+  corrupt a bundle).
+- **A manifest format change mid-stream** is refused (`manifest-version`), not migrated.
+  There is one version.
+- **A bundle copied without its manifest** verifies as `unsealed` — that is the honest answer,
+  not a pass. Copy the run directory, not just `bundle/`.
+- **Queue/job retention and sample-store TTL** (D27/D28) are untouched.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -1062,7 +1416,7 @@ manifest contains key material, a bearer token or an unexpected field.
 - **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
-- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. What remains undone inside it: KMS/HSM or escrow, multi-host stores/rotation, scheduled rotation/expiry, secure erase, Windows ACL verification, and removing the single-use replay staging file. Result-bundle retention is still out of scope.
+- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
 - **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

@@ -1,13 +1,14 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `c82ad5e` (Phase 4d: segmented audit-log
-retention, archived chain handoff and the disk-growth guard, D32). The D28 store
-baseline was `be9386d`, whose clean-copy transcript is in
+Verified **21 November 2026** on top of revision `e64ca71` (Phase 4e:
+result-bundle manifest, verification, anchor and off-by-default retention, D33). The D28
+store baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
 [`BACKUP.md`](BACKUP.md#captured-transcript); the D30/D31 transcript is in
 [`API-SECURITY.md`](API-SECURITY.md#captured-transcript); the D32 transcript is in
-[`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript). The detector scorecard
-is unchanged from `4b48490`.
+[`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript); the D33 transcript is in
+[`RESULTS.md`](RESULTS.md#captured-transcript). The detector scorecard is unchanged from
+`4b48490`.
 
 This document is evidence, not a roadmap. It records what a clean checkout can
 do today, the exact acceptance inputs, and the defects that remain. Product
@@ -27,10 +28,12 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **795 passed, 17 skipped,
-  3 xfailed** (unchanged from `34565f7`; 24 tests cover key rotation,
-  retirement, backup and restore). `ruff` is clean and `mypy engine/` reports
-  no issues in 83 source files.
+  dashboard, and passes the full Python suite: **854 passed, 17 skipped,
+  3 xfailed** (was 795 at D32; 59 tests cover sealing, verification and its
+  classifications, the anchor, re-seal after triage/push, retention, crash-resume,
+  concurrency, the D28 reference interaction, replay integration and the readers
+  that must keep working). `ruff` is clean and `mypy engine/` reports no issues in
+  **86 source files**.
 - **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
   anchoring and the file posture, and 13 cover D32 compaction: cross-segment
@@ -48,9 +51,11 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **26 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
-  `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; D32 adds
-  `api/audit-compaction` and `api/audit-archive-verified`).
+  state: **29 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
+  `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; 26 at D32,
+  which added `api/audit-compaction` and `api/audit-archive-verified`; D33 adds
+  `results/manifest-sealed`, `results/tamper-detected` and
+  `results/prune-keeps-anchor`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -69,6 +74,15 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   - **A backup restores (D29).** The manifest is written last, every blob hash
     matches, `--include-key` is `0600`, a restore into a temporary root verifies,
     and the restored queue keeps its job ids.
+  - **A submitted run is sealed and verifies (D33).** The CLI's run has a `0600`
+    `manifest.json` at the **run root** (not in `bundle/`) that hashes every file,
+    `hatchery results verify` reports `intact` at `stage: submit` with the manifest
+    hash it recomputed, and appending one byte to an artifact is `modified` at that
+    exact path with exit 1.
+  - **Retention keeps the anchor and records the decision (D33).** Two sealed runs
+    (one re-stamped 30 days old) pruned with `--older-than 0s --keep-last 1 --apply`
+    remove exactly the expired one, leave the anchor run intact, and append a `0600`
+    `.prune-log.jsonl` line saying `applied: true`.
   - **A compacted audit log verifies across the boundary (D32).** A real segment is
     archived `0600` with the manifest written last, the live chain hands off to the
     archived tail, and `verify` reads the archives and reports a proven join with the
@@ -115,6 +129,19 @@ lifecycle, its CORS allow-list and the audit hash chain are covered by the serve
 suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
 installation, packaging, normal entry points and static acceptance inputs; it
 does not re-certify those features.
+
+### Known gaps introduced or inherited by D33
+
+| Gap | What it means |
+|:--|:--|
+| The manifest is not signed and not MAC'd | It is a hash manifest. An attacker with write access to the run who rewrites an artifact **and** regenerates the manifest is caught only by an anchor recorded elsewhere (`results verify --expect-manifest`). Without an anchor, a coordinated rewrite verifies as `intact`. D1/D2's reasoning is in D33. |
+| `results/` is not encrypted at rest | It holds attacker-controlled artifacts (extracted strings, delivery children, pcaps, strace logs) in plaintext, by design: every reader is path-based. The manifest is integrity, not confidentiality. Encrypting results is a separate decision with its own key lifecycle. |
+| Retention is an operator action | Nothing in submit, the worker or the API deletes a run and there is no timer. An operator who never runs `results prune --apply` gets a growth warning and an unbounded corpus. A run with no manifest (a pre-D33 corpus, or one written mid-crash) blocks `--apply` entirely until it is sealed. |
+| The prune record is not tamper-evident | `results/.prune-log.jsonl` is `0600` and append-only, but it is an operator convenience: the audit chain covers API actions, not local CLI maintenance (the same boundary D28/D29 have). |
+| A run directory modified during a prune | Rename-then-remove means a reader sees the run or a clean `not-found`, never a torn tree; that is mitigation, not proof. Nothing stops an unrelated process writing into the tree. |
+| No off-host or multi-host retention | The pruner sees this host's results root only. A bundle on another machine is neither pruned nor consulted — and a reference there does not protect a sample from `store prune` unless the results root is in the scan. |
+| Storage and platform assumptions | `fsync`/rename on a network share or a second filesystem was not exercised; Windows ACLs are unverified (the `0600` posture is POSIX). A root attacker and clock skew are out of scope, as before. |
+| One manifest format version | A newer manifest version is refused (`manifest-version`), not migrated. A `bundle/` copied without its manifest verifies as `unsealed` — honest, not a pass. |
 
 ### Known gaps introduced or inherited by D30
 
@@ -167,9 +194,18 @@ HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   
 node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
-Expected: `795 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `26 passed, 0 failed`; the
+Expected: `854 passed, 17 skipped, 3 xfailed`; the fixture scorecard
+`13 passed, 0 failed, 3 known defects`; the setup check `29 passed, 0 failed`; the
 server suite `97 passed, 0 failing`.
+
+```bash
+# Result bundles on their own (temporary root; no repository state is touched)
+python -m engine.cli submit samples/eicar.com --no-sandbox -o /tmp/hb/run
+python -m engine.cli results verify /tmp/hb/run --json            # ok: true, stage submit
+python -m engine.cli results seal /tmp/hb/run --json              # idempotent, same hash
+python -m engine.cli results status --json --results /tmp/hb
+python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/hb  # dry run
+```
 
 ## Maintenance
 

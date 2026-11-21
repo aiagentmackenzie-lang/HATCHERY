@@ -103,8 +103,44 @@ is to restore the key, not to delete the store.
 - **The results-root list is part of the contract.** A bundle outside every
   scanned root is invisible; the operator must point `--results` at the archive
   that still needs the sample. The demo below shows this explicitly.
-- `prune` never deletes a result bundle, and retention of `results/` is out of
-  scope for this slice.
+- `prune` never deletes a result bundle. Bundles have their own retention now
+  (D33) and `store prune` still only reads them for references — see
+  [Result bundles (D33)](#result-bundles-d33) below.
+
+## Result bundles (D33)
+
+`results/<run>/` is the artifact an analyst hands to a client, and it now
+describes itself: a deterministic SHA-256 manifest at the run root, written last
+by every stage that touches the run (`submit`, `triage`, `push`, `replay`). D28's
+reference scan reads `bundle/analysis.json` and is unchanged, so the two controls
+compose: pruning a bundle releases a sample only when nothing else references it.
+
+```bash
+hatchery results verify results/<run>                       # intact / unsealed / broken + path
+hatchery results seal results/<run>                         # legacy run -> verifiable (idempotent)
+hatchery results verify results/<run> --expect-manifest SHA # the anchor you recorded at delivery
+hatchery results status                                     # runs, bytes, oldest/newest, strays, growth
+hatchery results prune --older-than 30d --keep-last 5       # dry run: exactly what would go
+hatchery results prune --older-than 30d --keep-last 5 --apply
+```
+
+- **Retention is off by default and operator-applied.** Nothing in `submit`, the
+  worker or the API deletes a run; there is no timer.
+- **A run that cannot be verified is never deleted.** `--apply` refuses the whole
+  plan and exits 2 when a run has no manifest, an invalid manifest or an
+  unparseable bundle — seal the corpus first.
+- **The newest `--keep-last` runs are always kept** (`1` by default, clamped to at
+  least 1); a policy that would delete every run reports `clamped: true`.
+- **Rename, then remove**, so a crash leaves a resumable `.deleting-` stray rather
+  than a half-deleted tree.
+- **Pruning a bundle changes what the sample store may delete.** After pruning run
+  A, a sample referenced only by A becomes prunable by `hatchery store prune`; a
+  sample still referenced by run B or by a queued/running job remains protected.
+  `store prune` was not modified to achieve this — its reference scan is the
+  authority — and both directions are tested.
+
+The operator guide, the failure classifications and the clean-copy transcript are
+in [`RESULTS.md`](RESULTS.md). The decision is D33.
 
 ## Queue coupling (D27)
 
@@ -210,8 +246,12 @@ hatchery store prune --ttl 2592000 --apply
   migration), not by killing a process mid-`fsync`.
 - **Live key compromise / forensic recovery of a deleted blob.** Deleting a blob
   is `unlink` + index delete; there is no secure-erase claim.
-- **Result-bundle retention and encryption.** Out of scope: this slice only
-  reads bundles for references and never modifies or deletes them.
+- **Result-bundle retention.** ✅ Built in Phase 4e (D33): a manifest at the run
+  root, `hatchery results verify|seal|status|prune`, off-by-default retention and
+  the growth guard — see [`RESULTS.md`](RESULTS.md). What remains undone there:
+  signing/MAC'ing the manifest (an artifact and its manifest rewritten together
+  are caught only by an operator-recorded anchor) and **encrypting `results/` at
+  rest**. `store prune` still never deletes a bundle; it only reads references.
 - **Extracted delivery children and emulation artifacts.** They live in the run
   directory and remain plaintext, like the rest of `results/`.
 

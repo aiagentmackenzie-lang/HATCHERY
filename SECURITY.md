@@ -35,6 +35,71 @@ The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scann
 - **Concurrency and integrity.** Prune/migrate/verify take a non-blocking `flock`; writes are atomic; the index is a repairable cache of the blobs, not a second source of truth. `store verify` decrypts and hash-checks every entry and exits non-zero on any failure; `store migrate` never deletes a legacy blob it cannot verify.
 - **What is not covered.** No KMS/HSM, escrow or split-key scheme; no multi-host rotation or cross-host backup; no scheduled rotation or key-expiry policy; no secure erase of a retired key's bytes; no disaster recovery for a destroyed key (if every copy is gone, its blobs are unrecoverable and `verify` says so); no signed backup manifest (an attacker who can rewrite the whole backup consistently can present a different one); no Windows ACL verification; and no encryption of the extracted delivery children or result bundles. Replay/submit use a single-use plaintext staging file for the path-based pipeline (0600, 0700 directory, unlinked on exit); SIGKILL can leave it in the OS temp directory. Result bundles under `results/` are still plaintext by design.
 
+## Result bundles (integrity and retention, D33)
+
+`results/<run>/` is evidence: attacker-controlled artifacts (extracted strings, delivery
+children, pcaps, strace logs) plus the analysis document an analyst reads and hands to a
+client. `manifest.json` at the run root makes "this bundle is intact" a checkable claim. It is
+a **hash manifest, not a signature**, and the distinction is the whole point.
+
+- **What it is.** SHA-256 and size for every file under the run root, plus provenance
+  (format/version, run and task id, `created_at`, `stage`, `sealed_at`, the HATCHERY version,
+  the sample's content address and store reference). It contains no sample bytes, extracted
+  strings, IOCs, verdicts or counts: a manifest that restated findings would be a second
+  source of truth (D4) and a second place to leak content to a client.
+- **Written last, by one writer.** Temp + `fsync` + rename + directory `fsync`, `0600`,
+  deterministic bytes (sorted paths, canonical JSON), so `sha256(manifest.json)` is
+  reproducible. Every stage that mutates a run ends by re-sealing it — `submit`, `triage`,
+  `push`, `replay` — because a manifest written only at submit time would report a
+  legitimate triage as tamper, and a false break makes the control untrustworthy. A crash
+  before the manifest leaves **no** manifest, never a half-manifested run reported complete.
+  `triage` and `push` also verify the incoming state and refuse to modify a run that no
+  longer matches its manifest, so a stage cannot launder an out-of-band edit.
+- **Not signed, not MAC'd, deliberately.** The only key available to the process that writes
+  a bundle is readable by any attacker who can write the bundle, so a MAC here would defend
+  against a strictly weaker attacker than the one that matters; it would also duplicate
+  D31's key-ring parser in Python or repurpose D29's sample key ring, whose retirement rules
+  would silently un-verify every manifest the retired key signed. Half-built signing is
+  worse than none.
+- **The compensating control is an anchor.** `hatchery results seal <run>` prints the
+  manifest SHA-256; record it when you deliver the run and check it with
+  `hatchery results verify <run> --expect-manifest <sha256>`. A rewrite of an artifact *plus*
+  its manifest is then `replaced`, and a deleted manifest is unambiguous
+  (`manifest-missing`). **Without an anchor, an attacker who rewrites both is not detected.**
+  That is the same limit D31 states for the chain head, in the same words.
+- **Verification is hostile-input handling.** `verify` never follows a symlink (it is a
+  `symlink` break, and the target is never read), refuses a manifest path that is absolute,
+  contains `..`, a backslash or a NUL (`manifest-invalid`) instead of hashing outside the
+  run, refuses a manifest version it does not understand, and bounds what it reads. `seal`
+  refuses a run with more than 50 000 files or 4 GiB, a symlink anywhere, an unreadable file
+  or no `bundle/analysis.json`, so it cannot become an unbounded operation.
+- **`unsealed` is a state, not a pass.** A run with no manifest (written before this revision,
+  or with its manifest deleted) reports `ok: false, state: "unsealed"` and exits 0 so an
+  existing corpus keeps working. `--expect-manifest` makes a missing manifest a failure.
+- **Retention is off by default and operator-applied.** Nothing in `submit`, the worker or the
+  API deletes a run directory; there is no timer. `hatchery results prune` is a dry run unless
+  `--apply`, always keeps the newest `--keep-last` runs (minimum 1, `clamped: true` when the
+  anchor decides), and **refuses the whole plan** when any run has no manifest, an invalid
+  manifest or an unparseable bundle. Deletion renames to `<run>.deleting-<ts>` before removing
+  the tree, so a crash leaves a stray the next prune completes rather than a half-deleted run
+  a reader could trust. Two prunes serialise on a non-blocking `flock`; the second reports
+  `results-locked`. Every prune appends a `0600` line to `results/.prune-log.jsonl` — an
+  operator convenience, **not tamper-evident**, because the audit chain covers API actions,
+  not local CLI maintenance (the same boundary D28/D29 have).
+- **Reference safety is unchanged.** `store prune` still decides from a fresh scan of
+  `<results>/<run>/bundle/analysis.json` and the queue. Pruning a run releases a sample only
+  when nothing else references it; a sample still named by another run or a queued/running job
+  stays protected. `store backup` still excludes `results/` and `store prune` still never
+  deletes a bundle.
+- **What is not covered.** The manifest is not signed and `results/` is **not encrypted at
+  rest** — every reader is path-based and plaintext. A run on different (or network) storage
+  was not exercised, nor is a run directory modified by an unrelated process while a prune
+  runs (rename-then-remove mitigates; it does not prove). Windows ACLs are unverified, a root
+  attacker who can rewrite the run, the manifest and every anchor copy is out of scope, clock
+  skew moves the `--older-than` boundary, a manifest format change is refused rather than
+  migrated, and a `bundle/` copied without its manifest verifies as `unsealed` — the honest
+  answer, not a pass.
+
 ## API credentials and the audit record (D25/D30)
 
 The API is loopback-bound by default and stores live malware. Its credential model
@@ -188,6 +253,14 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 - [ ] Keep backups made with `--include-key` under the same protection as the key. A backup without the key cannot be restored on a clean host until you supply it; the manifest says which case you have.
 - [ ] Rehearse a restore into a temporary root (`store restore BACKUP --target DIR`) and check it exits 0 and `store verify` passes before deleting the original. A restore that exits 2 has files but something is undecryptable or a job's sample is missing — read the report.
 - [ ] Run `hatchery store status` and `hatchery store verify` before enabling a TTL. A pre-D28 store reports `legacy_plaintext` until `hatchery store migrate` encrypts it; a backup refuses that state rather than copying plaintext.
+- [ ] Seal and verify a run before you deliver it: `hatchery results verify <run>` (`intact`), `hatchery results seal <run>` for anything written before D33, and record the printed manifest SHA-256 in the delivery note.
+- [ ] Anchor the delivery: the recipient (or you, later) checks `hatchery results verify <run> --expect-manifest <sha256>`. Without that anchor, an artifact rewritten together with its manifest verifies as intact — the manifest is a hash manifest, not a signature.
+- [ ] On receipt, verify before you read: a break names the classification (`modified`, `missing`, `extra`, `truncated`, `symlink`, `replaced`, …) and the path. `unsealed` means no manifest — copy the whole run directory, not just `bundle/`.
+- [ ] Treat `results/` as plaintext evidence: it holds attacker-controlled artifacts, extracted strings and full traces, and the manifest proves integrity, not confidentiality. Encrypt the volume if that matters, and never hand `bundle/` around without its manifest.
+- [ ] Read `hatchery results status` before pruning. Growth is warned at `HATCHERY_RESULTS_WARN_RUNS` (2000) and `HATCHERY_RESULTS_WARN_BYTES` (10 GiB) and nothing is ever deleted for you.
+- [ ] Prune deliberately: `hatchery results prune --older-than 30d --keep-last N` (dry run) first, read every reason, then `--apply`. `--apply` refuses the whole plan — and exits 2 — if any run has no manifest, an invalid manifest or an unparseable bundle; seal the corpus first (`hatchery results seal <run>`).
+- [ ] Keep the anchor (`--keep-last`, minimum 1) and the sample store in mind: pruning a run releases a sample only when no other run or queued/running job references it. If two hosts hold bundles, point `--results` at both (or do not prune) — a reference on another machine is invisible.
+- [ ] After a crash during a prune, run `hatchery results status` (it reports the `.deleting-` stray) and prune again: the next run completes the deletion.
 - [ ] Cap resources: `ContainerConfig` sets `mem_limit`, `nano_cpus`, `pids_limit` and `no-new-privileges`. Do not remove them.
 - [ ] Patch the host kernel regularly — at tier 1 the host kernel is the boundary.
 - [ ] If you use triage, keep it local. Do not pass `--allow-remote-model` unless you intend sample-derived text to leave the machine.
@@ -217,6 +290,9 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 | Sample at rest | content-addressed, AES-256-GCM envelope, `0600` blobs, atomic writes; key from env or a `0600` non-symlink file, else a generated local key that is announced; an optional `0600` key ring holds retired keys and is authoritative once rotation creates it |
 | Sample backup | SQLite backup API for the index and queue, every blob hashed, manifest written last; the key is excluded unless `--include-key` (explicit, `0600`, loudly warned); restore validates paths/hashes/envelopes before writing |
 | Sample retention | TTL explicit and off by default; `prune` dry-run unless `--apply`; referenced samples are never deleted; an unidentifiable queued job blocks the delete |
+| Result bundles | `results/<run>/manifest.json`: deterministic SHA-256 per file, `0600`, written last by every stage that mutates the run (`submit`/`triage`/`push`/`replay`). `results verify` recomputes every hash and names the first break (`modified`/`missing`/`extra`/`truncated`/`symlink`/`manifest-invalid`/`manifest-version`/`manifest-missing`/`replaced`), reports `unsealed` as a distinct state and never `ok`, and never follows a symlink or a traversal path. **Unsigned and unMAC'd** — an artifact rewritten together with its manifest is caught only by `--expect-manifest`. **Not encrypted at rest** |
+| Result retention | **Off by default**, applied only by `hatchery results prune --apply` (host-local, no timer, no server path). Never deletes a run it cannot verify (the whole plan is refused and exits non-zero); always keeps the newest `--keep-last` (minimum 1, clamped); renames to `.deleting-<ts>` before removing (crash-resumable); serialises on a `flock`; appends a `0600` prune record that is **not** tamper-evident |
+| Result growth | measured and warned, **never enforced**: `HATCHERY_RESULTS_WARN_RUNS` / `HATCHERY_RESULTS_WARN_BYTES` are reported by `results status`; nothing is deleted to save space |
 
 ## Issues fixed in this revision
 
@@ -235,4 +311,4 @@ These were found in a 2026-10 audit of the project and are fixed here. They are 
 ## Out of scope
 
 - Malware you detonate. HATCHERY does not prevent a sample from harming the host at tier 1 and does not claim to.
-- The contents of `results/` and `data/`. They are attacker-controlled by design.
+- The contents of `results/` and `data/`. They are attacker-controlled by design. The manifest makes a run verifiable and finite; it does not make its contents safe or confidential, and it is not a signature.
