@@ -121,6 +121,7 @@ Not aspirational. What is in the code today.
 | **MCP server** | ⚠️ | `hatchery mcp` exposes `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs` over newline-delimited JSON-RPC 2.0 on **stdio**, so an agent can call HATCHERY as a tool. Stdlib only, no SDK. Local stdio only — never expose it on a socket; the `triage_run` tool cannot be told to use a remote model |
 | **Deterministic replay** | ⚠️ | `hatchery replay <run_dir>` re-analyses the same sample under the settings the bundle recorded and classifies every signal. Deterministic static facts (hashes, file type, delivery format + child hashes, YARA rule set, capa capability set, ATT&CK id set, static IOC set) must be identical or the replay is a loud `static-mismatch`; dynamic observations (event counts, durations, IOC order, evasion score) are reported as drift and never failed on. A missing/changed sample, an unreproduced tier/collector, or a bundle missing a section is INCONCLUSIVE, never a silent pass. The old bundle is never mutated — see D26 |
 | **Durable job queue + workers** | ⚠️ | `hatchery submit --enqueue` writes a job to a stdlib-SQLite queue and `hatchery worker` executes it by running the existing `submit` pipeline (one producer per data path). Atomic claims (`BEGIN IMMEDIATE`) so two workers never run the same job, bounded `--concurrency`, a lease renewed while a job runs, and **fail-closed recovery**: an expired lease is requeued and, after `max_attempts`, failed with the reason — never left `running`. The bundle is the authority, so exit 0 without a bundle is a failure and `worker --once` exits non-zero if a job failed. The API enqueues instead of spawning and reflects queue state on read. Single host only — no broker or remote workers; see D27 |
+| **Sample store: content-addressed, encrypted at rest, retention** | ⚠️ | One store (`engine/store/`) for direct submit, `--enqueue`, the worker, replay and `hatchery store`. Samples are addressed by sha256, stored as AES-256-GCM envelopes (versioned, authenticated header, key id) with a SQLite index, 0600 blobs and atomic writes; no write path emits plaintext. `prune` is a dry run unless `--apply`, its TTL is explicit and disabled by default, and it never deletes a sample referenced by a run bundle or a queued/running job — if a reference cannot be resolved it refuses. `cryptography` is now a declared runtime dependency (D28). No key rotation, KMS or multi-host store |
 | **MISP / OpenCTI push** | ⚠️ | `hatchery push` transports the run's single STIX 2.1 bundle to MISP (`/events/upload_stix/2`) or OpenCTI (TAXII 2.1 push); fail-closed, token never persisted. Wire format pinned; live-instance compatibility untested |
 
 ---
@@ -138,6 +139,8 @@ Not aspirational. What is in the code today.
 
 9. **Emulation is a separate, fail-closed stage — not a boundary and not ground truth.** Windows PE config extraction and `capa_dynamic` run Mandiant Speakeasy 2.0.0b6 (a **pre-release**, MIT) inside a container at the probed tier, with `--network none`, a read-only sample, all capabilities dropped, a non-root user and memory/CPU/PID/wall-clock caps. The sample's x86/x64 instructions are interpreted by a software CPU and its Windows APIs emulated in Python — **it never executes natively**, and emulation does **not** raise or lower the isolation tier (the bundle records both). It is gated on having a boundary: with no container runtime it is unavailable and declared, and the off-by-default `--allow-host-emulation` escape hatch runs it on the bare host and is loudly labelled as unsupported. Where it runs it is fail-closed: APIs the emulator does not implement, emulator detection, and the absent real network are declared blind spots, and a crash, a wall-clock cap, or an empty report is **INCONCLUSIVE**, never clean. `capa_dynamic` is static capa/YARA over the emulator's captured memory snapshots — **not** a Speakeasy→CAPE conversion, which is deliberately not built. Emulation events live in a separate `emulation-events.jsonl` stream, not in the native `events.jsonl`. See D21.
 
+10. **Encryption at rest has a local key and a local store.** The key is an environment variable or a local file — there is no KMS/HSM, no rotation and no re-wrap command (the envelope carries a key id so rotation is *possible*, not built). The auto-generated key sits beside the ciphertext, which protects against plaintext at rest (backups, snapshots, a copied directory) but not against an attacker who can read the store directory. The store and the reference scan are single-host: a results tree on another machine is not consulted, so an operator pruning on two hosts must point each at the other's bundles or accept that the other host's references are invisible. Replay's single-use staging file is a plaintext file in the OS temp directory for the duration of the submit subprocess; SIGKILL can leave it there. Result bundles have no retention policy of their own. See D28 and [`docs/RETENTION.md`](docs/RETENTION.md).
+
 ---
 
 ## CLI
@@ -149,6 +152,7 @@ hatchery submit <file>              Static + dynamic analysis
 hatchery submit <file> --enqueue    Queue the job for a worker instead of analysing now
 hatchery worker [--once]            Run a queue worker (claim, execute, recover)
 hatchery queue [job_id]             Show the job queue, or one job
+hatchery store status|verify|migrate|prune|keygen   Sample store: encryption, integrity, retention
 hatchery emulate <file>             Windows PE emulation (static + emulator, no detonation)
 hatchery static <file>              Static analysis only
 hatchery status <task_id>           Task status
@@ -169,6 +173,8 @@ Options for `worker`: `--once` (drain and exit), `--concurrency N` (default 1), 
 Options for `queue`: `--json`, `--status STATE`, `--limit N`, `--recover` (requeue or fail jobs whose worker lease expired), `--queue PATH`.
 
 Options for `replay`: `--output/-o DIR`, `--no-sandbox`, `--allow-host-emulation`, `--sample PATH`, `--timeout SECONDS`, `--json`.
+
+Options for `store`: `--store DIR` (else `HATCHERY_SAMPLE_STORE`), `--results DIR`, `--queue PATH`, `--json`. `status` and `prune` take `--ttl SECONDS` (0 disables; else `HATCHERY_SAMPLE_TTL`); `prune` deletes only with `--apply`; `verify` takes `--sha`; `migrate` takes `--dry-run` and `--queue/--no-queue`; `keygen -o PATH` writes a 0600 key file. Exit codes: 0 success, 1 operational error, 2 verification/retention failure (including a refused prune). JSON goes to stdout, diagnostics to stderr, and no command prints a key.
 
 ### Emulation (Windows PE)
 
@@ -233,7 +239,7 @@ stdout is the protocol channel, so the command prints nothing else. **Local stdi
 - **Deterministic must match, or it fails loudly.** sha256/md5/sha1, file type, delivery format and extracted child hashes, the YARA rule-name set, the capa capability set, the ATT&CK technique-id set and the static IOC set are compared for exact equality. Any difference is a `static-mismatch` (exit 2) — the original finding does not reproduce.
 - **Dynamic is drift, not failure.** Event counts by category/severity, durations, collected-IOC ordering, evasion score and emulation counters are reported when they move, but a sandbox is not bit-for-bit reproducible and the tool does not pretend it is. Only dynamic movement is a `dynamic-drift` (exit 0).
 - **The honest failure is INCONCLUSIVE (exit 1).** The sample is gone or its bytes changed, the replay ran at a weaker isolation tier or without detonation the original had, the emulation image was unavailable, or the bundle predates a stage so a deterministic signal cannot be re-established. A replay never silently passes over a setting it could not reproduce.
-- **The sample is located and hash-verified** from the recorded path or the content-addressed store (`samples/<sha256>.sample`); `--sample PATH` points at a kept copy. A candidate with different bytes is refused rather than replayed.
+- **The sample is located and hash-verified** through the encrypted sample store first (content-addressed, decrypted in memory, plaintext hash checked against the bundle), then the recorded path; `--sample PATH` points at a kept copy. A sample that is purged, expired, encrypted under a different key or tampered is **INCONCLUSIVE** with that reason — never a pass — and replay does not silently fall back to another copy once the store owns the address. A candidate with different bytes is refused rather than replayed.
 - **The original bundle is never modified.** The `replay` section and `replay.json` are written beside the **new** run (and a failed replay still writes `replay.json` with the reason). The pipeline is re-run by shelling out to `hatchery submit`, so there is one producer of analysis data.
 
 ```bash
@@ -261,6 +267,29 @@ hatchery worker                                                        # or poll
 ```
 
 Paths are resolved to absolute at enqueue time. The queue database is `data/queue.db` (override with `--queue` or `HATCHERY_QUEUE_DB`). See [`docs/DECISIONS.md`](docs/DECISIONS.md) D27 for the state model, the recovery rules and the deliberate exclusions (no broker, no remote workers, no cancellation).
+
+### The sample store: encryption at rest and retention
+
+Every entry point — `submit`, `submit --enqueue`, the worker, `replay` and `hatchery store` — uses one store, `engine/store/`, at `HATCHERY_SAMPLE_STORE` or `<checkout>/samples`. The root is resolved absolutely, so a CLI run, an API enqueue and a worker agree regardless of the directory each was started from.
+
+- **Content-addressed.** The blob is named by the plaintext SHA-256 and the plaintext hash is re-checked on every read.
+- **Encrypted at rest.** AES-256-GCM in a versioned envelope with an authenticated header and a key id. A wrong key, tampered ciphertext, truncated file and unknown version each fail closed with their own reason. Writes are temp-file + `fsync` + atomic rename; the temporary holds ciphertext, and no write path leaves plaintext on disk.
+- **Key handling.** `HATCHERY_SAMPLE_KEY` (32 bytes hex/base64) or `HATCHERY_SAMPLE_KEY_FILE` (must be a regular non-symlink file, mode 0600). With neither configured, the first write **generates** a local key at `<store>/.sample-key` (0600) and says so loudly — there is no silent plaintext fallback. The key is never written to the index, a bundle, a report, a log, argv or an error message; only the key id is printed.
+- **Retention.** TTL is explicit (`--ttl` / `HATCHERY_SAMPLE_TTL`, seconds) and disabled by default. `hatchery store prune` is a dry run unless `--apply` and prints why every sample was kept or deleted. It never deletes a sample referenced by a run bundle (`sample.sha256` under a results root) or by a queued/running job; a pre-D28 job is protected by hashing the path it still points at, and a job whose sample cannot be identified makes prune refuse.
+- **Migration.** `hatchery store migrate` encrypts a legacy plaintext store idempotently and resumes after interruption; `hatchery store verify` decrypts and hash-checks every entry (a legacy plaintext entry is a failure with reason `plaintext-legacy` until migrated). The D27 queue gains a `sample_store_ref` column through a versioned additive migration that preserves job ids and states.
+
+```bash
+hatchery store status                       # counts, bytes, encryption, references, reclaimable
+hatchery store verify --json                # decrypt + hash-check; exit 2 on any failure
+hatchery store migrate                      # encrypt a pre-D28 plaintext store (idempotent)
+hatchery store prune --ttl 2592000          # dry run: what would be deleted, and why it was kept
+hatchery store prune --ttl 2592000 --apply  # delete expired, unreferenced samples
+hatchery store keygen -o ~/.hatchery/sample.key   # 0600, printed key id only
+```
+
+A worker executes a queued job from the store (`submit --from-store <sha>`), not from the path that was submitted, so deleting the original after `--enqueue` no longer breaks the job. Replay reads and decrypts the stored sample in memory and treats a purged, expired or undecryptable sample as **INCONCLUSIVE** with the precise reason — never as a pass. It still passes the path-based pipeline a single-use staging file (0600, removed when the run ends); that is the one place a plaintext sample exists on disk during replay, and it is documented in [`docs/RETENTION.md`](docs/RETENTION.md).
+
+`HATCHERY_SAMPLE_STORE`, `HATCHERY_SAMPLE_KEY`, `HATCHERY_SAMPLE_KEY_FILE` and `HATCHERY_SAMPLE_TTL` are the store's configuration; `HATCHERY_RESULTS_ROOT` is where reference scans look for run bundles. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D28.
 
 ---
 
@@ -354,7 +383,7 @@ When a submission is queued, `engine/queue/` writes one row to a stdlib-SQLite `
 
 **Phase 3 — AI triage, done properly.** ✅ *(the layer is built)* Local (Ollama) behavioural triage with versioned prompt contracts, JSON-schema-validated output, grounding requirements and **fail-closed suppression**: every claim cites an evidence id that must exist in the run, and a verdict that cannot be grounded is INCONCLUSIVE. Sample-derived text is treated as hostile input inside an untrusted-data boundary, with an adversarial-string test in CI, because malware contains strings designed to steer an LLM's verdict. ✅ *(clustering)* `hatchery cluster` groups runs that look like the same campaign from a weighted similarity over what the engine already recorded, listing the shared features that justify each group and never naming a family — similarity is a lead, not attribution. ✅ *(MCP)* `hatchery mcp` exposes the engine as an MCP tool an agent can call (`submit_sample`, `get_report`, `get_iocs`, `triage_run`, `cluster_runs`), stdlib only over stdio. ⚠️ *What is not done: the report is behavioural, not literally function-level (mapping a claim to a specific function needs CFG reconstruction); technique associations the model proposes are validated as ids but not proven as the best association; clustering has no API/dashboard surface yet, and there is no fuzzy hashing or true code-reuse lineage extraction.*
 
-**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25); **deterministic replay** is built (D26): `hatchery replay <run_dir>` re-analyses a run and returns a reproducibility verdict, failing loudly when a deterministic static signal changed and reporting dynamic drift without failing; and the **durable queue and workers** are built (D27): `hatchery submit --enqueue` plus `hatchery worker` execute submissions asynchronously with atomic claims, leases, bounded concurrency and fail-closed recovery of a dead worker's job, while the API enqueues instead of spawning and reflects queue state on read. Still ahead: a sample store with TTL and encryption at rest, remote/cloud detonation, and shareable analysis URLs.
+**Phase 4 — product.** ⏳ *in progress.* The API now has **roles** (admin/viewer) and an append-only **audit log** rather than one shared secret (D25); **deterministic replay** is built (D26): `hatchery replay <run_dir>` re-analyses a run and returns a reproducibility verdict, failing loudly when a deterministic static signal changed and reporting dynamic drift without failing; and the **durable queue and workers** are built (D27): `hatchery submit --enqueue` plus `hatchery worker` execute submissions asynchronously with atomic claims, leases, bounded concurrency and fail-closed recovery of a dead worker's job, while the API enqueues instead of spawning and reflects queue state on read; and the **sample store** is now content-addressed, encrypted at rest (AES-256-GCM, versioned envelope) and reference-aware (D28): `hatchery store status|verify|migrate|prune`, a worker that runs from the store after the original path is deleted, and a replay that is INCONCLUSIVE rather than a pass when a sample is purged. Still ahead: key rotation/KMS, remote/cloud detonation, and shareable analysis URLs.
 
 ---
 

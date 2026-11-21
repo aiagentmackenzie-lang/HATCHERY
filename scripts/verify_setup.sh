@@ -27,6 +27,10 @@ API_PID=""
 DASH_PID=""
 FAILURES=0
 
+# D28: every process that reads or writes samples must agree on one store, and
+# the repository's own store must not be touched by verification.
+export HATCHERY_SAMPLE_STORE="$WORK/samples"
+
 cleanup() {
   for port in 3002 5173; do
     pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
@@ -50,6 +54,9 @@ guard_digest() {
       if [ -f "$db" ]; then shasum -a 256 "$db"; else echo "absent $db"; fi
     done
     shasum -a 256 "$ROOT/samples/eicar.com"
+    for sample in "$ROOT"/samples/*; do
+      [ -f "$sample" ] && shasum -a 256 "$sample"
+    done
     echo "results $(find "$ROOT/results" -type f 2>/dev/null | wc -l | tr -d ' ')"
     echo "uploads $(find "$ROOT/uploads" -type f 2>/dev/null | wc -l | tr -d ' ')"
   } | shasum -a 256 | awk '{print $1}'
@@ -131,6 +138,46 @@ else
   tail -20 "$CLI_OUT"
 fi
 
+# The sample reached the store encrypted, content-addressed, and with no
+# plaintext left anywhere in the store directory (D28).
+STORE_STATUS="$WORK/store-status.json"
+if HATCHERY_RESULTS_ROOT="$WORK/results" "$PY" -m engine.cli store status --json \
+    --store "$WORK/samples" --results "$WORK/results" >"$STORE_STATUS" 2>"$WORK/store.log"; then
+  if "$PY" - "$STORE_STATUS" "$WORK/samples" "$WORK/cli/run/bundle/analysis.json" <<'CHECK'
+import json, sys
+from pathlib import Path
+
+status = json.load(open(sys.argv[1]))
+store_root = Path(sys.argv[2])
+bundle = json.load(open(sys.argv[3]))
+
+assert status["samples"] == 1, status["samples"]
+assert status["encrypted"] == 1 and status["legacy_plaintext"] == 0, status
+entry = status["entries"][0]
+assert entry["sha256"] == bundle["sample"]["sha256"], (entry, bundle["sample"])
+assert bundle["sample"]["store"]["reference"] == bundle["sample"]["sha256"], bundle["sample"]
+assert bundle["sample"]["store"]["encryption"] == "aes-256-gcm/v1", bundle["sample"]
+
+blob = store_root / f"{entry['sha256']}.sample"
+assert blob.is_file(), blob
+data = blob.read_bytes()
+assert data.startswith(b"HATCHERY-SAMPLE\x00"), data[:20]
+assert b"EICAR" not in data, "plaintext sample bytes are on disk"
+assert (blob.stat().st_mode & 0o777) == 0o600, oct(blob.stat().st_mode)
+for path in store_root.rglob("*"):
+    if path.is_file() and path.name != "index.db" and not path.name.startswith("index.db"):
+        assert b"EICAR" not in path.read_bytes(), path
+CHECK
+  then
+    pass "store/encrypted-at-rest" "content-addressed AES-256-GCM blob, 0600, no plaintext"
+  else
+    fail "store/encrypted-at-rest" "the sample store is not encrypted as specified"
+  fi
+else
+  fail "store/encrypted-at-rest" "hatchery store status failed; see $WORK/store.log"
+  tail -5 "$WORK/store.log"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Compiled API: enqueue, restart durability, worker, ingest
 # ---------------------------------------------------------------------------
@@ -209,6 +256,22 @@ if "$PY" -m engine.cli worker --once --queue "$WORK/api/queue.db" --timeout 120 
 else
   fail "worker/executes-job" "worker failed; see $WORK/worker.log"
   tail -5 "$WORK/worker.log"
+fi
+
+# D28: the queued job carries the content address, and the worker ran from the
+# store rather than from the uploaded path.
+if "$PY" -m engine.cli queue "$task_id" --json --queue "$WORK/api/queue.db" \
+    >"$WORK/job.json" 2>/dev/null && "$PY" - "$WORK/job.json" <<'CHECKJOB'
+import json, sys
+job = json.load(open(sys.argv[1]))
+assert job["status"] == "completed", job["status"]
+assert job["sample_store_ref"] == job["sample_sha256"], job
+assert job["sample_store_ref"] == "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", job
+CHECKJOB
+then
+  pass "worker/store-backed-job" "job records a content address and completed from it"
+else
+  fail "worker/store-backed-job" "the queued job did not run from the sample store"
 fi
 
 # The API reconciles the completed job and ingests the bundle on read.

@@ -20,6 +20,17 @@ The OLE/CFB parser (`engine/intake/ole.py`) is bounded in the same spirit: FAT a
 
 The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scanner is a single pass with a depth cap and an object-count cap, embedded objects are size-capped, and `\bin` raw regions are skipped so binary data cannot confuse group tracking — a `\bin` length that overruns the file or is negative raises instead of being silently dropped. A decoded `Package` object is an OLE compound file and is handed to the OLE parser; nothing is executed.
 
+## Sample store (encryption at rest and retention)
+
+`engine/store/` holds every accepted sample: content-addressed by plaintext SHA-256, encrypted at rest, and indexed. It is the one place a sample is copied to, and every entry point uses it (D28). It is a **hostile-input surface** in both directions — the blobs are malware, and the key file is a credential.
+
+- **Encryption.** AES-256-GCM in a versioned envelope whose header (magic, version, key id, nonce, plaintext length) is authenticated as additional data. Decryption authenticates first, then verifies the plaintext SHA-256 against the content address; a caller never sees bytes that are not the sample. Wrong key, tampered ciphertext/header, truncation and an unknown envelope version are distinct, fail-closed reasons. Blob size is bounded before it is read into memory, and an envelope that declares an implausible plaintext length is refused before allocation.
+- **Writes.** Encrypt in memory → write a `0600` temporary (ciphertext) → `fsync` → atomic rename → `fsync` directory → index row. No write path produces a plaintext file, and an interrupted write cannot be mistaken for a sample (temporaries are `.tmp-` and are never indexed).
+- **Key handling.** `HATCHERY_SAMPLE_KEY` or `HATCHERY_SAMPLE_KEY_FILE`. A key file must be a regular, non-symlink file with no group/other bits — a symlink, a device, a loose mode or a wrong length is refused, never followed. The key is never stored in the index, a bundle, a report, a log, argv or an error message; only a truncated SHA-256 key id is stored and printed. With no key configured the first write generates `<store>/.sample-key` (0600, `O_EXCL`) and announces it; there is **no silent plaintext fallback**. Keep that file out of version control (`.gitignore` covers it) and, for a stronger posture, point `HATCHERY_SAMPLE_KEY_FILE` at a path outside the store — a key beside the ciphertext protects against plaintext at rest, not against a reader of the store directory.
+- **Reference safety.** Prune re-reads run bundles and the D27 queue at decision time and never deletes a referenced sample. A queued/running job whose sample cannot be identified makes `prune --apply` refuse. A malformed or oversized bundle is reported and protects nothing; that is why `store status` prints the scan warnings.
+- **Concurrency and integrity.** Prune/migrate/verify take a non-blocking `flock`; writes are atomic; the index is a repairable cache of the blobs, not a second source of truth. `store verify` decrypts and hash-checks every entry and exits non-zero on any failure; `store migrate` never deletes a legacy blob it cannot verify.
+- **What is not covered.** No KMS/HSM, no key rotation/re-wrap, no multi-host store, no Windows ACL verification, and no encryption of the extracted delivery children or result bundles. Replay/submit use a single-use plaintext staging file for the path-based pipeline (0600, 0700 directory, unlinked on exit); SIGKILL can leave it in the OS temp directory. Result bundles under `results/` are still plaintext by design.
+
 ## Emulation (Windows PE)
 
 `engine/emulate/` drives **Mandiant Speakeasy 2.0.0b6** (MIT, a pre-release kept in the optional `.[emulation]` extra, never in `dev` or the pinned python-gate matrix) to extract configuration from a Windows PE. It is a **declared, containerized, fail-closed analysis stage — not an isolation boundary** (D21).
@@ -57,6 +68,8 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 - [ ] Restrict `HATCHERY_ALLOWED_SAMPLE_ROOTS` to your real intake directory.
 - [ ] Never point the API at a directory containing credentials or backups.
 - [ ] Give the API's data directory the same care as the malware samples it stores: it holds live sample bytes and full behavioral traces.
+- [ ] Back up the sample-store key (`HATCHERY_SAMPLE_KEY`/`HATCHERY_SAMPLE_KEY_FILE`, or the generated `<store>/.sample-key`). Without it the stored samples cannot be decrypted — `hatchery store verify` will say `no-key`/`wrong-key`, and replay of a stored-only sample is INCONCLUSIVE. Never commit it.
+- [ ] Run `hatchery store status` and `hatchery store verify` before enabling a TTL. A pre-D28 store reports `legacy_plaintext` until `hatchery store migrate` encrypts it.
 - [ ] Cap resources: `ContainerConfig` sets `mem_limit`, `nano_cpus`, `pids_limit` and `no-new-privileges`. Do not remove them.
 - [ ] Patch the host kernel regularly — at tier 1 the host kernel is the boundary.
 - [ ] If you use triage, keep it local. Do not pass `--allow-remote-model` unless you intend sample-derived text to leave the machine.
@@ -74,6 +87,8 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 | Upload filenames | reduced to a bare name; traversal segments stripped |
 | Artifact transfer | copy-based over the Docker API; tar members validated, `data` filter applied. At tier 2, a named Docker volume read by a short `runc` sidecar — never a host bind mount |
 | Sample execution | unprivileged (`setpriv` to uid 1000); tracers run privileged, the sample never does |
+| Sample at rest | content-addressed, AES-256-GCM envelope, `0600` blobs, atomic writes; key from env or a `0600` non-symlink file, else a generated local key that is announced |
+| Sample retention | TTL explicit and off by default; `prune` dry-run unless `--apply`; referenced samples are never deleted; an unidentifiable queued job blocks the delete |
 
 ## Issues fixed in this revision
 
