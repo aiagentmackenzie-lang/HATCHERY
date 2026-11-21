@@ -4,7 +4,10 @@ This is the operator's guide to the Phase 4a sample store: what it guarantees,
 what it deliberately does not, and the clean-copy evidence behind those claims.
 The decision record is [`docs/DECISIONS.md`](DECISIONS.md) D28; the baseline
 counts and the three known detector defects are in
-[`docs/BASELINE.md`](BASELINE.md).
+[`docs/BASELINE.md`](BASELINE.md). Key rotation, retired keys and
+backup/restore are Phase 4b (D29) and have their own operator guide and
+clean-copy transcript in [`docs/BACKUP.md`](BACKUP.md); this page describes the
+store's storage and retention guarantees, which D29 does not replace.
 
 ## One store, one root
 
@@ -147,7 +150,13 @@ hatchery store verify    [--sha SHA] [--json] ...
 hatchery store migrate   [--dry-run] [--adopt-queue/--no-adopt-queue] [--json] ...
 hatchery store prune     [--apply] [--ttl N] [--json] ...
 hatchery store keygen    -o PATH
+hatchery store key status|rotate|retire   # D29: key ring, rotation, retirement
+hatchery store backup    -o DIR [--include-key] [--queue PATH]
+hatchery store restore   BACKUP --target DIR [--force]
 ```
+
+The D29 commands keep the same contract (JSON on stdout, diagnostics on stderr,
+0/1/2) and are documented in [`docs/BACKUP.md`](BACKUP.md).
 
 JSON goes to **stdout** (one object), diagnostics go to **stderr** (the group
 routes the Rich log handler to stderr so an INFO line cannot corrupt the JSON).
@@ -182,14 +191,18 @@ hatchery store prune --ttl 2592000 --apply
 
 ## What was not verified
 
-- **Key rotation / re-wrap.** The envelope carries a key id so rotation is
-  possible, and `wrong-key` is distinguishable from tampering, but no re-wrap
-  command exists.
+- **Key rotation, retired keys, backup and restore.** ✅ Built in Phase 4b
+  (D29); see [`docs/BACKUP.md`](BACKUP.md) for the key-ring format, rotation
+  resumability, backup manifest and restore validation, and the clean-copy
+  transcript. What remains undone there: KMS/HSM/escrow, multi-host rotation,
+  scheduled rotation/expiry, secure erase, a signed manifest, and disaster
+  recovery of a destroyed key.
 - **KMS/HSM, network key services, a daemon, a new network surface.** None was
-  added; the key is an env var or a local file.
+  added; the key is an env var, a local file or the store's `0600` ring.
 - **Multi-host.** The store is a local directory and the reference scan reads
   this host's results roots and queue only. A bundle on another machine is not
-  consulted (and is therefore not protected).
+  consulted (and is therefore not protected). D29's rotation and backup are
+  single-host for the same reason.
 - **Platform-specific file permissions.** `0600`/`0700` and `O_EXCL` are exercised
   on macOS 27 / APFS in this baseline (and Linux in CI); Windows ACLs are not.
 - **Crash injection at the syscall boundary.** Atomicity is tested by fault
