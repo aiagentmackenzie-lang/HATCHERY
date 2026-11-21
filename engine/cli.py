@@ -2479,7 +2479,7 @@ def store_restore(
 
 
 # ---------------------------------------------------------------------------
-# hatchery results — bundle integrity and verification (D33)
+# hatchery results — bundle integrity, retention and growth (D33)
 # ---------------------------------------------------------------------------
 
 RESULTS_EXIT_OK = 0
@@ -2562,7 +2562,7 @@ def _reseal_after_stage(run_dir: Path, stage: str) -> None:
 
 @cli.group()
 def results() -> None:
-    """Result bundles: seal and verify (D33).
+    """Result bundles: seal, verify, retention and growth (D33).
 
     A run directory (``results/<run>/``) is the artifact an analyst hands to a
     client. ``manifest.json`` at the run root hashes every file and is written
@@ -2575,9 +2575,10 @@ def results() -> None:
     when you deliver the run and pass it to ``verify --expect-manifest`` to
     catch a rewrite of an artifact together with its manifest.
 
-    Every subcommand takes ``--json``: one object on stdout, diagnostics on
-    stderr. Exit codes: 0 intact (or unsealed without an anchor), 1 broken or
-    refused, 2 usage.
+    Retention is off by default and applied only by ``results prune --apply``;
+    ``results status`` reports growth and never deletes. Every subcommand takes
+    ``--json``: one object on stdout, diagnostics on stderr. Exit codes: 0
+    intact (or unsealed without an anchor), 1 broken or refused, 2 usage.
     """
 
 
@@ -2696,6 +2697,151 @@ def results_seal(run: Path, replace: bool, as_json: bool) -> None:
             "  Record this hash when you deliver the run, then check it with "
             "`hatchery results verify <run> --expect-manifest <sha256>`."
         )
+    raise SystemExit(RESULTS_EXIT_OK)
+
+
+@results.command("prune")
+@click.option(
+    "--older-than", "older_than", default=None,
+    help="Delete runs sealed more than this long ago (30d, 12h, 3600s; else HATCHERY_RESULTS_RETENTION_DAYS)",
+)
+@click.option(
+    "--keep-last", "keep_last", type=int, default=None,
+    help="Always keep the newest N runs (default 1, minimum 1; else HATCHERY_RESULTS_KEEP_LAST)",
+)
+@click.option("--apply", is_flag=True, help="Actually delete; the default is a dry run")
+@click.option("--results", "results_root", type=click.Path(path_type=Path), default=None,
+              help="Results root (default: HATCHERY_RESULTS_ROOT, then <checkout>/results)")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def results_prune(
+    older_than: Optional[str], keep_last: Optional[int], apply: bool,
+    results_root: Optional[Path], as_json: bool,
+) -> None:
+    """Delete verified, expired runs — dry run unless --apply.
+
+    Retention is off by default (no --older-than and no retention environment
+    variable means nothing expires) and nothing in submit, the worker or the API
+    calls this. A run with no manifest, an invalid manifest or an unparseable
+    bundle is never deleted: --apply refuses the whole plan and exits non-zero.
+    Deletion renames the run to ``<run>.deleting-<ts>`` before removing it, so a
+    crash leaves a stray the next prune completes.
+    """
+    from engine.results import RetentionError, prune_runs, resolve_policy
+
+    _logs_to_stderr()
+    root = _default_results_root(results_root)
+    try:
+        policy = resolve_policy(older_than=older_than, keep_last=keep_last)
+        report = prune_runs(root, policy=policy, apply=apply)
+    except RetentionError as exc:
+        _results_failed(exc.reason, exc.message, as_json, RESULTS_EXIT_FAILURE)
+        return
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        mode = "apply" if report["applied"] else "dry run (pass --apply to delete)"
+        policy_text = (
+            f"older than {report['policy']['older_than']}" if report["policy"]["older_than"]
+            else "no expiry"
+        )
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Results prune ({mode})\n"
+                f"Root:   [cyan]{report['results_root']}[/cyan]\n"
+                f"Policy: {policy_text} · keep newest {report['policy']['keep_last']}"
+                + (" [yellow](clamped)[/yellow]" if report["clamped"] else "")
+                + f"\nRuns:   {report.get('runs', 0)} · delete "
+                f"{report['summary']['delete']} · keep {report['summary']['keep']}",
+                title="Prune",
+            )
+        )
+        for item in report.get("decisions") or []:
+            color = "red" if item["decision"] == "delete" else "dim"
+            nested = f", {item['nested_runs']} nested replay(s)" if item.get("nested_runs") else ""
+            console.print(
+                f"  [{color}]{item['decision']}[/{color}] [cyan]{item['run_id']}[/cyan] "
+                f"({item['reason']}, {item['bytes']} bytes{nested})"
+            )
+        for stray in report.get("strays") or []:
+            console.print(f"  [yellow]stray[/yellow] {stray['name']} ({stray['bytes']} bytes)")
+        for resumed in report.get("resumed_strays") or []:
+            console.print(f"  [red]resumed[/red] {resumed}")
+        for refused in report.get("refused") or []:
+            console.print(f"  [red]refused[/red] {refused['run_id']}: {refused['message']}")
+        for error in report.get("errors") or []:
+            console.print(f"  [red]error[/red] {error}")
+        console.print(
+            f"  bytes freed: {report.get('bytes_freed', 0)} · prune log: "
+            f"[cyan]{(report.get('prune_log') or {}).get('path')}[/cyan]"
+        )
+    if report.get("locked"):
+        raise SystemExit(RESULTS_EXIT_FAILURE)
+    if report.get("refused") or report.get("errors"):
+        raise SystemExit(RESULTS_EXIT_FAILURE)
+    raise SystemExit(RESULTS_EXIT_OK)
+
+
+@results.command("status")
+@click.option(
+    "--older-than", "older_than", default=None,
+    help="Preview a prune policy (else HATCHERY_RESULTS_RETENTION_DAYS)",
+)
+@click.option("--keep-last", "keep_last", type=int, default=None, help="Preview the anchor size")
+@click.option("--results", "results_root", type=click.Path(path_type=Path), default=None,
+              help="Results root (default: HATCHERY_RESULTS_ROOT, then <checkout>/results)")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def results_status(
+    older_than: Optional[str], keep_last: Optional[int],
+    results_root: Optional[Path], as_json: bool,
+) -> None:
+    """Run count, bytes, oldest/newest, strays, growth — never deletes."""
+    from engine.results import RetentionError, resolve_policy, status_report
+
+    _logs_to_stderr()
+    root = _default_results_root(results_root)
+    try:
+        policy = resolve_policy(older_than=older_than, keep_last=keep_last)
+        report = status_report(root, policy=policy)
+    except RetentionError as exc:
+        _results_failed(exc.reason, exc.message, as_json, RESULTS_EXIT_FAILURE)
+        return
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+        raise SystemExit(RESULTS_EXIT_OK)
+    growth = report["growth"]
+    console.print(
+        Panel(
+            f"[bold orange_red1]HATCHERY[/bold orange_red1] — Result bundles\n"
+            f"Root:  [cyan]{report['results_root']}[/cyan]\n"
+            f"Runs:  {report['runs']} ({report['bytes']} bytes) · "
+            f"nested replays: {report['nested_replay_runs']}\n"
+            f"Oldest: {report['oldest']['run_id'] if report['oldest'] else '(none)'} "
+            f"{report['oldest']['sealed_at'] if report['oldest'] else ''}\n"
+            f"Newest: {report['newest']['run_id'] if report['newest'] else '(none)'} "
+            f"{report['newest']['sealed_at'] if report['newest'] else ''}",
+            title="Results",
+        )
+    )
+    warn = " [red](threshold-crossed)[/red]" if growth["warned"] else ""
+    console.print(
+        f"  Growth: {growth['runs']}/{growth['warn_runs']} runs · "
+        f"{growth['bytes']}/{growth['warn_bytes']} bytes · enforced: {growth['enforced']}{warn}"
+    )
+    console.print(
+        "  A prune would remove: "
+        + (", ".join(report["would_remove"]) if report["would_remove"] else "nothing")
+        + f" ({report['would_free_bytes']} bytes, keep newest {report['policy']['keep_last']})"
+    )
+    for stray in report.get("strays") or []:
+        console.print(f"  [yellow]stray[/yellow] {stray['name']} ({stray['bytes']} bytes)")
+    for refused in report.get("refused") or []:
+        console.print(
+            f"  [red]{refused['reason']}[/red] {refused['run_id']}: {refused['message']}"
+        )
+    if report.get("ignored"):
+        console.print(f"  [dim]ignored (not runs): {', '.join(report['ignored'])}[/dim]")
+    log = report.get("prune_log") or {}
+    console.print(f"  Prune log: [cyan]{log.get('path')}[/cyan] ({log.get('entries', 0)} entries)")
     raise SystemExit(RESULTS_EXIT_OK)
 
 

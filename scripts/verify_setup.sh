@@ -178,6 +178,103 @@ else
   tail -5 "$WORK/store.log"
 fi
 
+
+# ---------------------------------------------------------------------------
+# 2b. Result bundles (D33): sealed at submit, verified, tamper-detected, pruned
+# ---------------------------------------------------------------------------
+RESULTS_VERIFY="$WORK/results-verify.json"
+if "$PY" -m engine.cli results verify "$WORK/cli/run" --json >"$RESULTS_VERIFY" 2>"$WORK/results-verify.log"; then
+  if "$PY" - "$RESULTS_VERIFY" "$WORK/cli/run" <<'CHECK'
+import hashlib, json, sys
+from pathlib import Path
+
+report = json.load(open(sys.argv[1]))
+run = Path(sys.argv[2])
+manifest = run / "manifest.json"
+
+assert report["ok"] is True, report
+assert report["state"] == "intact", report
+assert report["stage"] == "submit", report
+assert manifest.is_file(), "the manifest must be at the run root"
+assert not (run / "bundle" / "manifest.json").exists(), "bundle/ is not the place"
+assert report["manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+assert report["file_count"] >= 2, report
+assert (manifest.stat().st_mode & 0o777) == 0o600, oct(manifest.stat().st_mode)
+document = json.loads(manifest.read_bytes())
+assert set(document["files"][0]) == {"path", "sha256", "size"}
+CHECK
+  then
+    pass "results/manifest-sealed" "run root manifest, 0600, hashes verified, stage submit"
+  else
+    fail "results/manifest-sealed" "the manifest does not verify as specified"
+  fi
+else
+  fail "results/manifest-sealed" "hatchery results verify failed; see $WORK/results-verify.log"
+  tail -5 "$WORK/results-verify.log"
+fi
+
+cp -R "$WORK/cli/run" "$WORK/cli/tampered"
+printf 'tampered after sealing\n' >> "$WORK/cli/tampered/bundle/events.jsonl"
+if "$PY" -m engine.cli results verify "$WORK/cli/tampered" --json \
+    >"$WORK/results-tamper.json" 2>/dev/null; then
+  fail "results/tamper-detected" "a modified artifact still verified"
+else
+  if "$PY" - "$WORK/results-tamper.json" <<'CHECK'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["ok"] is False, report
+assert report["state"] == "broken", report
+assert report["classification"] == "modified", report
+assert report["path"] == "bundle/events.jsonl", report
+CHECK
+  then
+    pass "results/tamper-detected" "modified artifact named with its path, exit 1"
+  else
+    fail "results/tamper-detected" "the break was not classified as modified at the path"
+  fi
+fi
+
+mkdir -p "$WORK/prune"
+cp -R "$WORK/cli/run" "$WORK/prune/old"
+cp -R "$WORK/cli/run" "$WORK/prune/new"
+"$PY" - "$WORK/prune/old" <<'RESTAMP'
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from engine.results import build_manifest, write_manifest
+
+run = Path(sys.argv[1])
+stamp = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+write_manifest(run, build_manifest(run, stage="seal", sealed_at=stamp))
+RESTAMP
+if "$PY" -m engine.cli results prune --older-than 0s --keep-last 1 --apply --json \
+    --results "$WORK/prune" >"$WORK/results-prune.json" 2>"$WORK/results-prune.log"; then
+  if "$PY" - "$WORK/results-prune.json" "$WORK/prune" <<'CHECK'
+import json, sys
+from pathlib import Path
+
+report = json.load(open(sys.argv[1]))
+root = Path(sys.argv[2])
+assert report["applied"] is True, report
+assert [item["run_id"] for item in report["removed"]] == ["old"], report
+assert (root / "new" / "manifest.json").is_file(), "the anchor run must survive"
+assert not (root / "old").exists(), "the expired run must be gone"
+log = root / ".prune-log.jsonl"
+assert log.is_file(), "every prune appends a record"
+assert (log.stat().st_mode & 0o777) == 0o600, oct(log.stat().st_mode)
+assert json.loads(log.read_text().splitlines()[-1])["applied"] is True
+CHECK
+  then
+    pass "results/prune-keeps-anchor" "dry-run order applied, anchor kept, 0600 prune log"
+  else
+    fail "results/prune-keeps-anchor" "the prune did not match its report"
+  fi
+else
+  fail "results/prune-keeps-anchor" "hatchery results prune failed; see $WORK/results-prune.log"
+  tail -5 "$WORK/results-prune.log"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Compiled API: enqueue, restart durability, worker, ingest
 # ---------------------------------------------------------------------------
