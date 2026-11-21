@@ -1,6 +1,9 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `4b48490`.
+Verified **21 November 2026** on top of revision `be9386d` (the Phase 4a sample
+store, D28). The detector scorecard is unchanged from `4b48490`; the Python and
+setup counts below are the new ones, and the clean-copy transcript for D28 is in
+[`RETENTION.md`](RETENTION.md#captured-transcript).
 
 This document is evidence, not a roadmap. It records what a clean checkout can
 do today, the exact acceptance inputs, and the defects that remain. Product
@@ -20,8 +23,8 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **702 passed, 17 skipped,
-  3 xfailed**.
+  dashboard, and passes the full Python suite: **771 passed, 17 skipped,
+  3 xfailed** (was 702/17/3 at `4b48490`; 68 tests cover the sample store).
 - `tests/fixtures/acceptance/` holds deterministic inputs (checked in, generated
   from byte templates, no compiler or download) with a manifest of SHA-256 and
   expected outcomes. `--check` fails if either the bytes or the expectations
@@ -31,7 +34,7 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **17 passed, 0 failed**.
+  state: **19 passed, 0 failed** (was 17/0).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -39,8 +42,13 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
     ingests the bundle and exposes the expected hash and static results.
   - The dashboard serves on **5173** (matching the README and the API banner)
     and proxies `/api/health`.
-  - The repository's databases, results, uploads and `samples/eicar.com` are
-    checksummed before and after and must be unchanged.
+  - **The sample store is encrypted at rest (D28).** The submitted sample is a
+    content-addressed AES-256-GCM envelope, `0600`, no plaintext appears anywhere
+    in the store directory, and the bundle records the store reference.
+  - **The queued job records a content address** and the worker completed it from
+    that copy (`sample_store_ref == sample_sha256`), not from the upload path.
+  - The repository's databases, results, uploads and every file under `samples/`
+    are checksummed before and after and must be unchanged.
 
 ### Acceptance inputs
 
@@ -75,9 +83,12 @@ silently.
 ## Not covered by this baseline
 
 Docker detonation, the gVisor tier, Windows PE emulation, replay comparison,
-LLM triage, MCP, STIX push and campaign clustering have their own suites and CI
-jobs. This baseline is about installation, packaging, normal entry points and
-static acceptance inputs; it does not re-certify those features.
+LLM triage, MCP, STIX push, campaign clustering and the sample store's
+key/retention semantics have their own suites and CI jobs. This baseline is
+about installation, packaging, normal entry points and static acceptance inputs;
+it does not re-certify those features. The store's guarantees, its known gaps
+(key rotation, KMS, multi-host, Windows ACLs, the replay staging file) and the
+D28 clean-copy transcript are in [`RETENTION.md`](RETENTION.md).
 
 ## Reproduction
 
@@ -91,10 +102,13 @@ python scripts/verify_fixtures.py
 
 # needs Node >= 20 and free ports 3002/5173
 scripts/verify_setup.sh
+
+# the store on its own (temporary root; no repository state is touched)
+HATCHERY_SAMPLE_STORE=/tmp/hatchery-store python -m engine.cli store status --json
 ```
 
-Expected: `702 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `17 passed, 0 failed`.
+Expected: `771 passed, 17 skipped, 3 xfailed`; the fixture scorecard
+`13 passed, 0 failed, 3 known defects`; the setup check `19 passed, 0 failed`.
 
 ## Maintenance
 
@@ -105,7 +119,12 @@ Expected: `702 passed, 17 skipped, 3 xfailed`; the fixture scorecard
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
 
-## Captured transcript
+## Captured transcript (detector baseline, `4b48490`)
+
+This is the previous clean-copy transcript, kept as the record of the detector
+scorecard. The Phase 4a (D28) transcript — the one that includes the store
+checks and the live `hatchery store` commands — is in
+[`RETENTION.md`](RETENTION.md#captured-transcript).
 
 ```text
 # Baseline verification transcript (clean checkout)
