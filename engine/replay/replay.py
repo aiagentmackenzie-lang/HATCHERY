@@ -41,6 +41,7 @@ from engine.replay.compare import (
     settings_from_bundle,
 )
 from engine.replay.signals import extract_signals
+from engine.results import ManifestError, manifest_state, resolve_run_root, seal_run
 from engine.store import SampleStore, SampleStoreError
 from engine.store.staging import StagedPlaintext
 from engine.store.store import resolve_ttl
@@ -474,6 +475,7 @@ def _base_section(
     original_run_dir: Path,
     replay_bundle_dir: Path,
     resolution: SampleResolution,
+    manifest: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     return {
         "original_task_id": _text(original.get("task_id")),
@@ -481,6 +483,9 @@ def _base_section(
         "original_run_dir": str(original_run_dir),
         "replay_run_dir": str(replay_bundle_dir),
         "sample": resolution.to_dict(),
+        # D5: the source run's seal state is recorded beside the verdict, never
+        # folded into it. `ok` is not the whole answer.
+        "bundle_manifest": manifest,
     }
 
 
@@ -562,6 +567,7 @@ def _execute_replay(
     allow_host_emulation: bool,
     submit_runner: Optional[SubmitRunner],
     submit_timeout: float,
+    manifest: Optional[dict[str, Any]] = None,
 ) -> ReplayResult:
     """Submit, compare and persist once the sample has been resolved.
 
@@ -570,7 +576,9 @@ def _execute_replay(
     """
     if sample_path is None:
         limitations.append(resolution.problem)
-        section = _base_section(original, resolved, replay_bundle_dir, resolution)
+        section = _base_section(
+            original, resolved, replay_bundle_dir, resolution, manifest
+        )
         section.update(
             {
                 "replay_task_id": None,
@@ -612,7 +620,9 @@ def _execute_replay(
         limitations.append(
             f"the replay did not produce a bundle (submit exit {returncode}): {tail_text}"
         )
-        section = _base_section(original, resolved, replay_bundle_dir, resolution)
+        section = _base_section(
+            original, resolved, replay_bundle_dir, resolution, manifest
+        )
         section.update(
             {
                 "replay_task_id": None,
@@ -662,7 +672,9 @@ def _execute_replay(
         )
     )
 
-    section = _base_section(original, resolved, replay_bundle_dir, resolution)
+    section = _base_section(
+        original, resolved, replay_bundle_dir, resolution, manifest
+    )
     section.update(
         {
             "replay_task_id": _text(replayed.get("task_id")),
@@ -678,10 +690,94 @@ def _execute_replay(
         }
     )
     attach_replay(replay_bundle_dir, section)
+    # D4/D33: the replay mutated the new run (it patched analysis.json and wrote
+    # replay.json), so the new run is re-sealed at stage "replay". The manifest is
+    # written after every other write; a seal failure is an error, not a whisper.
+    try:
+        seal_run(resolve_run_root(replay_bundle_dir), stage="replay")
+    except ManifestError as exc:
+        raise ReplayError(
+            f"the replayed run was written but could not be sealed: {exc.reason}: "
+            f"{exc.message}"
+        ) from exc
     logger.info(
         "Replay %s for %s (static mismatches=%d, dynamic drift=%d)",
         verdict, resolved, len(comparison.deterministic_mismatches),
         len(comparison.dynamic_drift),
+    )
+    return ReplayResult(section=section, output_dir=out)
+
+
+def _refuse_unverifiable_source(
+    *,
+    original: dict[str, Any],
+    resolved: Path,
+    out: Path,
+    replay_bundle_dir: Path,
+    original_settings: Any,
+    original_signals: Any,
+    manifest: dict[str, Any],
+    require_manifest: bool,
+) -> ReplayResult:
+    """INCONCLUSIVE before submitting anything (D5).
+
+    Replaying bytes that are not the run produces a verdict about fiction, so the
+    manifest is checked before the sample is even located. The replay still
+    writes ``replay.json`` with the reason: a failed replay is a record, not a
+    silence.
+    """
+    if manifest["state"] == "broken":
+        limitation = (
+            f"The source run is {manifest['classification']} at {manifest['path']}, "
+            "so it is not the run HATCHERY wrote. Replaying it would produce a "
+            "verdict about different bytes; this replay is INCONCLUSIVE."
+        )
+    else:
+        limitation = (
+            "The source run has no manifest and --require-manifest was given, so "
+            "there is no proof the bytes replayed are the bytes HATCHERY wrote. "
+            "This replay is INCONCLUSIVE."
+        )
+    sample = original.get("sample")
+    sample = sample if isinstance(sample, dict) else {}
+    resolution = SampleResolution(
+        requested_sha256=_text(sample.get("sha256")),
+        sha256="",
+        path="",
+        resolution="not consulted (the source bundle failed its integrity check)",
+        hash_verified=False,
+        problem=limitation,
+        reason=manifest["classification"] or "unsealed",
+    )
+    section = _base_section(
+        original, resolved, replay_bundle_dir, resolution, manifest
+    )
+    section.update(
+        {
+            "replay_task_id": None,
+            "verdict": "inconclusive",
+            "settings": {
+                "original": (
+                    original_settings.to_dict() if original_settings is not None else None
+                ),
+                "replay": None,
+                "match": {},
+                "reproduced": False,
+                "mismatches": ["the source bundle is not verifiable"],
+            },
+            "identical": {},
+            "diff": {},
+            "deterministic_mismatches": [],
+            "dynamic_drift": [],
+            "unknown": list(original_signals.unknown) if original_signals else [],
+            "not_replayed": _not_replayed(original),
+            "limitations": [POLICY_LIMITATION, limitation],
+            "require_manifest": bool(require_manifest),
+        }
+    )
+    write_replay(out, section)
+    logger.warning(
+        "Replay inconclusive for %s: %s", resolved, manifest["state"]
     )
     return ReplayResult(section=section, output_dir=out)
 
@@ -698,31 +794,67 @@ def run_replay(
     store: Any = None,
     ttl: Optional[float] = None,
     now: Optional[float] = None,
+    require_manifest: bool = False,
 ) -> ReplayResult:
     """Re-analyse a run and return the reproducibility verdict.
 
     Never raises for a failed *analysis* — a failure is an INCONCLUSIVE verdict
     with a reason. Raises :class:`ReplayError` only when the replay could not be
     attempted at all (bad path, malformed bundle).
+
+    D5: the source run's manifest decides whether there are bytes worth
+    replaying. ``verified`` proceeds; ``broken`` is INCONCLUSIVE naming the
+    classification and the file, because a verdict about bytes that are not the
+    run is a verdict about fiction; ``unsealed`` (a legacy run) proceeds with the
+    verdict unchanged and ``bundle_manifest: unsealed`` recorded, unless
+    ``require_manifest`` is set, which turns it into INCONCLUSIVE for operators
+    who seal everything.
     """
     resolved = resolve_run_dir(Path(run_dir))
-    try:
-        original = load_bundle(resolved)
-    except json.JSONDecodeError as exc:
-        raise ReplayError(
-            f"malformed bundle at {resolved / ANALYSIS_FILENAME}: {exc}"
-        ) from exc
-    except FileNotFoundError as exc:
-        raise ReplayError(str(exc)) from exc
-    if not isinstance(original, dict):
-        raise ReplayError(f"bundle at {resolved / ANALYSIS_FILENAME} is not a JSON object")
-
-    original_settings = settings_from_bundle(original)
-    original_signals = extract_signals(original)
-
     out = Path(output_dir) if output_dir else default_output_dir(resolved)
     out.mkdir(parents=True, exist_ok=True)
     replay_bundle_dir = out / "bundle"
+
+    # D5: the integrity check comes before the bundle is even loaded. A manifest
+    # that does not describe these bytes means the replay would be a verdict
+    # about fiction, and an unparseable bundle is itself a break the manifest
+    # already names — so the seal state decides first.
+    source_root = resolved.parent if resolved.name == "bundle" else resolved
+    manifest = manifest_state(source_root)
+    original: dict[str, Any] = {}
+    bundle_error: Optional[str] = None
+    try:
+        loaded = load_bundle(resolved)
+        if isinstance(loaded, dict):
+            original = loaded
+        else:
+            bundle_error = "the bundle is not a JSON object"
+    except (json.JSONDecodeError, FileNotFoundError, OSError) as exc:
+        bundle_error = str(exc)
+
+    if manifest["state"] == "broken" or (
+        require_manifest and manifest["state"] == "unsealed"
+    ):
+        return _refuse_unverifiable_source(
+            original=original,
+            resolved=resolved,
+            out=out,
+            replay_bundle_dir=replay_bundle_dir,
+            original_settings=(
+                settings_from_bundle(original) if original else None
+            ),
+            original_signals=(extract_signals(original) if original else None),
+            manifest=manifest,
+            require_manifest=require_manifest,
+        )
+
+    if bundle_error is not None or not original:
+        raise ReplayError(
+            f"malformed bundle at {resolved / ANALYSIS_FILENAME}: {bundle_error}"
+        )
+
+    original_settings = settings_from_bundle(original)
+    original_signals = extract_signals(original)
 
     owned_store = store is None
     sample_store = store if store is not None else SampleStore(create=False)
@@ -733,6 +865,16 @@ def run_replay(
         )
         limitations = [POLICY_LIMITATION]
         limitations.extend(resolution.limitations())
+        if manifest["state"] == "unsealed" and resolution.hash_verified:
+            # Only when there are bytes being replayed: on an unresolvable sample
+            # the verdict is already INCONCLUSIVE and the seal state is recorded
+            # in `bundle_manifest`, not repeated as a second reason.
+            limitations.append(
+                "The source run has no manifest, so its bytes are not proven to be "
+                "the run HATCHERY wrote (bundle_manifest: unsealed). The replay "
+                "verdict is about reproducibility and is unaffected; seal the run "
+                "and re-deliver if the bundle needs to be verifiable."
+            )
         sample_path: Optional[Path] = None
         if resolution.hash_verified:
             if resolution.plaintext is not None:
@@ -755,6 +897,7 @@ def run_replay(
             allow_host_emulation=allow_host_emulation,
             submit_runner=submit_runner,
             submit_timeout=submit_timeout,
+            manifest=manifest,
         )
     finally:
         if staged is not None:

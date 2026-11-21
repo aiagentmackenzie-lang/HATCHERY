@@ -150,6 +150,18 @@ def build_tools(results_root: Path = DEFAULT_RESULTS_ROOT) -> list[Tool]:
         # operator decision at the CLI, never something an agent can turn on.
         section = run_triage(bundle, events, config=config)
         attach_triage(run_dir, section)
+        # D33: the MCP tool mutates the bundle, so the run is re-sealed at the
+        # same stage as the CLI triage. One writer, one rule, whichever door the
+        # change came through.
+        from engine.results import ManifestError, resolve_run_root, seal_run
+
+        try:
+            seal_run(resolve_run_root(run_dir), stage="triage")
+        except ManifestError as exc:
+            raise ToolError(
+                f"triage changed the bundle but the run could not be re-sealed: "
+                f"{exc.reason}: {exc.message}"
+            ) from exc
         return _json_text(section)
 
     def cluster_runs(arguments: dict[str, Any]) -> str:

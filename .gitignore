@@ -9,9 +9,10 @@ dist/
 build/
 *.egg
 
-# Analysis results
-results/
-uploads/
+# Analysis results (anchored to the repository root: `engine/results/` is source
+# code, and an unanchored `results/` silently ignored it)
+/results/
+/uploads/
 samples/*.sample
 # D28 sample store: the index and the key are local state, never committed.
 samples/*.db

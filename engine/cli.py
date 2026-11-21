@@ -1069,21 +1069,47 @@ def submit(
     task_data["results_dir"] = str(results_dir)
     _tasks[task_id] = task_data
 
+    # The staging file for a --from-store run is removed here and by an atexit
+    # hook; nothing plaintext survives the run in the store or the results tree.
+    # Closing first also means a seal failure below cannot leave the staging file
+    # (and the decrypted sample) behind.
+    if staged is not None:
+        staged.close()
+    sample_store.close()
+
+    # D33: the manifest is written last, after every other file the run produced
+    # and after every writer has finished. It hashes the run as of this stage, so
+    # triage and push re-seal rather than reporting a legitimate change as a
+    # break. A seal that cannot be written is loud: an unsealed run is not the
+    # artifact this tool promises, and shipping it silently would make `verify`
+    # a lie by omission.
+    from engine.results import ManifestError, seal_run as seal_result_run
+
+    try:
+        manifest = seal_result_run(results_dir, stage="submit")
+    except ManifestError as exc:
+        console.print(
+            f"[red]Cannot seal the run: {exc.reason}: {exc.message}[/red]\n"
+            "[red]The analysis is on disk but has no manifest, so it is not a "
+            "verified result. Resolve the cause and run `hatchery results seal "
+            f"{results_dir}`.[/red]"
+        )
+        raise SystemExit(1) from exc
+
     if limitations:
         console.print(render_limitations(limitations), highlight=False)
 
     console.print(Panel(
         f"Task ID: [cyan]{task_id}[/cyan]\n"
         f"Status: [green]completed[/green]\n"
-        f"Results: [cyan]{results_dir}[/cyan]",
+        f"Results: [cyan]{results_dir}[/cyan]\n"
+        f"Manifest: [cyan]{manifest['manifest_sha256']}[/cyan]",
         title="✅ Analysis Complete",
     ))
-
-    # The staging file for a --from-store run is removed here and by an atexit
-    # hook; nothing plaintext survives the run in the store or the results tree.
-    if staged is not None:
-        staged.close()
-    sample_store.close()
+    console.print(
+        "  Verify or deliver this run with: "
+        f"[dim]hatchery results verify {results_dir}[/dim]"
+    )
 
 
 @cli.command()
@@ -1208,6 +1234,7 @@ def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[st
     """
     from engine.export.push import PushTarget, push_stix, write_push_result
 
+    _require_verifiable_stage(run_dir)
     bundle_path = run_dir / "stix_bundle.json"
     if not bundle_path.exists():
         console.print(f"[red]No stix_bundle.json in {run_dir} — run an analysis first.[/red]")
@@ -1249,6 +1276,7 @@ def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[st
 
     result = push_stix(bundle, target)
     result_path = write_push_result(run_dir, target, result)
+    _reseal_after_stage(run_dir, "push")
     if result.ok:
         console.print(
             f"[green]✓ Pushed {result.objects} STIX object(s) to "
@@ -1278,6 +1306,7 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
     from engine.bundle import attach_triage, load_bundle, load_events
     from engine.triage.triage import TriageConfig, run_triage
 
+    _require_verifiable_stage(run_dir)
     try:
         bundle = load_bundle(run_dir)
     except FileNotFoundError as exc:
@@ -1333,6 +1362,7 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
         console.print(f"  [red]Triage {section['status']}: {section['reason']}[/red]")
 
     path = attach_triage(run_dir, section)
+    _reseal_after_stage(run_dir, "triage")
     console.print(f"  Bundle updated: [cyan]{path}[/cyan]")
     if not section.get("available"):
         raise SystemExit(1)
@@ -1449,6 +1479,10 @@ def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
 @click.option("--allow-host-emulation", is_flag=True, help="Escape hatch: emulate on the bare host (loudly unsupported)")
 @click.option("--sample", "sample_override", type=click.Path(path_type=Path), default=None, help="Use this copy of the sample (its sha256 must match the bundle)")
 @click.option("--timeout", default=1800.0, help="Submit timeout in seconds")
+@click.option(
+    "--require-manifest", is_flag=True,
+    help="Treat an unsealed source run as INCONCLUSIVE (off by default: a legacy run still replays)",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit the replay section as JSON")
 def replay(
     run_dir: Path,
@@ -1457,6 +1491,7 @@ def replay(
     allow_host_emulation: bool,
     sample_override: Optional[Path],
     timeout: float,
+    require_manifest: bool,
     as_json: bool,
 ) -> None:
     """Re-analyse a run and report whether its static findings reproduce.
@@ -1468,9 +1503,19 @@ def replay(
     that could not run, or could not reproduce the settings, is INCONCLUSIVE —
     never a silent pass. Exit codes: 0 reproducible/dynamic-drift, 2
     static-mismatch, 1 inconclusive.
+
+    The source run's manifest is checked first (D33). A manifest that does not
+    match the run is INCONCLUSIVE naming the classification and the file: a
+    verdict about different bytes is a verdict about fiction. A missing manifest
+    (a legacy run) replays with the verdict unchanged and
+    ``bundle_manifest: unsealed`` recorded; ``--require-manifest`` turns that
+    into INCONCLUSIVE for operators who seal everything.
     """
     from engine.replay import DETERMINISTIC_KINDS, ReplayError, run_replay
 
+    # Diagnostics to stderr, always: stdout is the replay section under --json
+    # and the human panel otherwise, and a log line must not corrupt either.
+    _logs_to_stderr()
     try:
         result = run_replay(
             run_dir,
@@ -1479,6 +1524,7 @@ def replay(
             allow_host_emulation=allow_host_emulation,
             sample_override=sample_override,
             submit_timeout=timeout,
+            require_manifest=require_manifest,
         )
     except ReplayError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1486,7 +1532,7 @@ def replay(
 
     section = result.section
     if as_json:
-        console.print_json(json.dumps(section, default=str))
+        click.echo(json.dumps(section, indent=2, default=str))
         raise SystemExit(result.exit_code)
 
     color = {
@@ -2430,6 +2476,227 @@ def store_restore(
         )
     if not report.get("ok"):
         raise SystemExit(STORE_EXIT_FAILURES)
+
+
+# ---------------------------------------------------------------------------
+# hatchery results — bundle integrity and verification (D33)
+# ---------------------------------------------------------------------------
+
+RESULTS_EXIT_OK = 0
+RESULTS_EXIT_BROKEN = 1
+RESULTS_EXIT_FAILURE = 2
+
+
+def _default_results_root(explicit: Optional[Path]) -> Path:
+    """One results root: the explicit path, then HATCHERY_RESULTS_ROOT, then the checkout."""
+    from engine.store.roots import resolve_results_roots
+
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+    return resolve_results_roots()[0]
+
+
+def _results_failed(
+    reason: str, message: str, as_json: bool, code: int = RESULTS_EXIT_FAILURE
+) -> NoReturn:
+    if as_json:
+        click.echo(json.dumps({"ok": False, "reason": reason, "message": message}), err=True)
+    else:
+        click.echo(f"HATCHERY results: {reason}: {message}", err=True)
+    raise SystemExit(code)
+
+
+def _require_verifiable_stage(run_dir: Path) -> None:
+    """Refuse to mutate a run that no longer matches its manifest (D33).
+
+    A stage that re-seals is trusting the bytes it is about to change. Checking
+    the incoming state first means an out-of-band edit cannot be laundered into a
+    fresh manifest by a later `triage` or `push`: the operator is told the run is
+    ``modified`` at a named path and must use the explicit, loud
+    ``hatchery results seal --replace`` if the change was deliberate. A legacy
+    run with no manifest is still allowed — an unsealed corpus must keep working.
+    """
+    from engine.results import resolve_run_root, verify_run
+
+    try:
+        root = resolve_run_root(run_dir)
+    except Exception:  # noqa: BLE001 - a path that is not a run is reported by the stage
+        return
+    report = verify_run(root)
+    if report["state"] != "broken":
+        return
+    console.print(
+        f"[red]Refusing to modify {root}: the run is {report['classification']} at "
+        f"{report['path']}.[/red]\n"
+        "[yellow]The bundle no longer matches its manifest. If the change was "
+        "deliberate, re-seal it explicitly with:\n"
+        f"  hatchery results seal {root} --replace[/yellow]"
+    )
+    raise SystemExit(1)
+
+
+def _reseal_after_stage(run_dir: Path, stage: str) -> None:
+    """Write the run's manifest after a stage that mutated it (D4/D33).
+
+    One writer, one call site per stage. A manifest written only at submit time
+    would report ``modified`` after a legitimate triage; a stage that cannot
+    re-seal exits non-zero rather than leaving a stale manifest that claims the
+    run is unchanged when it is not.
+    """
+    from engine.results import ManifestError, resolve_run_root, seal_run as seal_result_run
+
+    try:
+        manifest = seal_result_run(resolve_run_root(run_dir), stage=stage)
+    except ManifestError as exc:
+        console.print(
+            f"[red]The run was modified but cannot be re-sealed: {exc.reason}: "
+            f"{exc.message}[/red]\n[red]`hatchery results verify` will report it as "
+            "modified/missing until it is sealed.[/red]"
+        )
+        raise SystemExit(1) from exc
+    console.print(
+        f"  Manifest re-sealed at stage [cyan]{stage}[/cyan]: "
+        f"[cyan]{manifest['manifest_sha256']}[/cyan]"
+    )
+
+
+@cli.group()
+def results() -> None:
+    """Result bundles: seal and verify (D33).
+
+    A run directory (``results/<run>/``) is the artifact an analyst hands to a
+    client. ``manifest.json`` at the run root hashes every file and is written
+    last by every stage that touches the run; ``verify`` recomputes those hashes
+    and names the first break.
+
+    The manifest proves the run directory has not changed since the last
+    HATCHERY stage that touched it — not "since submit", and not "unmodified
+    since delivery". It is a hash manifest, not a signature: record its sha256
+    when you deliver the run and pass it to ``verify --expect-manifest`` to
+    catch a rewrite of an artifact together with its manifest.
+
+    Every subcommand takes ``--json``: one object on stdout, diagnostics on
+    stderr. Exit codes: 0 intact (or unsealed without an anchor), 1 broken or
+    refused, 2 usage.
+    """
+
+
+@results.command("verify")
+@click.argument("run", type=click.Path(path_type=Path))
+@click.option(
+    "--expect-manifest", "expect_manifest", default=None,
+    help="The manifest sha256 recorded when the run was delivered (the anchor)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def results_verify(run: Path, expect_manifest: Optional[str], as_json: bool) -> None:
+    """Recompute every hash in a run and name the first break.
+
+    Works on a copied run directory (the manifest is relocatable) and on a run
+    with no database. A legacy run with no manifest reports ``unsealed`` — never
+    ``ok`` — and exits 0 so an existing corpus keeps working; pass
+    ``--expect-manifest`` to make a missing manifest a failure.
+    """
+    from engine.results import ManifestError, resolve_run_root, verify_run
+
+    _logs_to_stderr()
+    try:
+        run_root = resolve_run_root(run)
+    except ManifestError as exc:
+        _results_failed(exc.reason, exc.message, as_json, RESULTS_EXIT_FAILURE)
+        return
+    report = verify_run(run_root, expect_manifest=expect_manifest)
+    # The relative path of a break is what an operator can act on; the run id is
+    # reported but never compared to the directory name.
+    report["run"] = str(run)
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        state = report["state"]
+        color = {"intact": "green", "unsealed": "yellow", "broken": "red"}[state]
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Result bundle\n"
+                f"Run:    [cyan]{run_root}[/cyan]\n"
+                f"State:  [{color}]{state}[/{color}]"
+                + (f"\nBreak:  [red]{report['classification']} at {report['path']}[/red]" if report["classification"] else "")
+                + (f"\nAnchor: [red]{report['anchor']['expected']} != {report['anchor']['actual']}[/red]" if report.get("anchor") and not report["anchor"]["match"] else "")
+                + f"\nStage:  {report['stage'] or '(none)'} · sealed {report['sealed_at'] or '(never)'}",
+                title="Verify",
+            )
+        )
+        if report["manifest_sha256"]:
+            console.print(f"  manifest.json: [cyan]{report['manifest_sha256']}[/cyan]")
+        if report["state"] != "unsealed":
+            console.print(
+                f"  Files: {report['file_count']} ([cyan]{report['hashed']}[/cyan] hashed) · "
+                f"bytes: {report['total_bytes']} · manifest v{report['manifest_version']}"
+            )
+        if report.get("anchor"):
+            mark = "[green]matches the anchor[/green]" if report["anchor"]["match"] else "[red]does NOT match the anchor[/red]"
+            console.print(f"  Anchor: {mark} ({report['anchor']['actual']})")
+        for nested in report.get("nested_runs") or []:
+            mark = {"intact": "[green]intact[/green]", "unsealed": "[yellow]unsealed[/yellow]", "broken": "[red]broken[/red]"}[nested["state"]]
+            console.print(f"  nested replay {nested['run_id']}: {mark}")
+        if report.get("stale_temporaries"):
+            console.print(
+                "  [yellow]stale seal temporaries (not part of the bundle):[/yellow] "
+                + ", ".join(report["stale_temporaries"])
+            )
+        if report.get("error"):
+            console.print(f"  [yellow]{report['error']}[/yellow]")
+    if report["state"] == "intact":
+        raise SystemExit(RESULTS_EXIT_OK)
+    if report["state"] == "unsealed":
+        raise SystemExit(RESULTS_EXIT_OK)
+    raise SystemExit(RESULTS_EXIT_BROKEN)
+
+
+@results.command("seal")
+@click.argument("run", type=click.Path(path_type=Path))
+@click.option("--replace", is_flag=True, help="Re-seal a run whose existing manifest does not match")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+def results_seal(run: Path, replace: bool, as_json: bool) -> None:
+    """Seal a run written before the manifest existed.
+
+    Idempotent: a valid existing manifest is returned unchanged (its hash
+    printed) and nothing is rewritten. Refuses when an existing manifest does
+    not match the run. ``--replace`` re-seals anyway, prints the old hash and
+    states that any anchor to it is void.
+    """
+    from engine.results import ManifestError, ensure_sealed
+
+    _logs_to_stderr()
+    try:
+        report = ensure_sealed(run, replace=replace)
+    except ManifestError as exc:
+        _results_failed(exc.reason, exc.message, as_json, RESULTS_EXIT_FAILURE)
+        return
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+    else:
+        previous = report.get("previous_manifest_sha256")
+        if previous:
+            console.print(
+                f"[yellow]⚠ Replaced the existing manifest. The previous hash was\n"
+                f"  {previous}\n"
+                "  Any anchor recorded against it is void.[/yellow]"
+            )
+        console.print(
+            Panel(
+                f"[bold orange_red1]HATCHERY[/bold orange_red1] — Seal\n"
+                f"Run:     [cyan]{report['run_dir']}[/cyan]\n"
+                f"Stage:   {report['stage']} · sealed {report['sealed_at']}\n"
+                f"Files:   {report['file_count']} ({report['total_bytes']} bytes)"
+                + ("" if report["written"] else "\n[dim]Already sealed and intact — nothing rewritten.[/dim]"),
+                title="Seal",
+            )
+        )
+        console.print(f"  manifest sha256: [cyan]{report['manifest_sha256']}[/cyan]")
+        console.print(
+            "  Record this hash when you deliver the run, then check it with "
+            "`hatchery results verify <run> --expect-manifest <sha256>`."
+        )
+    raise SystemExit(RESULTS_EXIT_OK)
 
 
 @cli.command()
