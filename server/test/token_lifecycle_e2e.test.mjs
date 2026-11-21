@@ -516,6 +516,58 @@ test('lifecycle endpoints are admin-only, creation is not on the wire, and the a
       404,
     );
     assert.equal((await fetch(`${server.baseUrl}/api/tasks`, { headers: bearer(victim.token) })).status, 401);
+
+    // Expiry is an admin action too, and one a viewer cannot perform.
+    const shortLived = cliJson(dbPath, ['create', '--role', 'viewer', '--name', 'short-lived']);
+    assert.equal((await fetch(`${server.baseUrl}/api/tasks`, { headers: bearer(shortLived.token) })).status, 200);
+    const viewerExpire = await fetch(`${server.baseUrl}/api/tokens/${shortLived.id}/expire`, {
+      method: 'POST',
+      headers: { ...bearer(VIEWER), 'content-type': 'application/json' },
+      body: JSON.stringify({ in_seconds: 0 }),
+    });
+    assert.equal(viewerExpire.status, 403);
+    const expire = await fetch(`${server.baseUrl}/api/tokens/${shortLived.id}/expire`, {
+      method: 'POST',
+      headers: { ...bearer(ADMIN), 'content-type': 'application/json' },
+      body: JSON.stringify({ in_seconds: 0 }),
+    });
+    assert.equal(expire.status, 200);
+    assert.equal((await expire.json()).state, 'expired');
+    assert.equal(
+      (await fetch(`${server.baseUrl}/api/tasks`, { headers: bearer(shortLived.token) })).status,
+      401,
+      'an expired token is refused on the next request',
+    );
+    // Bad input is a 400, not a silent no-op; an unknown id is a 404.
+    assert.equal(
+      (await fetch(`${server.baseUrl}/api/tokens/${shortLived.id}/expire`, {
+        method: 'POST',
+        headers: { ...bearer(ADMIN), 'content-type': 'application/json' },
+        body: JSON.stringify({ at: 'whenever' }),
+      })).status,
+      400,
+    );
+    assert.equal(
+      (await fetch(`${server.baseUrl}/api/tokens/${shortLived.id}/expire`, {
+        method: 'POST',
+        headers: { ...bearer(ADMIN), 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })).status,
+      400,
+    );
+    assert.equal(
+      (await fetch(`${server.baseUrl}/api/tokens/htk_ffffffffffffffff/expire`, {
+        method: 'POST',
+        headers: { ...bearer(ADMIN), 'content-type': 'application/json' },
+        body: JSON.stringify({ in_seconds: 0 }),
+      })).status,
+      404,
+    );
+    const expiredAudit = await (
+      await fetch(`${server.baseUrl}/api/audit?limit=20`, { headers: bearer(ADMIN) })
+    ).json();
+    assert.ok(expiredAudit.entries.some((entry) => entry.action === 'token.expired'));
+    assert.ok(!JSON.stringify(expiredAudit).includes(shortLived.token));
   } finally {
     await server.stop();
   }

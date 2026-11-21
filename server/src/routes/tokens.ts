@@ -15,7 +15,13 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
 import { recordAudit } from '../security/audit.js';
-import { countTokens, listTokens, retireToken, tokenState } from '../security/tokens.js';
+import {
+  countTokens,
+  expireToken,
+  listTokens,
+  retireToken,
+  tokenState,
+} from '../security/tokens.js';
 
 export async function tokenRoutes(app: FastifyInstance) {
   app.get('/api/tokens', async (_request: any, reply: any) => {
@@ -69,5 +75,55 @@ export async function tokenRoutes(app: FastifyInstance) {
       state: tokenState(result.token),
       counts: countTokens(db),
     });
+  });
+
+  /**
+   * Move a token's expiry — "expire now", or shorten/lengthen its life.
+   *
+   * No secret is involved, so this is safe to expose to an admin: unlike creation,
+   * there is nothing to hand over. Evaluated per request, so it takes effect on the
+   * next one.
+   */
+  app.post('/api/tokens/:id/expire', async (request: any, reply: any) => {
+    const db = getDb();
+    const id = String(request.params?.id ?? '');
+    const body = (request.body ?? {}) as Record<string, unknown>;
+
+    let at: string | null = null;
+    if (typeof body.at === 'string' && body.at) {
+      const parsed = Date.parse(body.at);
+      if (Number.isNaN(parsed)) {
+        return reply.code(400).send({ error: 'at must be an ISO-8601 timestamp' });
+      }
+      at = new Date(parsed).toISOString();
+    } else if (body.in_seconds !== undefined) {
+      const seconds = Number(body.in_seconds);
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        return reply.code(400).send({ error: 'in_seconds must be a non-negative number' });
+      }
+      at = new Date(Date.now() + seconds * 1000).toISOString();
+    } else {
+      return reply.code(400).send({ error: 'provide at (ISO-8601) or in_seconds' });
+    }
+
+    const updated = expireToken(db, id, at);
+    if (!updated) return reply.code(404).send({ error: 'Unknown token id' });
+
+    const actor = request.hatcheryActor ?? {
+      name: 'anonymous',
+      role: 'anonymous',
+      authenticated: false,
+    };
+    recordAudit(db, {
+      actor: actor.name,
+      role: actor.role,
+      authenticated: actor.authenticated,
+      method: request.method,
+      path: `/api/tokens/${id}/expire`,
+      statusCode: 200,
+      action: 'token.expired',
+      detail: `set expiry of token ${id} to ${at}`,
+    });
+    return reply.send({ ...updated, counts: countTokens(db) });
   });
 }
