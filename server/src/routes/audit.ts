@@ -1,13 +1,17 @@
 /**
- * Access audit endpoints (D25).
+ * Access audit endpoints (D25/D30).
  *
  * Reading the audit log is itself an auditable admin action: a viewer token can
- * see analysis, but only an admin can see who did what.
+ * see analysis, but only an admin can see who did what. The same is true of
+ * verifying the hash chain — it is a read of the security record, and the rows it
+ * reads are the operator's actions.
  */
 
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
-import { countAudit, listAudit } from '../security/audit.js';
+import { countAudit, listAudit, recordAudit, verifyAuditChain } from '../security/audit.js';
+
+const MAX_VERIFY_DEFAULT = 5000;
 
 export async function auditRoutes(app: FastifyInstance) {
   app.get('/api/audit', async (request: any, reply: any) => {
@@ -23,5 +27,53 @@ export async function auditRoutes(app: FastifyInstance) {
       count: countAudit(db),
       entries: listAudit(db, { limit, actor }),
     });
+  });
+
+  /**
+   * Recompute the audit hash chain (D30).
+   *
+   * Bounded rather than exhaustive: at most `limit` rows are checked per call and
+   * an incomplete pass returns `next_after_id` for the operator to continue with.
+   * A tampered, deleted, inserted or truncated row is reported at its id with a
+   * classification — never skipped because it "looked fine".
+   */
+  app.get('/api/audit/verify', async (request: any, reply: any) => {
+    const db = getDb();
+    const query = (request.query ?? {}) as Record<string, unknown>;
+    const limitRaw = query.limit;
+    const limit =
+      limitRaw === undefined ? MAX_VERIFY_DEFAULT : Number.parseInt(String(limitRaw), 10);
+    if (Number.isNaN(limit) || limit < 1) {
+      return reply.code(400).send({ error: 'limit must be a positive integer' });
+    }
+    const afterRaw = query.after;
+    const after =
+      afterRaw === undefined ? 0 : Number.parseInt(String(afterRaw), 10);
+    if (Number.isNaN(after) || after < 0) {
+      return reply.code(400).send({ error: 'after must be a non-negative integer' });
+    }
+
+    const result = verifyAuditChain(db, { limitRows: limit, afterId: after });
+    const actor = request.hatcheryActor ?? {
+      name: 'anonymous',
+      role: 'anonymous',
+      authenticated: false,
+    };
+    recordAudit(db, {
+      actor: actor.name,
+      role: actor.role,
+      authenticated: actor.authenticated,
+      method: request.method,
+      path: '/api/audit/verify',
+      statusCode: 200,
+      action: 'audit.verified',
+      detail:
+        `checked ${result.rows_checked} row(s): ` +
+        (result.ok
+          ? 'chain intact'
+          : `first break at row ${result.first_broken?.id ?? 'unknown'} ` +
+            `(${result.first_broken?.classification ?? 'unknown'})`),
+    });
+    return reply.send(result);
   });
 }
