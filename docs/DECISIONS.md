@@ -1701,11 +1701,12 @@ type, and a non-ELF input as a named error rather than a traceback. Scorecard:
 **Not done, deliberately.** `analysis.json` still carries **no ELF section**: the
 analyzer is used by the submit display and the fixture scorecard, not by the one
 analysis producer (D4). Putting its output in the bundle is a producer/schema
-change, not a parser fix, and is left as its own slice. Only one ELF64 x86-64
-`ET_EXEC` fixture is exercised end to end — the enum shim is unit-tested for the
-other form, but no AArch64/RISC-V fixture exists. `entry_point` is not validated
-against any section, and no dynamic-linking fixture was available (the fixture
-has no `.dynamic`).
+change, not a parser fix, and is left as its own slice. **D38 now carries it**
+(`static.elf`, schema 1.1); this paragraph is superseded on that point. Only one
+ELF64 x86-64 `ET_EXEC` fixture is exercised end to end — the enum shim is
+unit-tested for the other form, but no AArch64/RISC-V fixture exists.
+`entry_point` is not validated against any section, and no dynamic-linking
+fixture was available (the fixture has no `.dynamic`).
 
 ## D37 — An unreadable capture is an error, and a clean PE scores clean (2026-11-22)
 
@@ -1751,6 +1752,54 @@ field carries that distinction into the bundle summary — every consumer must r
 `errors`. The scapy fallback was not exercised on this host (tshark is present),
 and no capture larger than one packet or a real malformed-yet-partially-readable
 file was tested.
+
+## D38 — The binary structure the bundle omitted (2026-11-22)
+
+**Decision.** The analysis producer writes `static.pe` (`PEResult.to_dict()`) and
+`static.elf` (`ELFResult.to_dict()`) for the two formats HATCHERY parses. The key
+is **present with `null`** when the sample is not that format, so a reader can
+tell "not a PE/ELF" from "this revision dropped the section". A file typed PE or
+ELF whose analyzer produced nothing adds a named entry to `bundle.errors`
+instead of publishing an empty-but-valid section. The document schema moves
+**1.0 → 1.1** (additive; a 1.0 document still renders, with no binary sections).
+The Markdown report renders both structures. The API, database and dashboard
+needed **no change**: they were already built for these keys.
+
+**Why.** Both analyzers ran on every submission, printed a summary to the
+console, and were then discarded. Meanwhile `engine/cluster/fingerprint.py` has
+read `static.pe` for its import/export features since D23, `schema.sql` has had
+`pe_json`/`elf_json` since v0.1.0, `ingest.ts` has read `staticData.pe`/`.elf`,
+`server/src/routes/report.ts` has returned both, `dashboard/src/App.tsx` types
+them and `YARAResults` parses `pe_json`. Every reader was built for a section no
+producer wrote: the campaign fingerprint's PE features were always empty and the
+dashboard's PE panel always blank. D36 fixed the ELF parser but its output still
+had nowhere to go; this is the other half of that defect, and the same
+"claims more than it checks" shape D30–D37 exist to prevent — here the *absent*
+section read as "nothing to say" rather than "we never wrote it".
+
+**Evidence.** Real submits of the two fixtures: a PE run carries
+`is_valid_pe / machine_type / subsystem / is_64bit / sections / imports` in
+`static.pe` with `static.elf: null`; an ELF run carries
+`arch / bits / endian / elf_type / entry_point / sections / dynamic_libraries /
+symbols / security` with `static.pe: null`; a text run carries both keys as
+`null`. The `report.md` written beside the bundle contains `### PE Structure` /
+`### ELF Structure` with the same facts. `tests/test_binary_metadata_bundle.py`
+(4 tests, real runs), `server/test/ingest_binary.test.mjs` (3 tests: both columns
+persist, absent sections stay null, the schema declares them) and a new
+`bundle/binary-metadata` setup check. Clean-copy of `b389c94`: **893 passed, 17
+skipped, 0 xfailed**; fixtures 16/0/0; setup **33 passed**; server **100 node
+tests**; 3 queue tests; dashboard builds.
+
+**Not done, deliberately.** The dashboard parses `pe_json` for its YARA panel
+but has no ELF panel, and nothing renders `version_info`, `resources` or symbol
+lists beyond counts. STIX/OCSF still do not map binary structure — that is an
+export mapping decision, not a producer one. No database migration was needed
+(the columns pre-existed); an older database that somehow lacks them is still
+out of scope for this slice. The PE/ELF parsers consume hostile bytes and are
+**not** covered by a fuzz/property harness yet — that is the P2 slice, and this
+change makes their output more consequential, not less. The section is
+best-effort metadata, not a verdict: `is_valid_pe`/`is_valid_elf` means the
+container parsed, not that the binary is safe.
 
 ## What was deliberately not done
 

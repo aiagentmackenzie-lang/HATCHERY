@@ -1,7 +1,8 @@
 # Baseline verification
 
-Verified **22 November 2026** on top of revision `cd70b55` (D36 ELF metadata and
-D37 PCAP error path + rule calibration, plus D35 atomic key publication on `2d60c69`).
+Verified **22 November 2026** on top of revision `b389c94` (D38: PE/ELF structure
+in the bundle, schema 1.1) with D36/D37 (ELF metadata, PCAP error path, rule
+calibration) and D35 (atomic key publication) on `2d60c69`.
 The D34 baseline was `2d60c69` (Phase 4f: nested-unit verification, corpus seal,
 client verifier and the store-busy fix). The
 D33 baseline was `e64ca71`. The D28
@@ -33,8 +34,11 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **889 passed, 17 skipped,
-  0 xfailed** (was 880/17/3 at D35). The three formerly pinned defects now pass
+  dashboard, and passes the full Python suite: **893 passed, 17 skipped,
+  0 xfailed** (was 880/17/3 at D35). D38 adds 4 real-submit tests for the binary
+  sections: a PE run carries `static.pe` and `static.elf: null`, an ELF run the
+  converse, a text run carries both keys as `null`, and `report.md` renders the
+  structure the bundle carries. The three formerly pinned defects now pass
   (`test_benign_pe_has_no_unsupported_matches`, `test_elf_analyzer_parses_valid_elf`,
   `test_malformed_capture_is_reported`), and 8 tests were added: 5 pin atomic key
   publication (D35: the race loser uses the winner's key, an existing key is never
@@ -45,7 +49,10 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   the real fixture, a non-ELF error), and 1 pins the calibration positive control
   (D37: an embedded `MZ`/`PK` header in a non-PE file still matches). `ruff` is clean
   and `mypy engine/` reports no issues in **86 source files**.
-- **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
+- **The server suite is 100 node tests, 0 failing** (was 84 at `511a978`; the
+  three added by D38 pin that `static.pe`/`static.elf` reach `pe_json`/`elf_json`
+  on ingest, that absent sections stay `null`, and that the schema declares both
+  columns; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
   anchoring and the file posture, and 13 cover D32 compaction: cross-segment
   verification, offline archive tamper detection, crash-resume, a concurrent append
@@ -64,12 +71,13 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   tshark reason (D37), and a detector that could not run (capa unavailable, with
   its reason preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **32 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
+  state: **33 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
   `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; 26 at D32,
   which added `api/audit-compaction` and `api/audit-archive-verified`; 29 at D33, which
   added `results/manifest-sealed`, `results/tamper-detected` and
   `results/prune-keeps-anchor`; D34 adds `results/seal-corpus` and
-  `results/client-verifier`; D35 adds `store/first-key-race`).
+  `results/client-verifier`; D35 adds `store/first-key-race`; D38 adds
+  `bundle/binary-metadata`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -107,6 +115,13 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
     `scripts/verify_manifest.py` reports a copied run `intact` outside the checkout with
     a nonexistent sample store, and a modified run `modified` at `bundle/events.jsonl`
     with exit 1 — the same conclusion as `hatchery results verify`.
+  - **A binary's structure reaches the bundle and the report (D38).** A real
+    `hatchery submit` of the PE fixture writes `static.pe` (machine, subsystem,
+    sections, imports) with `static.elf: null`; the ELF fixture writes the converse
+    (`arch`, `bits`, `elf_type`, `entry_point`, sections, security); a text sample
+    carries both keys as `null`. The `report.md` written beside the bundle renders
+    `### PE Structure` / `### ELF Structure` with those facts, and the API persists
+    them to `pe_json`/`elf_json` (node tests).
   - **A compacted audit log verifies across the boundary (D32).** A real segment is
     archived `0600` with the manifest written last, the live chain hands off to the
     archived tail, and `verify` reads the archives and reports a proven join with the
@@ -154,6 +169,16 @@ lifecycle, its CORS allow-list and the audit hash chain are covered by the serve
 suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
 installation, packaging, normal entry points and static acceptance inputs; it
 does not re-certify those features.
+
+### Known gaps introduced or inherited by D38
+
+| Gap | What it means |
+|:--|:--|
+| The dashboard has no ELF panel | It parses `pe_json` for the YARA view; `elf_json` is stored and returned by the API but nothing renders it. `version_info`, `resources` and full symbol lists are not rendered anywhere — the report shows counts and the first 20 sections. |
+| No export mapping for binary structure | STIX, OCSF and Navigator still carry IOCs, ATT&CK and findings, not PE/ELF metadata. Adding it is an export-schema decision, not a producer one. |
+| Older documents are silent, not upgraded | A schema-1.0 `analysis.json` has no `static.pe`/`static.elf`. Readers treat the absence as "not recorded" and render nothing; nothing backfills. That is honest, but a consumer cannot distinguish a pre-D38 run from a non-binary one without checking `schema_version`. |
+| `is_valid_*` is a container fact | A parsed PE/ELF means the header and sections were readable, not that the binary is benign or that every field was understood. The analyzers are best-effort metadata, and their output is now more consequential (fingerprint, dashboard) rather than less. |
+| The parsers are still not fuzzed | The PE/ELF parsers consume hostile bytes in-process. D38 publishes more of what they produce but adds no hostile-input harness; that is the P2 slice. |
 
 ### Known gaps introduced or inherited by D36/D37
 
@@ -249,9 +274,9 @@ HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   
 node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
-Expected: `889 passed, 17 skipped, 0 xfailed`; the fixture scorecard
-`16 passed, 0 failed, 0 known defects`; the setup check `32 passed, 0 failed`; the
-server suite `97 passed, 0 failing`.
+Expected: `893 passed, 17 skipped, 0 xfailed`; the fixture scorecard
+`16 passed, 0 failed, 0 known defects`; the setup check `33 passed, 0 failed`; the
+server suite `100 passed, 0 failing`.
 
 ```bash
 # Result bundles on their own (temporary root; no repository state is touched)
@@ -272,6 +297,52 @@ python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/
 3. Update an expectation only for an intentional behaviour change. When a
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
+
+## Captured transcript (D38, `b389c94`)
+
+Clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/` or
+caches, produced from the code commit with `git archive`.
+
+```text
+$ python -m pytest -q
+893 passed, 17 skipped in 38.27s
+
+$ python scripts/verify_fixtures.py
+16 passed, 0 failed, 0 known defects, 0 unverified, 0 changed
+
+$ PYTHON=$PWD/.venv/bin/python scripts/verify_setup.sh
+PASS  python/package-installed           0.1.0
+PASS  fixtures/manifest                  checked-in fixtures regenerate byte-identically
+PASS  fixtures/outcomes                  16 passed, 0 failed, 0 known defects, 0 unverified, 0 changed
+PASS  cli/submit-static                  bundle sha256 and EICAR rule recorded
+PASS  bundle/binary-metadata             PE structure in static.pe, rendered in report.md
+PASS  store/first-key-race               4 concurrent first submits: one complete key, no partial read
+PASS  data/repository-untouched          databases, results, uploads and EICAR unchanged
+RESULT: baseline verified
+# 33 PASS, 0 FAIL
+
+$ ruff check engine/ tests/ scripts/   # All checks passed!
+$ mypy engine/                          # Success: no issues found in 86 source files
+$ (cd server && npm ci && npm run typecheck && npm run build && npm test)
+# tests 100, pass 100, fail 0
+$ (cd server && node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs)
+# tests 3, pass 3, fail 0
+$ (cd dashboard && npm ci && npm run build)   # built, exit 0
+```
+
+The binary section was checked on a real run, not only in unit tests:
+
+```text
+static.pe: {is_valid_pe: true, machine_type: "x64 (AMD64)", subsystem: "Windows CUI (Console)",
+            is_64bit: true, sections: [{name: ".text", raw_size: 512}], imports: []}
+static.elf: null
+report.md: "### PE Structure" / "- **Machine:** x64 (AMD64), 64-bit" / "`.text` (512 B)"
+
+static.elf: {is_valid_elf: true, arch: "x86-64", bits: 64, elf_type: "EXEC (executable)",
+             entry_point: 4198400, sections: 3, security: {is_pie: false, is_stripped: true}}
+static.pe: null
+report.md: "### ELF Structure" / "- **Architecture:** x86-64, 64-bit, Little-endian"
+```
 
 ## Captured transcript (Phase 4g, `cd70b55`)
 
