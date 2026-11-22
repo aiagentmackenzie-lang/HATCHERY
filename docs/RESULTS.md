@@ -1,9 +1,12 @@
-# Result bundles: integrity, retention and the growth guard (D33)
+# Result bundles: integrity, retention and the growth guard (D33/D34)
 
-This is the operator's guide to `results/<run>/` after Phase 4e: what the manifest
-proves, what it deliberately does not, how to seal and verify, how to anchor a
-delivery, and how retention decides what may be deleted. The decision record is
-[`DECISIONS.md`](DECISIONS.md) D33; the sample store's own retention is D28
+This is the operator's guide to `results/<run>/` after Phases 4e–4f: what the
+manifest proves, what it deliberately does not, how to seal and verify a run or
+a whole corpus, how to anchor a delivery, what to send the recipient, and how
+retention decides what may be deleted. The decision records are
+[`DECISIONS.md`](DECISIONS.md) D33 (the manifest, the anchor and retention) and
+D34 (nested units, the corpus seal, the client verifier and store-busy); the sample
+store's own retention is D28
 ([`RETENTION.md`](RETENTION.md)) and the audit log's is D32
 ([`AUDIT-RETENTION.md`](AUDIT-RETENTION.md)). The clean-copy evidence is the
 [transcript](#captured-transcript) at the bottom of this page.
@@ -68,7 +71,9 @@ never a half-manifested run reported complete.
 **Proves:** the run directory has not changed since the last HATCHERY stage that
 touched it. Every stage that writes or mutates a run re-seals it — `submit`,
 `triage`, `push`, `replay` — so a legitimate triage is not reported as tamper,
-and `verify` prints which stage sealed the manifest and when.
+and `verify` prints which stage sealed the manifest and when. Since D34 the claim
+also covers the **nested units the directory ships**: a `replay-xxxx/` with no
+manifest makes the parent `nested-unsealed`, `ok: false`, exit 1.
 
 **Does not prove:**
 
@@ -90,8 +95,8 @@ hatchery results verify results/<run> --expect-manifest <sha256>
 
 | State | `ok` | Exit | Meaning |
 |:--|:--:|:--:|:--|
-| `intact` | ✅ | 0 | manifest present, valid, and every file matches |
-| `unsealed` | ❌ | 0 | no manifest (a legacy run, or a deleted one). Never `ok`; does not fail a corpus |
+| `intact` | ✅ | 0 | manifest present, valid, and every file **and every nested unit** matches |
+| `unsealed` | ❌ | 0 | the run itself has no manifest (a legacy run, or a deleted one). Never `ok`; does not fail a corpus |
 | `broken` | ❌ | 1 | a break, with `classification` and `path` |
 
 | Classification | What happened |
@@ -105,6 +110,7 @@ hatchery results verify results/<run> --expect-manifest <sha256>
 | `manifest-version` | a version this build does not understand |
 | `manifest-missing` | `--expect-manifest` was given and there is no manifest |
 | `replaced` | the manifest does not match the anchor |
+| `nested-unsealed` | the run's own files match, but a nested replay unit has no manifest — `ok` false, exit 1, `path` is the nested directory (D34) |
 
 The first break is deterministic (sorted by path), so two runs over the same tree
 name the same break. `--json` is one object on stdout; diagnostics go to stderr.
@@ -112,16 +118,23 @@ A copied, renamed run verifies — the manifest records a run id but never compa
 it to the directory name.
 
 A **nested replay** is verified as its own unit and reported under
-`nested_runs`; a break inside it is named at its own path
-(`replay-xxxx/bundle/analysis.json`). An inconclusive replay's `replay-xxxx/`
-directory (just `replay.json`) is reported as a nested `unsealed` unit, never as
-an `extra` file in the parent.
+`nested_runs`. A nested *broken* unit keeps its own classification and its path
+(`replay-xxxx/bundle/analysis.json`). A nested *unsealed* unit (an inconclusive
+replay's directory, just `replay.json`) is `nested-unsealed`: the parent reports
+`ok: false`, exit 1, names the nested directory as `path`, and the human output
+prints a `nested replay <id>: unsealed` line. `--expect-manifest` is still
+evaluated: `anchor.match: true` can sit beside `ok: false`, and an explicit
+sentence says the anchor proves the parent manifest, not the whole directory.
+If both a broken and an unsealed child exist, the broken child's classification
+is reported first (it names the more specific break); every child is still listed.
 
-## Sealing a legacy run
+## Sealing a legacy run — or a whole corpus
 
 ```bash
 hatchery results seal results/<run>            # idempotent; prints the manifest sha256
 hatchery results seal results/<run> --replace  # only when the change was deliberate
+hatchery results seal results --all            # every run under a root, nested units first
+hatchery results seal results --all --json     # per-run sealed/already/refused/ignored entries
 ```
 
 `seal` makes a run written before this slice verifiable. A valid existing
@@ -130,10 +143,49 @@ existing manifest that does not match the tree is **refused** — rewriting it
 silently would hide exactly the tamper it exists to report. `--replace` rewrites
 anyway, prints the old hash, and states that any anchor to it is void.
 
+`--all` is the corpus operation, because “seal the corpus first” has to be one
+command or nobody does it:
+
+- **Depth-first.** A nested replay is sealed before its parent. Sealing the
+  nested unit writes a manifest *inside* that directory, which the parent's
+  manifest excludes by definition, so **the parent's manifest hash does not
+  change** and an anchor recorded at delivery stays valid.
+- **Idempotent and resumable.** A second invocation seals nothing and prints the
+  same hashes (`already`). An interrupted batch is completed by running it again.
+- **Per-unit reporting.** `sealed` and `already` carry the manifest sha256;
+  `refused` carries the reason, classification and path; `ignored` covers hidden
+  entries, `.deleting-*` strays, symlinks and directories that are not runs. A
+  symlinked run is reported, never followed.
+- **Exit codes.** 0 when nothing was refused, 2 when a run was refused (nothing
+  about it is blessed), 1 on an operational error.
+- **`--replace` is refused with `--all` (exit 2).** Re-sealing mismatches across a
+  whole corpus would bless tamper everywhere it is found. Seal the one run
+  deliberately, then re-run `--all`.
+
 `triage` and `push` verify the *incoming* state before they touch a run. A run
-that no longer matches its manifest is not modified: the stage refuses and tells
-you the classification and the path, so a later stage cannot launder an
-out-of-band edit into a fresh manifest.
+that no longer matches its own manifest is not modified: the stage refuses and
+tells you the classification and the path, so a later stage cannot launder an
+out-of-band edit into a fresh manifest. A nested unit is its own unit and does
+not block a legitimate triage of an otherwise intact run; `results verify` and
+`seal --all` are where the directory's nested state is handled.
+
+## The verifier you send with the run
+
+```bash
+python scripts/verify_manifest.py results/<run>
+python scripts/verify_manifest.py results/<run> --expect-manifest <sha256>
+python scripts/verify_manifest.py results/<run> --json
+```
+
+This is **“Python 3 and nothing else”**: no click, rich, YARA-X, capa or Docker,
+no database, no `HATCHERY_*` environment. It puts the checkout root on
+`sys.path` and calls the same `engine.results.manifest.verify_run`, so there is
+exactly one implementation of the rules and the recipient's answer cannot drift
+from `hatchery results verify`. Same classifications, states, exit codes (0
+intact or unsealed, 1 broken, 2 usage) and JSON keys, plus `--expect-manifest`.
+
+Send the script (or the same revision) with a copied **run directory** — not just
+`bundle/`, which would verify as `unsealed`.
 
 ## Retention
 
@@ -150,7 +202,7 @@ background task.
 | `HATCHERY_RESULTS_WARN_BYTES` | warn at this total size (`0` disables) | `10 GiB` |
 
 ```bash
-hatchery results status                                   # count, bytes, oldest/newest, strays, growth
+hatchery results status                                   # count, bytes, oldest/newest, unsealed counts, strays, growth
 hatchery results prune --older-than 30d                   # dry run: exactly what would go, and why
 hatchery results prune --older-than 30d --keep-last 5     # keep five, delete older than 30 days
 hatchery results prune --older-than 30d --keep-last 5 --apply
@@ -161,10 +213,13 @@ hatchery results prune --older-than 30d --keep-last 5 --apply
 - **The anchor is never deleted.** `--keep-last 0` is clamped to 1, and a policy
   that would remove every run leaves the newest with `reason: kept-last` and
   reports `clamped: true`.
-- **Fail closed.** A run with no manifest, an invalid manifest or an unparseable
-  `analysis.json` is never deleted: `--apply` refuses the whole plan, deletes
-  nothing and exits 2. Seal the corpus first (`hatchery results seal <run>`), then
-  prune. A directory that is not a run at all is reported as ignored.
+- **Fail closed.** A run with no manifest, an invalid manifest, an unparseable
+  `analysis.json` **or an unsealed nested unit** is never deleted: `--apply`
+  refuses the whole plan, deletes nothing and exits 2. The decision and the
+  refusal carry `reason: nested-unsealed` (distinct from `manifest-invalid`) with
+  the nested path. Seal the corpus first
+  (`hatchery results seal <results-root> --all`), then prune. A directory that is
+  not a run at all is reported as ignored.
 - **Age is the last stage's `sealed_at`**, not the directory mtime.
 - **Rename, then remove.** `<run>` becomes `<run>.deleting-<ts>` before the tree
   is removed, so a reader mid-replay gets a clean `not-found` instead of a torn
@@ -213,11 +268,15 @@ hatchery results verify results/<run>
 hatchery results seal results/<run>            # prints manifest sha256; idempotent
 hatchery results verify results/<run> --expect-manifest <sha256>
 
-# On receipt: check the bytes are the ones that were delivered.
-hatchery results verify /tmp/delivery/<run> --expect-manifest <sha256>
+# Bring an existing corpus (nested legacy replays included) up to date, once.
+hatchery results seal results --all
+hatchery results seal results --all --json | jq '.counts'
+
+# Send the run and the verifier: Python 3 and nothing else.
+python scripts/verify_manifest.py /tmp/delivery/<run> --expect-manifest <sha256>
 
 # Investigate a break before you trust anything downstream.
-hatchery results verify results/<run> --json | jq '{classification, path}'
+hatchery results verify results/<run> --json | jq '{classification, path, nested_runs}'
 
 # Growth: look before you prune.
 hatchery results status
@@ -238,6 +297,15 @@ hatchery results prune --older-than 30d --apply
   rewrites an artifact *and* regenerates the manifest is caught only by an anchor
   recorded elsewhere. This is stated in the same words as D31/D32 rather than
   claimed away.
+- **Sealing a corpus is not an integrity audit.** `seal --all` refuses a run whose
+  existing manifest does not match, but a run that was already unsealed when it
+  was tampered with has no old manifest to compare against; the anchor covers
+  changes from delivery onward. A nested unit is verified one level deep (the
+  layout HATCHERY writes); a replay inside a replay is not walked further.
+- **The client verifier trusts its own checkout.** Send the script with the run
+  (or the same revision). A verifier from a different revision that does not
+  understand a manifest version refuses it as `manifest-version` rather than
+  approximating it.
 - **Results are not encrypted at rest.** `results/` is plaintext by design.
 - **A run on different storage.** `fsync` and rename semantics on a network share
   or a different filesystem were not exercised.
@@ -252,6 +320,10 @@ hatchery results prune --older-than 30d --apply
   migrated.
 - **A bundle copied without its manifest** verifies as `unsealed`, which is the
   honest answer rather than a pass.
+- **Store contention longer than 60 s.** Concurrent openers retry the WAL pragma
+  within the existing timeout, then fail as `store-busy` with exit 1. Nothing is
+  queued or serialised beyond SQLite's own locking; a pathological case is a
+  retry, not a success.
 
 ## Captured transcript
 

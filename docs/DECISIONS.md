@@ -1119,7 +1119,9 @@ break in the run it was replayed from. Direct child directories that are nested 
 (`replay-*`, or any directory holding its own bundle/manifest) are excluded from the parent's
 manifest and verified as their own run; a broken nested replay is reported at its own path
 (`replay-xxxx/bundle/...`), and an inconclusive replay's `replay.json` directory is reported
-as an `unsealed` nested unit rather than a silent extra file.
+as an `unsealed` nested unit rather than a silent extra file. **D34 closes the gap this left:**
+an `unsealed` nested unit now fails the parent's conclusion (`nested-unsealed`) and blocks
+retention by name; the manifest file set is unchanged.
 
 ### 4. The manifest describes the run as of its last HATCHERY stage, and every stage re-seals
 
@@ -1201,6 +1203,7 @@ it approximately.
 | `manifest-version` | a manifest version this build does not understand |
 | `manifest-missing` | `--expect-manifest` was given and there is no manifest |
 | `replaced` | the manifest hash does not match `--expect-manifest` |
+| `nested-unsealed` | the run's own files match, but a nested replay unit has no manifest — **added by D34**; `ok` is false and the path is the nested directory |
 | `unsealed` | no manifest at all — reported as a distinct **state**, never `ok` |
 
 `ok` is true only for `state: "intact"`. `unsealed` exits **0** so a pre-D33 corpus keeps
@@ -1232,8 +1235,10 @@ deterministic (sorted by path), so the same tree always names the same break.
   `bundle/analysis.json` is never deleted. `--apply` refuses the **whole plan** (as D28
   refuses when a queued job's sample cannot be identified), reports the reason and the
   break, deletes nothing, and exits 2. Seal the corpus first
-  (`hatchery results seal <run>`), then prune. A directory that is not a run at all (no
-  `bundle/`, no manifest) is reported as ignored, not refused.
+  (`hatchery results seal <results-root> --all` since D34), then prune. A directory that is
+  not a run at all (no `bundle/`, no manifest) is reported as ignored, not refused. A run
+  whose own manifest matches but whose nested unit has none is `nested-unsealed` and blocks
+  the plan with that reason (D34).
 - **Age is the last stage's `sealed_at`**, not the directory's mtime: the manifest says when
   HATCHERY last wrote the run, and that is the honest clock for "how old is this result".
 - **Dry run by default**, one decision per run with a reason (`expired`, `kept-last`,
@@ -1405,6 +1410,206 @@ no sample byte and no unexpected field.
   not a pass. Copy the run directory, not just `bundle/`.
 - **Queue/job retention and sample-store TTL** (D27/D28) are untouched.
 
+## D34 — The run directory is the claim, and the recipient can check it (2026-11-21)
+
+**Decision.** Close the two holes D33 left in its own claim and the two field
+defects found while running it, without changing the manifest format
+(`manifest_version` stays 1), the on-disk layout of `results/<run>/`, or any D4
+producer:
+
+1. a run directory's conclusion **includes its nested units**: a nested replay
+   with no manifest is `nested-unsealed`, `ok: false`, exit 1;
+2. retention **refuses the whole plan** for such a run, with its own reason,
+   classification and nested path;
+3. `hatchery results seal <results-root> --all` brings a corpus into the
+   verifiable state **depth-first and idempotently**, and refuses `--replace` in
+   batch;
+4. `scripts/verify_manifest.py` is the recipient's verifier — standard library
+   only, **the same `verify_run`**, so there is one implementation of the rules;
+5. a contended sample store is `SampleStoreError(reason="store-busy")` surfaced
+   as exit 1, never a `sqlite3.OperationalError` traceback;
+6. `hatchery triage` accepts a run directory or its `bundle/` (CLI and MCP), and
+   `results status` reports `unsealed_runs`/`unsealed_nested` and says when a
+   prune would be blocked.
+
+### Why
+
+D33 made `results/<run>/manifest.json` the claim that a run directory is intact
+and made retention refuse to delete a run it cannot verify. Three things were
+still true on the delivered corpus (`21147a6`):
+
+- `verify_run` returned `ok: true`, `state: intact`,
+  `nested_runs: [("replay-deadbeef", "unsealed")]` on a directory that
+  demonstrably ships evidence HATCHERY cannot verify. A nested **broken** unit
+  already failed the parent; a nested **unsealed** one did not.
+- retention read only the parent's state, so `prune --apply` deleted such a run
+  — and the unsealed nested evidence with it — contradicting D33's own sentence:
+  "A run with no manifest … is never deleted."
+- the operator's checkout holds 35 runs, all without manifests. "Seal the corpus
+  first" was 35–2000 manual commands, nested replays included. A control that is
+  documented but not operable at corpus scale is a control nobody uses.
+
+And the artifact is handed to a client whose machine does not have click, rich,
+YARA-X, capa or Docker. An integrity claim is worth what the recipient can
+check; requiring `pip install -e ".[dev]"` to confirm a hash makes the claim a
+courtesy. The verifier itself was already stdlib-only, so the fix is packaging,
+not a second parser.
+
+This is the same failure D30→D31→D32 exist to prevent — a documented caveat does
+not survive an operator trusting `ok` — and it is a credibility debt on a shipped
+claim, which is the highest-interest debt in a security product.
+
+### 1. The nested unit is part of the parent's claim
+
+`results/<run>/replay-xxxx/` remains its own unit in the **manifest** (otherwise
+every legitimate replay would be an `extra` break in the run it came from) but it
+is no longer ignored by the **conclusion**. After the parent's own files verify:
+
+- a nested `broken` unit keeps its own classification and its prefixed path
+  (`replay-xxxx/bundle/analysis.json`) — unchanged from D33;
+- a nested `unsealed` unit makes the parent
+  `ok: false, state: "broken", classification: "nested-unsealed"`, with the
+  nested directory as `path`, and exit 1. `nested_runs` still lists every child
+  with its own state and classification;
+- a parent-level `unsealed` stays a state with exit 0: a legacy corpus must keep
+  working, and D34 does not turn an entire pre-D33 checkout into an error;
+- `--expect-manifest` is still evaluated and reported first. `anchor.match: true`
+  can sit beside `ok: false`, and the human output says in one sentence that the
+  anchor proves the parent manifest, not the whole directory.
+
+`ensure_sealed` checks the unit's **own** bytes (`_depth=1`), so a per-run seal
+stays idempotent while a nested unit is still unsealed; "already sealed"
+describes the unit, and `--all` closes the directory. `triage`/`push` likewise
+check the run's own bytes before mutating: a nested unit is not something those
+stages rewrite, and blocking a legitimate triage because an unrelated nested
+replay is unsealed would be a false refusal.
+
+### 2. Retention refuses the whole plan, naming the nested unit
+
+The decision entry for such a run carries `reason: "nested-unsealed"` — distinct
+from `manifest-invalid` — plus `classification` and the nested `path`; the
+refusal list and the `0600` prune log carry the same fields. `--apply` deletes
+nothing and exits 2, exactly as it does for a parent with no manifest. A dry run
+still lists everything it would have done and the refusal. Sealing the nested
+unit releases the run.
+
+### 3. The corpus seal, and why `--replace` is refused in batch
+
+`hatchery results seal <results-root> --all` seals every run under a root:
+
+- **depth-first**: a nested replay before its parent. Sealing a nested unit
+  writes a manifest *inside* the nested directory, which the parent's manifest
+  excludes by definition, so **the parent's manifest bytes do not change**. A
+  parent anchor recorded at delivery stays valid, and a test pins it.
+- **idempotent and resumable**: an intact unit is reported `already` (same hash,
+  nothing rewritten); an interrupted batch is completed by running it again.
+- **refusals are per unit, the exit code is the batch's**: `sealed`, `already`
+  and `refused` each carry a run id and, for refusals, the reason, classification
+  and path; `ignored` covers hidden entries, `.deleting-*` strays, symlinks and
+  directories that are not runs. Exit 0 when nothing was refused, 2 when a run
+  was refused, 1 on an operational error.
+- **a symlinked run is skipped and reported**, never followed; a `.deleting-`
+  stray is not a candidate; a non-run directory is not an error.
+- `stage` is recorded as `"seal"`, exactly as a per-run seal already does. The
+  vocabulary is unchanged.
+
+`--replace` is refused with `--all` (exit 2). `--replace` exists for the operator
+who has looked at one named break and decided the change was deliberate. Applying
+it across a corpus would instead bless every mismatch it finds — the one action a
+tamper-evidence feature must not automate. Seal the one run deliberately, then
+re-run `--all`.
+
+### 4. The client verifier is the same implementation
+
+`scripts/verify_manifest.py RUN [--expect-manifest SHA] [--json]` puts the
+checkout root on `sys.path` and calls `engine.results.manifest.verify_run`. It
+imports nothing outside the standard library and that module — no `engine.cli`,
+no click/rich/YARA-X/capa/Docker, no database, no `HATCHERY_*` environment. Same
+classifications, states, exit codes (0 intact or unsealed, 1 broken, 2 usage) and
+JSON keys as `hatchery results verify`, plus `--expect-manifest`.
+
+A second parser would be a second set of rules to drift, and a verifier whose
+answer disagrees with the producer is worse than no verifier. A test runs it in a
+subprocess with click, rich, yara_x, capa and docker **blocked from import**, on
+a copied run directory with a nonexistent store, and compares its classification,
+path and exit code with the CLI on intact/modified/missing/unsealed/anchored runs.
+
+### 5. A busy store is a named error
+
+`busy_timeout` does not apply to `PRAGMA journal_mode = WAL` (SQLite does not
+invoke the busy handler for a journal-mode change), so a second opener could make
+`SampleIndex.__init__` raise `sqlite3.OperationalError: database is locked`
+straight through `SampleStore.__init__` — which `submit` called outside its
+`try` — and print a Python traceback instead of the documented exit code.
+`SampleIndex` now retries the journal-mode pragma, the version check and the
+schema setup on `locked`/`busy` with bounded backoff inside the existing 60 s
+timeout, and raises `SampleStoreError("store-busy", …)` if it never clears. The
+CLI entry points that already handle `SampleStoreError` (`submit`,
+`submit --enqueue`, the `store` group) surface it as
+`Cannot store the sample: store-busy: …` with exit 1; the worker turns it into a
+named job failure rather than an exception. The envelope, the index schema, the
+lock file and every D28/D29 semantic are unchanged.
+
+### 6. The smaller decisions
+
+- `results status` reports `unsealed_runs` and `unsealed_nested` (counts) and says
+  when a prune would be blocked. It still never deletes and still takes no lock.
+- `hatchery triage` resolves the run root from either the run directory or its
+  `bundle/`, patches the bundle and re-seals the run root at `stage: "triage"`.
+  The MCP `triage_run` tool uses the same resolution; its other reader tools keep
+  requiring the bundle they already documented.
+- No manifest field, filename, version, writer or reader changes. The new
+  classification is a verifier conclusion, not manifest bytes.
+
+### 7. What this does not weaken
+
+- **D4.** `engine/bundle.py` is still the only writer of `analysis.json`/
+  `events.jsonl`; the manifest still restates no analysis fact.
+- **D8/D25/D30/D31/D32.** Nothing in the API, the audit chain, the token store,
+  the key rings, the archive or the file posture is touched.
+- **D26–D29.** Replay's verdict precedence, the queue as the single writer of job
+  state, and the sample store's envelope, key ring, rotation, backup/restore,
+  reference-aware prune and lock file are unchanged. `store backup` still
+  excludes `results/`; `store prune` still never deletes a bundle.
+- **No new daemon, network service, runtime dependency, key material or file
+  format.** Standard library only. `scripts/verify_manifest.py` imports the
+  standard library and `engine.results.manifest`.
+- **Readers.** `report`, `status`, `iocs`, `push`, `cluster`, the MCP tools and
+  the API's bundle ingest are unchanged: `manifest.json` stays at the run root.
+  The setup verifier's worker → API ingest check still runs on a run the worker
+  sealed.
+
+### Evidence — clean copy of the code+tests commit
+
+Transcript: [`RESULTS.md`](RESULTS.md#captured-transcript). Counts are recorded
+there and in [`BASELINE.md`](BASELINE.md); the new tests are
+`test_results_nested.py`, `test_results_corpus.py` and `test_store_busy.py`, plus
+the triage-path and MCP cases, all using real runs, real files and temporary
+roots. `verify_setup.sh` gains `results/seal-corpus` and
+`results/client-verifier`.
+
+**Not done, deliberately.**
+
+- **Not signed and not MAC'd.** The anchor remains the compensating control
+  (D33 §1–2). D34 does not change that.
+- **Results are not encrypted at rest.**
+- **No KMS/HSM, escrow or remote anchor service.**
+- **No scheduled or automatic pruning or sealing.** Both are operator commands.
+- **No off-host or multi-host retention.**
+- **A run directory modified while a prune runs** is mitigated by
+  rename-then-remove, not proven.
+- **A run on different storage** (a network share, a different filesystem for the
+  temp rename) was not exercised.
+- **Windows ACLs** are not verified; the `0600`/`0700` posture is POSIX.
+- **A root attacker** who can rewrite the run, the manifest and every copy of the
+  anchor is out of scope. **Clock skew** moves the `--older-than` boundary.
+- **A manifest format change mid-stream** is refused (`manifest-version`).
+- **A bundle copied without its manifest** verifies as `unsealed`.
+- **Sealing a corpus is not an integrity audit.** `seal --all` refuses a
+  mismatch, but a run that was already unsealed when tampered with has no old
+  manifest to compare against; the anchor is what covers delivery-time changes.
+- **Queue/job retention and sample-store TTL** are untouched.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -1416,7 +1621,7 @@ no sample byte and no unexpected field.
 - **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
-- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
+- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
 - **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

@@ -1,13 +1,15 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `e64ca71` (Phase 4e:
-result-bundle manifest, verification, anchor and off-by-default retention, D33). The D28
+Verified **21 November 2026** on top of revision `21147a6` (Phase 4f:
+nested-unit verification, corpus seal, client verifier and the store-busy fix, D34). The
+D33 baseline was `e64ca71`. The D28
 store baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
 [`BACKUP.md`](BACKUP.md#captured-transcript); the D30/D31 transcript is in
 [`API-SECURITY.md`](API-SECURITY.md#captured-transcript); the D32 transcript is in
 [`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript); the D33 transcript is in
-[`RESULTS.md`](RESULTS.md#captured-transcript). The detector scorecard is unchanged from
+[`RESULTS.md`](RESULTS.md#captured-transcript), together with the D34 transcript. The
+detector scorecard is unchanged from
 `4b48490`.
 
 This document is evidence, not a roadmap. It records what a clean checkout can
@@ -28,11 +30,11 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **854 passed, 17 skipped,
-  3 xfailed** (was 795 at D32; 59 tests cover sealing, verification and its
-  classifications, the anchor, re-seal after triage/push, retention, crash-resume,
-  concurrency, the D28 reference interaction, replay integration and the readers
-  that must keep working). `ruff` is clean and `mypy engine/` reports no issues in
+  dashboard, and passes the full Python suite: **875 passed, 17 skipped,
+  3 xfailed** (was 854 at D33; 21 tests cover nested-unit verification, the
+  retention refusal and its release, the corpus seal, the client verifier's
+  agreement with `results verify`, the triage path forms and store-busy
+  concurrency). `ruff` is clean and `mypy engine/` reports no issues in
   **86 source files**.
 - **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
@@ -51,11 +53,12 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **29 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
+  state: **31 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
   `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; 26 at D32,
-  which added `api/audit-compaction` and `api/audit-archive-verified`; D33 adds
-  `results/manifest-sealed`, `results/tamper-detected` and
-  `results/prune-keeps-anchor`).
+  which added `api/audit-compaction` and `api/audit-archive-verified`; 29 at D33, which
+  added `results/manifest-sealed`, `results/tamper-detected` and
+  `results/prune-keeps-anchor`; D34 adds `results/seal-corpus` and
+  `results/client-verifier`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -83,6 +86,16 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
     (one re-stamped 30 days old) pruned with `--older-than 0s --keep-last 1 --apply`
     remove exactly the expired one, leave the anchor run intact, and append a `0600`
     `.prune-log.jsonl` line saying `applied: true`.
+  - **A corpus seals depth-first and anchor-safely (D34).** One root holds a run with
+    a legacy nested replay, an already-sealed run and a tampered run, plus a
+    `.deleting-` stray, a non-run directory and a symlinked run. `results seal --all`
+    seals the two unsealed units (nested first), reports the intact run unchanged, exits
+    2 for the tampered one without blessing it, ignores the strays, never follows the
+    symlink, and leaves the intact parent's manifest hash byte-identical.
+  - **The recipient's verifier agrees with the CLI (D34).**
+    `scripts/verify_manifest.py` reports a copied run `intact` outside the checkout with
+    a nonexistent sample store, and a modified run `modified` at `bundle/events.jsonl`
+    with exit 1 — the same conclusion as `hatchery results verify`.
   - **A compacted audit log verifies across the boundary (D32).** A real segment is
     archived `0600` with the manifest written last, the live chain hands off to the
     archived tail, and `verify` reads the archives and reports a proven join with the
@@ -129,6 +142,17 @@ lifecycle, its CORS allow-list and the audit hash chain are covered by the serve
 suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
 installation, packaging, normal entry points and static acceptance inputs; it
 does not re-certify those features.
+
+### Known gaps introduced or inherited by D34
+
+| Gap | What it means |
+|:--|:--|
+| Sealing a corpus is not an integrity audit | `seal --all` refuses a run whose existing manifest does not match, but a run that was already unsealed when it was tampered with has no old manifest to compare against. Sealing records the current bytes as the claim; only a delivery-time anchor covers changes after that. |
+| A nested unit is verified one level deep | A nested replay is its own run and is verified as such; a replay nested inside a replay is not walked further. The on-disk layout HATCHERY writes is one level, and the verifier says what it checked rather than implying infinite depth. |
+| The client verifier trusts the checkout it is shipped in | `scripts/verify_manifest.py` imports `engine.results.manifest` from its own checkout. Send the script with the run (or the same revision); a verifier from a different revision may understand a different manifest version — which it will refuse as `manifest-version`, not silently accept. |
+| `--all` is a local path operation | It seals this host's results root. A corpus on another machine or a network share is not consulted, and `fsync`/rename semantics there were not exercised. |
+| A symlinked run is skipped, not sealed | `seal --all` reports it under `ignored` and never follows it. An operator who points a symlink at a run must seal the target path deliberately. |
+| Store busy is retried, not queued | Concurrent openers retry the WAL pragma/schema setup within 60 s. A pathological contention longer than that fails with `store-busy` and exit 1; the operator retries. Nothing is queued or serialised beyond SQLite's own locking. |
 
 ### Known gaps introduced or inherited by D33
 
@@ -194,8 +218,8 @@ HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   
 node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
-Expected: `854 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `29 passed, 0 failed`; the
+Expected: `875 passed, 17 skipped, 3 xfailed`; the fixture scorecard
+`13 passed, 0 failed, 3 known defects`; the setup check `31 passed, 0 failed`; the
 server suite `97 passed, 0 failing`.
 
 ```bash
@@ -203,7 +227,9 @@ server suite `97 passed, 0 failing`.
 python -m engine.cli submit samples/eicar.com --no-sandbox -o /tmp/hb/run
 python -m engine.cli results verify /tmp/hb/run --json            # ok: true, stage submit
 python -m engine.cli results seal /tmp/hb/run --json              # idempotent, same hash
+python -m engine.cli results seal /tmp/hb --all --json            # whole corpus, nested units first
 python -m engine.cli results status --json --results /tmp/hb
+python scripts/verify_manifest.py /tmp/hb/run --json              # the recipient's tool (D34)
 python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/hb  # dry run
 ```
 

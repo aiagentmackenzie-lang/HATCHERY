@@ -76,11 +76,30 @@ a **hash manifest, not a signature**, and the distinction is the whole point.
 - **`unsealed` is a state, not a pass.** A run with no manifest (written before this revision,
   or with its manifest deleted) reports `ok: false, state: "unsealed"` and exits 0 so an
   existing corpus keeps working. `--expect-manifest` makes a missing manifest a failure.
+- **The claim includes nested units (D34).** A replay written inside a run
+  (`results/<run>/replay-xxxx/`) is its own unit, but the parent's conclusion now includes
+  whether that unit can be verified at all. A nested replay with no manifest makes the parent
+  `ok: false, state: "broken", classification: "nested-unsealed"` with the nested directory as
+  `path`, exit 1; a nested *broken* unit keeps its own classification and its prefixed path.
+  A matching `--expect-manifest` can sit beside `ok: false` — the anchor proves the parent
+  manifest, not the nested units, and the human output says so.
+- **The corpus is sealable in one command.** `hatchery results seal <results-root> --all`
+  seals every run under a root depth-first (nested units before their parent), is idempotent
+  and resumable, reports `sealed`/`already`/`refused`/`ignored`, refuses a mismatching run and
+  never follows a symlink. `--replace` is refused in batch: re-sealing mismatches across a
+  corpus would bless tamper wherever it is found. Sealing a nested unit never changes the
+  parent's manifest bytes, so a parent anchor recorded at delivery stays valid.
+- **The recipient can check the claim.** `scripts/verify_manifest.py RUN
+  [--expect-manifest SHA] [--json]` is standard library plus the same `verify_run`: no
+  click/rich/YARA-X/capa/Docker, no database, no `HATCHERY_*` environment, the same
+  classifications, states, JSON keys and exit codes. There is exactly one implementation of
+  the rules, so the two outputs cannot drift.
 - **Retention is off by default and operator-applied.** Nothing in `submit`, the worker or the
   API deletes a run directory; there is no timer. `hatchery results prune` is a dry run unless
   `--apply`, always keeps the newest `--keep-last` runs (minimum 1, `clamped: true` when the
   anchor decides), and **refuses the whole plan** when any run has no manifest, an invalid
-  manifest or an unparseable bundle. Deletion renames to `<run>.deleting-<ts>` before removing
+  manifest, an unparseable bundle or an unsealed nested unit (`nested-unsealed`, distinct from
+  `manifest-invalid`). Deletion renames to `<run>.deleting-<ts>` before removing
   the tree, so a crash leaves a stray the next prune completes rather than a half-deleted run
   a reader could trust. Two prunes serialise on a non-blocking `flock`; the second reports
   `results-locked`. Every prune appends a `0600` line to `results/.prune-log.jsonl` — an
@@ -254,11 +273,13 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 - [ ] Rehearse a restore into a temporary root (`store restore BACKUP --target DIR`) and check it exits 0 and `store verify` passes before deleting the original. A restore that exits 2 has files but something is undecryptable or a job's sample is missing — read the report.
 - [ ] Run `hatchery store status` and `hatchery store verify` before enabling a TTL. A pre-D28 store reports `legacy_plaintext` until `hatchery store migrate` encrypts it; a backup refuses that state rather than copying plaintext.
 - [ ] Seal and verify a run before you deliver it: `hatchery results verify <run>` (`intact`), `hatchery results seal <run>` for anything written before D33, and record the printed manifest SHA-256 in the delivery note.
-- [ ] Anchor the delivery: the recipient (or you, later) checks `hatchery results verify <run> --expect-manifest <sha256>`. Without that anchor, an artifact rewritten together with its manifest verifies as intact — the manifest is a hash manifest, not a signature.
-- [ ] On receipt, verify before you read: a break names the classification (`modified`, `missing`, `extra`, `truncated`, `symlink`, `replaced`, …) and the path. `unsealed` means no manifest — copy the whole run directory, not just `bundle/`.
+- [ ] Seal the corpus before pruning: `hatchery results seal <results-root> --all` (depth-first, idempotent, nested replays included). It refuses a mismatching run and refuses `--replace` in batch; a refusal means tamper, not a chore. Sealing a nested unit never changes the parent's manifest hash, so recorded anchors stay valid.
+- [ ] Send the verifier with the run: `scripts/verify_manifest.py` needs Python 3 and nothing else. The recipient runs `python verify_manifest.py <run> --expect-manifest <sha256>`; it emits the same classifications and exit codes as `hatchery results verify` because it is the same code path.
+- [ ] Anchor the delivery: the recipient (or you, later) checks `hatchery results verify <run> --expect-manifest <sha256>`. Without that anchor, an artifact rewritten together with its manifest verifies as intact — the manifest is a hash manifest, not a signature. A matching anchor with `ok: false` is possible: it proves the parent manifest, not the nested units.
+- [ ] On receipt, verify before you read: a break names the classification (`modified`, `missing`, `extra`, `truncated`, `symlink`, `replaced`, `nested-unsealed`, …) and the path. `unsealed` means no manifest — copy the whole run directory, not just `bundle/`. `nested-unsealed` means the directory contains a replay unit nobody sealed: seal it before you trust the run.
 - [ ] Treat `results/` as plaintext evidence: it holds attacker-controlled artifacts, extracted strings and full traces, and the manifest proves integrity, not confidentiality. Encrypt the volume if that matters, and never hand `bundle/` around without its manifest.
-- [ ] Read `hatchery results status` before pruning. Growth is warned at `HATCHERY_RESULTS_WARN_RUNS` (2000) and `HATCHERY_RESULTS_WARN_BYTES` (10 GiB) and nothing is ever deleted for you.
-- [ ] Prune deliberately: `hatchery results prune --older-than 30d --keep-last N` (dry run) first, read every reason, then `--apply`. `--apply` refuses the whole plan — and exits 2 — if any run has no manifest, an invalid manifest or an unparseable bundle; seal the corpus first (`hatchery results seal <run>`).
+- [ ] Read `hatchery results status` before pruning. It reports `unsealed_runs`/`unsealed_nested` and says when a prune would be blocked. Growth is warned at `HATCHERY_RESULTS_WARN_RUNS` (2000) and `HATCHERY_RESULTS_WARN_BYTES` (10 GiB) and nothing is ever deleted for you.
+- [ ] Prune deliberately: `hatchery results prune --older-than 30d --keep-last N` (dry run) first, read every reason, then `--apply`. `--apply` refuses the whole plan — and exits 2 — if any run has no manifest, an invalid manifest, an unparseable bundle or an unsealed nested unit (`nested-unsealed`); seal the corpus first (`hatchery results seal <results-root> --all`).
 - [ ] Keep the anchor (`--keep-last`, minimum 1) and the sample store in mind: pruning a run releases a sample only when no other run or queued/running job references it. If two hosts hold bundles, point `--results` at both (or do not prune) — a reference on another machine is invisible.
 - [ ] After a crash during a prune, run `hatchery results status` (it reports the `.deleting-` stray) and prune again: the next run completes the deletion.
 - [ ] Cap resources: `ContainerConfig` sets `mem_limit`, `nano_cpus`, `pids_limit` and `no-new-privileges`. Do not remove them.
@@ -290,9 +311,9 @@ The emulation tests `importorskip` Speakeasy; the pinned python-gate matrix stay
 | Sample at rest | content-addressed, AES-256-GCM envelope, `0600` blobs, atomic writes; key from env or a `0600` non-symlink file, else a generated local key that is announced; an optional `0600` key ring holds retired keys and is authoritative once rotation creates it |
 | Sample backup | SQLite backup API for the index and queue, every blob hashed, manifest written last; the key is excluded unless `--include-key` (explicit, `0600`, loudly warned); restore validates paths/hashes/envelopes before writing |
 | Sample retention | TTL explicit and off by default; `prune` dry-run unless `--apply`; referenced samples are never deleted; an unidentifiable queued job blocks the delete |
-| Result bundles | `results/<run>/manifest.json`: deterministic SHA-256 per file, `0600`, written last by every stage that mutates the run (`submit`/`triage`/`push`/`replay`). `results verify` recomputes every hash and names the first break (`modified`/`missing`/`extra`/`truncated`/`symlink`/`manifest-invalid`/`manifest-version`/`manifest-missing`/`replaced`), reports `unsealed` as a distinct state and never `ok`, and never follows a symlink or a traversal path. **Unsigned and unMAC'd** — an artifact rewritten together with its manifest is caught only by `--expect-manifest`. **Not encrypted at rest** |
-| Result retention | **Off by default**, applied only by `hatchery results prune --apply` (host-local, no timer, no server path). Never deletes a run it cannot verify (the whole plan is refused and exits non-zero); always keeps the newest `--keep-last` (minimum 1, clamped); renames to `.deleting-<ts>` before removing (crash-resumable); serialises on a `flock`; appends a `0600` prune record that is **not** tamper-evident |
-| Result growth | measured and warned, **never enforced**: `HATCHERY_RESULTS_WARN_RUNS` / `HATCHERY_RESULTS_WARN_BYTES` are reported by `results status`; nothing is deleted to save space |
+| Result bundles | `results/<run>/manifest.json`: deterministic SHA-256 per file, `0600`, written last by every stage that mutates the run (`submit`/`triage`/`push`/`replay`). `results verify` recomputes every hash and names the first break (`modified`/`missing`/`extra`/`truncated`/`symlink`/`manifest-invalid`/`manifest-version`/`manifest-missing`/`replaced`/`nested-unsealed`), reports `unsealed` as a distinct state and never `ok`, and never follows a symlink or a traversal path. A run directory's conclusion **includes its nested units**; `seal --all` closes a corpus depth-first and `scripts/verify_manifest.py` lets the recipient check it with the stdlib alone. **Unsigned and unMAC'd** — an artifact rewritten together with its manifest is caught only by `--expect-manifest`. **Not encrypted at rest** |
+| Result retention | **Off by default**, applied only by `hatchery results prune --apply` (host-local, no timer, no server path). Never deletes a run it cannot verify — including one with an unsealed nested unit (`nested-unsealed`) — and the whole plan is refused with exit 2; always keeps the newest `--keep-last` (minimum 1, clamped); renames to `.deleting-<ts>` before removing (crash-resumable); serialises on a `flock`; appends a `0600` prune record that is **not** tamper-evident |
+| Result growth | measured and warned, **never enforced**: `HATCHERY_RESULTS_WARN_RUNS` / `HATCHERY_RESULTS_WARN_BYTES` are reported by `results status`, along with `unsealed_runs`/`unsealed_nested` and whether a prune would be blocked; nothing is deleted to save space |
 
 ## Issues fixed in this revision
 
