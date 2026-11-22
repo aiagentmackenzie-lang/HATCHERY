@@ -1619,6 +1619,59 @@ full-suite run wrote into the repository's `results/`. `3f774b7` passes a
   manifest to compare against; the anchor is what covers delivery-time changes.
 - **Queue/job retention and sample-store TTL** are untouched.
 
+## D35 — The first key is published complete, not created-then-filled (2026-11-22)
+
+**Decision.** The store's auto-generated key file is published atomically: the
+material is written to a `0600` temporary in the store directory, fsynced, and
+only then `link(2)`ed to `<store>/.sample-key`. A concurrent opener sees *no key
+file or a complete one*, never an empty one. `hatchery store keygen` uses the
+same publication, so its never-overwrite refusal (`key-file-exists`) is
+unchanged. A reader that finds the store's own key file empty waits up to 2 s for
+a concurrent writer from an older version to finish, then fails `key-invalid`
+with a message naming the path and the recovery (remove it if nothing was ever
+stored, otherwise restore the key from backup). Partial material is never
+accepted: the text must parse as exactly 32 bytes. `HATCHERY_SAMPLE_KEY_FILE`
+keeps its immediate-refusal semantics — an explicitly configured key is operator
+input, not a generation race.
+
+**Why.** D28's `write_key_file` created the **final** name with
+`O_CREAT|O_EXCL` and *then* wrote the bytes. The empty file was visible to every
+other process for the duration of the write, and `_generate_key_file`'s
+"the loser uses the winner's key" branch read it immediately. D34's five-process
+concurrency test was the first to exercise that window; the recorded clean-copy
+run was a green sample, and the same test failed on this host on the first
+attempt of the next session:
+
+    run-4: Cannot store the sample: key-invalid: the configured key is empty
+
+A 12-attempt reproduction with five simultaneous first submits failed 2/12.
+The failure was fail-closed (named error, exit 1, no plaintext, no traceback),
+but it contradicted D34's contract that concurrent openers all succeed, and the
+same window could in principle hand a reader a truncated-but-parseable key —
+blobs written under a key the store does not hold. Atomic publication closes
+both: an incomplete key is never visible, and a crash leaves a `.tmp-key-*` file
+(`0600`, reaped by `store reconcile` after its grace period) rather than a store
+that can never open again.
+
+**Evidence.** `pytest` **880 passed / 17 skipped / 3 xfailed** (was 875; +5:
+a loser-uses-the-winner test, an overwrite/temporary-leak test, a test that
+observes the link happens only after the bytes are complete and `0600`, a
+create-then-fill reader wait, and a permanently-empty named error). The
+`test_concurrent_submits_against_one_store…` regression test is unchanged and
+now passes repeatedly; the reproduction is **0/25**. `verify_setup.sh`
+**32 passed** (was 31; +`store/first-key-race`, four simultaneous first submits
+against a fresh store that must leave one complete key, one blob and no
+temporary). ruff clean, mypy 86 files, fixtures 13/0/3, node 97, the 3 queue
+tests and the dashboard build are unchanged.
+
+**Not done, deliberately.** No cross-process lock around key creation (an atomic
+link is sufficient and adds no lock file); no KMS/escrow (unchanged, D28/D29); no
+Windows-specific publication path (`os.link` is POSIX, and the `0600` posture
+already assumes POSIX); a crash between the link and the temporary's `unlink`
+leaves one `0600` duplicate of the key beside the real one until `store
+reconcile` — the same exposure as the key itself, stated rather than hidden; a
+network filesystem where `link` is not atomic was not exercised.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -1630,7 +1683,7 @@ full-suite run wrote into the repository's `results/`. `3f774b7` passes a
 - **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
-- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
+- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. **D35** completes the store's own first-write path: the auto-generated key is published atomically (a fully written `0600` temporary is linked to `.sample-key`), so concurrent first openers never observe an empty key — the D34 concurrency gate was a green sample of a real race, now covered by a 4-process setup check and a 2 s bounded reader wait for older writers. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
 - **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

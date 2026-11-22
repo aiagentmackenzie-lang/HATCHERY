@@ -1,7 +1,8 @@
 # Baseline verification
 
-Verified **21 November 2026** on top of revision `21147a6` (Phase 4f:
-nested-unit verification, corpus seal, client verifier and the store-busy fix, D34). The
+Verified **22 November 2026** on top of revision `2d60c69` plus D35 (the first store key
+is published atomically; Phase 4f — nested-unit verification, corpus seal, client
+verifier and the store-busy fix — is D34). The
 D33 baseline was `e64ca71`. The D28
 store baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
@@ -31,12 +32,13 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **875 passed, 17 skipped,
-  3 xfailed** (was 854 at D33; 21 tests cover nested-unit verification, the
-  retention refusal and its release, the corpus seal, the client verifier's
-  agreement with `results verify`, the triage path forms and store-busy
-  concurrency). `ruff` is clean and `mypy engine/` reports no issues in
-  **86 source files**.
+  dashboard, and passes the full Python suite: **880 passed, 17 skipped,
+  3 xfailed** (was 875 at D34; 5 tests cover atomic key publication: a loser of
+the first-key race uses the winner's key, an existing key is never overwritten
+and leaves no temporary, the final name is linked only after the bytes are
+complete and `0600`, a reader waits out an older create-then-fill writer, and a
+permanently empty key file is a named `key-invalid`). `ruff` is clean and
+`mypy engine/` reports no issues in **86 source files**.
 - **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
   anchoring and the file posture, and 13 cover D32 compaction: cross-segment
@@ -54,12 +56,12 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
   (negative text with rules loaded), and a detector that could not run (capa
   unavailable, with its exit code and stderr preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
-  state: **31 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
+  state: **32 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
   `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; 26 at D32,
   which added `api/audit-compaction` and `api/audit-archive-verified`; 29 at D33, which
   added `results/manifest-sealed`, `results/tamper-detected` and
   `results/prune-keeps-anchor`; D34 adds `results/seal-corpus` and
-  `results/client-verifier`).
+  `results/client-verifier`; D35 adds `store/first-key-race`).
   - CLI submission from a non-repo directory produces a bundle with the expected
     SHA-256 and the EICAR rule.
   - The compiled API enqueues instead of holding a subprocess; the task survives
@@ -144,6 +146,15 @@ suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
 installation, packaging, normal entry points and static acceptance inputs; it
 does not re-certify those features.
 
+### Known gaps introduced or inherited by D35
+
+| Gap | What it means |
+|:--|:--|
+| The previous baseline was a green sample | D34 recorded 875 passed, and the same concurrency test failed on the next session's first run (2/12 reproduction). A passing distributed-timing test is evidence of a passing run, not of the absence of a race; the atomic publication, not the green count, is what closed it. |
+| Key publication assumes a local POSIX filesystem | `link(2)` is atomic within one directory. A network filesystem with weaker semantics was not exercised, and Windows is unverified, as before. |
+| A crash after the link leaves a duplicate temporary | `store reconcile` removes `.tmp-key-*` after its grace period; until then a second `0600` copy of the key exists in the store directory. Same exposure as the key itself. |
+| A permanently empty legacy key file blocks a store | A reader waits 2 s, then fails `key-invalid` with the path and the two remedies. It never invents a key, so an operator who cannot restore the original must accept that the blobs are unreadable. |
+
 ### Known gaps introduced or inherited by D34
 
 | Gap | What it means |
@@ -219,8 +230,8 @@ HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   
 node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
-Expected: `875 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `31 passed, 0 failed`; the
+Expected: `880 passed, 17 skipped, 3 xfailed`; the fixture scorecard
+`13 passed, 0 failed, 3 known defects`; the setup check `32 passed, 0 failed`; the
 server suite `97 passed, 0 failing`.
 
 ```bash

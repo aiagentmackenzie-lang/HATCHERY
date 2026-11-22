@@ -62,10 +62,16 @@ the address before any caller sees bytes.
 - `HATCHERY_SAMPLE_KEY_FILE` — path to a 32-byte key file. It must be a regular
   file, not a symlink, with no group/other permission bits; otherwise it is
   refused.
-- Neither configured → the first write generates `<store>/.sample-key` (0600,
-  `O_EXCL`, race-safe) and announces it on stderr (`WARNING: generated a new
-  local sample-encryption key at ...`) and in `store status`. There is no silent
-  plaintext fallback.
+- Neither configured → the first write generates `<store>/.sample-key` (0600) and
+  announces it on stderr (`WARNING: generated a new local sample-encryption key at
+  ...`) and in `store status`. There is no silent plaintext fallback.
+  Publication is atomic (D35): the key is written to a complete `0600` temporary
+  and linked into place, so concurrent first writers see no key or a complete one,
+  never an empty one. (This document previously called the `O_EXCL`
+  create-then-write order "race-safe"; it was not — D28's implementation let a
+  second opener read the file between creation and the write.) A reader that finds
+  an empty file waits up to 2 s for an older writer, then fails `key-invalid`,
+  naming the path and the recovery, rather than inventing a key.
 - `hatchery store keygen -o PATH` creates a key file for an operator who wants
   it outside the store; it prints the path and the key **id**, never the key.
 - The key is never written to the index, a bundle, a report, argv, a log or an
