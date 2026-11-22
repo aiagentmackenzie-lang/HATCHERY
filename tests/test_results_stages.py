@@ -14,6 +14,8 @@ import json
 import socket
 from pathlib import Path
 
+import pytest
+
 from _results_builder import base_env, cli_json, manifest_hash, run_cli, submit
 
 
@@ -59,6 +61,34 @@ def test_triage_mutates_the_bundle_and_reseals_at_stage_triage(tmp_path: Path) -
     assert code == 1
     assert broken["classification"] == "modified"
     assert broken["path"] == "bundle/analysis.json"
+
+
+@pytest.mark.parametrize("form", ["run", "bundle"])
+def test_triage_accepts_a_run_directory_or_its_bundle(
+    tmp_path: Path, form: str
+) -> None:
+    """Both paths an operator naturally types must patch and re-seal (D34)."""
+    env = _unavailable_triage_env(tmp_path)
+    run_dir = submit(tmp_path, env=env)
+    target = run_dir if form == "run" else run_dir / "bundle"
+
+    result = run_cli(["triage", str(target)], tmp_path, env=env)
+    assert result.returncode == 1, result.stdout[-2000:] + result.stderr[-1000:]
+    assert "Manifest re-sealed at stage triage" in result.stdout
+    assert "No analysis bundle at" not in result.stdout
+
+    analysis = json.loads((run_dir / "bundle" / "analysis.json").read_text())
+    assert analysis["triage"]["status"] == "unavailable"
+    code, report = cli_json(["results", "verify", str(run_dir), "--json"], tmp_path, expect=0)
+    assert report["state"] == "intact"
+    assert report["stage"] == "triage"
+
+    # An out-of-band edit after the re-seal is still a break.
+    target_file = run_dir / "bundle" / "events.jsonl"
+    target_file.write_text('{"out":"of-band"}\n')
+    code, broken = cli_json(["results", "verify", str(run_dir), "--json"], tmp_path)
+    assert code == 1
+    assert broken["classification"] == "modified"
 
 
 def test_a_stage_refuses_to_launder_a_modified_run(tmp_path: Path) -> None:

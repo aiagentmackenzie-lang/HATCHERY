@@ -45,6 +45,9 @@ EMPTY = "empty"
 TOO_LARGE = "too-large"
 WRITE_FAILED = "write-failed"
 INDEX_ERROR = "index-error"
+# A second opener raced the WAL pragma / schema setup. Bounded retry, then a
+# named error instead of a traceback (D34).
+STORE_BUSY = "store-busy"
 
 # -- envelope / decryption --------------------------------------------------
 WRONG_KEY = "wrong-key"
@@ -112,6 +115,7 @@ __all__ = [
     "RESTORE_SCHEMA_NEWER",
     "RESTORE_TARGET_NOT_EMPTY",
     "ROTATION_INCOMPLETE",
+    "STORE_BUSY",
     "STORE_LOCKED",
     "SYMLINK",
     "SampleStoreError",

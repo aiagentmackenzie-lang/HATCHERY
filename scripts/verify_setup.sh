@@ -275,6 +275,110 @@ else
   tail -5 "$WORK/results-prune.log"
 fi
 
+# D34: the whole corpus becomes verifiable in one command. A run with a legacy
+# nested replay, an already-sealed run and a tampered run in one root: the
+# unsealed units are sealed depth-first, the intact run is reported unchanged,
+# the tampered run is refused (exit 2, nothing blessed) and the strays are
+# ignored. Sealing the nested unit must not move the parent's manifest hash.
+SEAL_ROOT="$WORK/seal-corpus"
+mkdir -p "$SEAL_ROOT"
+cp -R "$WORK/cli/run" "$SEAL_ROOT/already"
+cp -R "$WORK/cli/run" "$SEAL_ROOT/with-replay"
+rm -f "$SEAL_ROOT/with-replay/manifest.json"
+mkdir -p "$SEAL_ROOT/with-replay/replay-0001/bundle"
+cp "$WORK/cli/run/bundle/analysis.json" "$SEAL_ROOT/with-replay/replay-0001/bundle/analysis.json"
+printf '{"replay_id":"0001"}\n' > "$SEAL_ROOT/with-replay/replay-0001/replay.json"
+cp -R "$WORK/cli/run" "$SEAL_ROOT/tampered"
+printf 'tampered before the corpus seal\n' >> "$SEAL_ROOT/tampered/bundle/events.jsonl"
+mkdir -p "$SEAL_ROOT/notes"
+printf 'not a run\n' > "$SEAL_ROOT/notes/readme.txt"
+mkdir -p "$SEAL_ROOT/stray.deleting-20260101T000000Z"
+ln -s "$WORK/cli/run" "$SEAL_ROOT/linked-run"
+PARENT_HASH=$("$PY" - "$SEAL_ROOT/already/manifest.json" <<'CHECK'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+CHECK
+)
+if "$PY" -m engine.cli results seal "$SEAL_ROOT" --all --json \
+    >"$WORK/seal-all.json" 2>"$WORK/seal-all.log"; then
+  fail "results/seal-corpus" "a corpus containing a tampered run must exit 2"
+else
+  status=$?
+  if [ "$status" -ne 2 ]; then
+    fail "results/seal-corpus" "expected exit 2 for a refused run, got $status"
+  elif "$PY" - "$WORK/seal-all.json" "$SEAL_ROOT" "$PARENT_HASH" <<'CHECK'
+import hashlib, json, sys
+from pathlib import Path
+
+report = json.load(open(sys.argv[1]))
+root = Path(sys.argv[2])
+parent_hash = sys.argv[3]
+
+assert report["counts"] == {"sealed": 2, "already": 1, "refused": 1, "ignored": 3}, report["counts"]
+sealed = [entry["run_id"] for entry in report["sealed"]]
+assert sealed.index("replay-0001") < sealed.index("with-replay"), sealed
+assert [entry["run_id"] for entry in report["already"]] == ["already"], report["already"]
+refused = report["refused"][0]
+assert refused["run_id"] == "tampered", refused
+assert refused["classification"] == "modified", refused
+assert refused["break_path"] == "bundle/events.jsonl", refused
+ignored = {entry["name"]: entry["reason"] for entry in report["ignored"]}
+assert ignored["notes"] == "not-a-run", ignored
+assert ignored["stray.deleting-20260101T000000Z"] == "deleting-stray", ignored
+assert ignored["linked-run"] == "symlink", ignored
+assert (root / "notes").is_dir(), "an ignored entry must not be touched"
+assert (root / "linked-run").is_symlink(), "a symlinked run must never be followed"
+assert (root / "already/manifest.json").is_file()
+assert hashlib.sha256((root / "already/manifest.json").read_bytes()).hexdigest() == parent_hash, \
+    "sealing the corpus must not rewrite an intact parent manifest"
+assert (root / "with-replay/replay-0001/manifest.json").is_file(), "the nested unit must be sealed"
+assert (root / "with-replay/manifest.json").is_file(), "the parent must be sealed after its nested unit"
+CHECK
+  then
+    pass "results/seal-corpus" "nested-first, already kept, tamper refused, strays ignored, anchor-safe"
+  else
+    fail "results/seal-corpus" "the corpus seal did not match its report"
+  fi
+fi
+
+# D34: the verifier the recipient runs. Standard library only, the same code
+# path, and it works on a copied run directory outside the checkout.
+mkdir -p "$WORK/client-copy"
+cp -R "$WORK/cli/run" "$WORK/client-copy/delivered-run"
+if (cd "$WORK" && HATCHERY_SAMPLE_STORE="$WORK/absent-store" \
+    "$PY" "$ROOT/scripts/verify_manifest.py" "$WORK/client-copy/delivered-run" --json \
+    >"$WORK/client-verify.json" 2>"$WORK/client-verify.log"); then
+  if "$PY" - "$WORK/client-verify.json" <<'CHECK'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["ok"] is True, report
+assert report["state"] == "intact", report
+assert report["classification"] is None, report
+CHECK
+  then
+    if (cd "$WORK" && "$PY" "$ROOT/scripts/verify_manifest.py" "$WORK/cli/tampered" --json \
+        >"$WORK/client-tamper.json" 2>/dev/null); then
+      fail "results/client-verifier" "the client verifier passed a modified run"
+    elif "$PY" - "$WORK/client-tamper.json" <<'CHECK'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["ok"] is False, report
+assert report["classification"] == "modified", report
+assert report["path"] == "bundle/events.jsonl", report
+CHECK
+    then
+      pass "results/client-verifier" "copied run verifies stdlib-only; a modified run exits 1"
+    else
+      fail "results/client-verifier" "the client verifier misclassified the modified run"
+    fi
+  else
+    fail "results/client-verifier" "the client verifier did not report the copied run intact"
+  fi
+else
+  fail "results/client-verifier" "scripts/verify_manifest.py failed; see $WORK/client-verify.log"
+  tail -5 "$WORK/client-verify.log"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Compiled API: enqueue, restart durability, worker, ingest
 # ---------------------------------------------------------------------------

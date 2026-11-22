@@ -17,18 +17,33 @@ its own.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 from urllib.parse import quote
 
-from engine.store.errors import INDEX_ERROR, SampleStoreError
+from engine.store.errors import INDEX_ERROR, STORE_BUSY, SampleStoreError
 
 INDEX_SCHEMA_VERSION = 1
 INDEX_FILENAME = "index.db"
+
+#: How long a second opener may keep retrying the WAL pragma / schema setup
+#: before the construction fails closed with ``store-busy`` (D34). This is the
+#: same 60 s the SQLite connections already use as their busy timeout; the
+#: journal-mode change does not consult SQLite's busy handler at all, so it
+#: needs a retry of its own.
+BUSY_TIMEOUT_SECONDS = 60.0
+BUSY_INITIAL_DELAY = 0.05
+BUSY_MAX_DELAY = 1.0
+
+_T = TypeVar("_T")
+
+logger = logging.getLogger(__name__)
 
 ACTIVE = "active"
 DELETING = "deleting"
@@ -141,6 +156,50 @@ class SampleRecord:
         )
 
 
+def _is_busy(exc: sqlite3.OperationalError) -> bool:
+    """True for SQLITE_BUSY/SQLITE_LOCKED, which surface as free text."""
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def _set_journal_mode(conn: sqlite3.Connection, path: str) -> None:
+    """The pragma that races another opener and bypasses the busy handler."""
+    conn.execute("PRAGMA journal_mode = WAL")
+
+
+def _retry_busy(action: Callable[[], _T], *, what: str) -> _T:
+    """Run ``action``, retrying only on SQLITE_BUSY until the deadline.
+
+    ``busy_timeout`` does not apply to a journal-mode change (SQLite documents
+    that the busy handler is not invoked for ``PRAGMA journal_mode``), so three
+    simultaneous ``hatchery submit`` processes could make one constructor raise
+    ``sqlite3.OperationalError: database is locked`` straight through to the
+    operator as a traceback. A second opener is normal, not an error: retry
+    with bounded backoff and fail closed with a named reason if it never clears.
+    """
+    deadline = time.monotonic() + max(0.0, BUSY_TIMEOUT_SECONDS)
+    delay = BUSY_INITIAL_DELAY
+    while True:
+        try:
+            return action()
+        except sqlite3.OperationalError as exc:
+            if not _is_busy(exc):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SampleStoreError(
+                    STORE_BUSY,
+                    f"the sample index could not be prepared ({what}) because "
+                    "another process held it; try again once the other "
+                    f"operation finishes ({exc})",
+                ) from exc
+            logger.debug(
+                "Sample index busy during %s; retrying in %.2fs", what, delay
+            )
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, BUSY_MAX_DELAY)
+
+
 class SampleIndex:
     """The only writer of the sample index.
 
@@ -183,10 +242,20 @@ class SampleIndex:
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout = 60000")
-        if raw != ":memory:":
-            self._conn.execute("PRAGMA journal_mode = WAL")
-        self._check_version()
-        self._conn.executescript(SCHEMA)
+        try:
+            if raw != ":memory:":
+                _retry_busy(
+                    lambda: _set_journal_mode(self._conn, raw), what="journal mode"
+                )
+            _retry_busy(self._check_version, what="schema version")
+            _retry_busy(
+                lambda: self._conn.executescript(SCHEMA), what="schema setup"
+            )
+        except BaseException:
+            # A constructor that raises must not leak an open connection: the
+            # caller's cleanup path assumes it got no object at all.
+            self._conn.close()
+            raise
 
     # -- lifecycle ---------------------------------------------------------
 

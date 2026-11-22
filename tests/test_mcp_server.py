@@ -260,3 +260,31 @@ def test_stdio_server_speaks_jsonrpc_as_a_subprocess(tmp_path: Path) -> None:
     assert len(tools) == 6
     payload = json.loads(responses[2]["result"]["content"][0]["text"])
     assert payload["runs"][0]["task_id"] == "task-sub"
+
+
+def test_triage_run_accepts_the_run_directory_and_its_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The CLI and MCP share one path convention: run root or bundle/ (D34)."""
+    monkeypatch.setenv("HATCHERY_OLLAMA_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("HATCHERY_TRIAGE_TIMEOUT", "1")
+    monkeypatch.setenv("HATCHERY_TRIAGE_ATTEMPTS", "1")
+    monkeypatch.setenv("HATCHERY_TRIAGE_MODEL", "test-model")
+
+    from engine.results import verify_run
+
+    run_bundle = _write_run(tmp_path, task_id="task-triage")
+    run_root = run_bundle.parent
+    for target in (run_root, run_bundle):
+        result = MCPServer(tmp_path).handle(
+            _message(
+                "tools/call",
+                params={"name": "triage_run", "arguments": {"run_dir": str(target)}},
+            )
+        )
+        assert result is not None and result["result"]["isError"] is False, result
+        report = verify_run(run_root)
+        assert report["state"] == "intact", report
+        assert report["stage"] == "triage"
+        assert (run_bundle / "analysis.json").is_file()
+        assert json.loads((run_bundle / "analysis.json").read_text())["triage"]

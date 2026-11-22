@@ -31,6 +31,7 @@ class ToolError(RuntimeError):
 
 
 def _resolve_run_dir(raw: Any) -> Path:
+    """The bundle directory for a run, rejecting a path that has neither form."""
     if not isinstance(raw, str) or not raw.strip():
         raise ToolError("run_dir is required and must be a path to an analysed run")
     path = Path(raw.strip()).expanduser()
@@ -39,6 +40,36 @@ def _resolve_run_dir(raw: Any) -> Path:
     if not (path / ANALYSIS_FILENAME).exists():
         raise ToolError(f"no analysis.json in {path} — is this a HATCHERY run directory?")
     return path
+
+
+def _resolve_triage_paths(raw: Any) -> tuple[Path, Path]:
+    """The run root and bundle directory for triage, accepting a run or its ``bundle/``.
+
+    A run directory and its ``bundle/`` are both natural things to pass; the
+    re-seal needs the run root because the manifest lives there, while reading
+    and patching need the bundle. Resolving both here keeps one convention
+    between the CLI and MCP (D34).
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ToolError("run_dir is required and must be a path to an analysed run")
+    path = Path(raw.strip()).expanduser()
+    if not path.exists():
+        raise ToolError(f"run directory does not exist: {path}")
+    if not path.is_dir():
+        raise ToolError(f"not a directory: {path}")
+    try:
+        from engine.results import ManifestError, resolve_run_root
+
+        run_root = resolve_run_root(path)
+    except ManifestError as exc:
+        raise ToolError(exc.message) from exc
+    bundle_dir = path if (path / ANALYSIS_FILENAME).is_file() else run_root / "bundle"
+    if not (bundle_dir / ANALYSIS_FILENAME).is_file():
+        raise ToolError(
+            f"no analysis.json in {path} or its bundle/ — is this a HATCHERY run "
+            "directory?"
+        )
+    return run_root, bundle_dir
 
 
 def _resolve_roots(raw: Any, default: Path) -> Path:
@@ -139,9 +170,9 @@ def build_tools(results_root: Path = DEFAULT_RESULTS_ROOT) -> list[Tool]:
     def triage_run(arguments: dict[str, Any]) -> str:
         from engine.triage.triage import TriageConfig, run_triage
 
-        run_dir = _resolve_run_dir(arguments.get("run_dir"))
-        bundle = load_bundle(run_dir)
-        events = _load_events(run_dir)
+        run_root, bundle_dir = _resolve_triage_paths(arguments.get("run_dir"))
+        bundle = load_bundle(bundle_dir)
+        events = _load_events(bundle_dir)
         config = TriageConfig.from_env()
         model = arguments.get("model")
         if isinstance(model, str) and model.strip():
@@ -149,14 +180,14 @@ def build_tools(results_root: Path = DEFAULT_RESULTS_ROOT) -> list[Tool]:
         # The MCP tool never opts into a remote model: that stays an explicit
         # operator decision at the CLI, never something an agent can turn on.
         section = run_triage(bundle, events, config=config)
-        attach_triage(run_dir, section)
+        attach_triage(bundle_dir, section)
         # D33: the MCP tool mutates the bundle, so the run is re-sealed at the
         # same stage as the CLI triage. One writer, one rule, whichever door the
         # change came through.
-        from engine.results import ManifestError, resolve_run_root, seal_run
+        from engine.results import ManifestError, seal_run
 
         try:
-            seal_run(resolve_run_root(run_dir), stage="triage")
+            seal_run(run_root, stage="triage")
         except ManifestError as exc:
             raise ToolError(
                 f"triage changed the bundle but the run could not be re-sealed: "
@@ -284,7 +315,10 @@ def build_tools(results_root: Path = DEFAULT_RESULTS_ROOT) -> list[Tool]:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "run_dir": {"type": "string", "description": "Path to a run directory"},
+                    "run_dir": {
+                        "type": "string",
+                        "description": "Path to a run directory or its bundle/",
+                    },
                     "model": {"type": "string", "description": "Ollama model (optional)"},
                 },
                 "required": ["run_dir"],

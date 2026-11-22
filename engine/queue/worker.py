@@ -245,7 +245,16 @@ class Worker:
         readable original exists, the job fails with the reason: a missing
         sample is never a reason to report success.
         """
-        store = self.sample_store
+        try:
+            store = self.sample_store
+        except SampleStoreError as exc:
+            # A constructor that lost the busy race is a named failure (D34), not
+            # a traceback out of the worker: the job fails with the reason and the
+            # operator is told which store operation was contended.
+            return "", (
+                f"the sample store is unavailable ({exc.reason}: {exc.message}); "
+                "the job cannot be run"
+            )
         if job.sample_store_ref:
             try:
                 store.read(job.sample_store_ref)

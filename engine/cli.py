@@ -368,7 +368,15 @@ def submit(
         # D28: the accepted bytes enter the encrypted store *before* the job row
         # exists. A queued job can therefore be executed after the original path
         # is deleted, and the job records the content address it will run.
-        sample_store = SampleStore()
+        # D34: construction can lose a race with another opener; that is a named
+        # store-busy failure and exit 1, never a traceback.
+        try:
+            sample_store = SampleStore()
+        except SampleStoreError as exc:
+            console.print(
+                f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]"
+            )
+            raise SystemExit(1) from exc
         try:
             record = sample_store.put_file(file)
         except SampleStoreError as exc:
@@ -406,7 +414,11 @@ def submit(
         }))
         return
 
-    sample_store = SampleStore()
+    try:
+        sample_store = SampleStore()
+    except SampleStoreError as exc:
+        console.print(f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]")
+        raise SystemExit(1) from exc
     staged: Optional[StagedPlaintext] = None
     if from_store:
         try:
@@ -1298,21 +1310,34 @@ def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[st
 def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeout: float) -> None:
     """Run local LLM triage over an existing run's bundle.
 
-    Reads `analysis.json` and `events.jsonl`, asks a local Ollama model for a
-    grounded triage, and writes the result back into the bundle. Advisory only:
-    every claim must cite evidence that exists in the run, and a triage that
-    cannot be grounded is INCONCLUSIVE, not clean.
+    RUN_DIR may be the run directory (``results/<run>``) or its ``bundle/``;
+    both are natural things to type and both resolve to the run root for the
+    re-seal. Reads `analysis.json` and `events.jsonl`, asks a local Ollama model
+    for a grounded triage, and writes the result back into the bundle. Advisory
+    only: every claim must cite evidence that exists in the run, and a triage
+    that cannot be grounded is INCONCLUSIVE, not clean.
     """
     from engine.bundle import attach_triage, load_bundle, load_events
+    from engine.results import ManifestError, resolve_run_root
     from engine.triage.triage import TriageConfig, run_triage
 
-    _require_verifiable_stage(run_dir)
     try:
-        bundle = load_bundle(run_dir)
+        run_root = resolve_run_root(run_dir)
+    except ManifestError as exc:
+        console.print(f"[red]{exc.reason}: {exc.message}[/red]")
+        raise SystemExit(1) from exc
+    bundle_dir = (
+        run_root / "bundle"
+        if (run_root / "bundle" / "analysis.json").is_file()
+        else run_root
+    )
+    _require_verifiable_stage(run_root)
+    try:
+        bundle = load_bundle(bundle_dir)
     except FileNotFoundError as exc:
         console.print(f"[red]{exc}[/red]")
-        raise SystemExit(1)
-    events = load_events(run_dir)
+        raise SystemExit(1) from exc
+    events = load_events(bundle_dir)
 
     config = TriageConfig.from_env()
     if model:
@@ -1324,7 +1349,7 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
     console.print(
         Panel(
             f"[bold orange_red1]HATCHERY[/bold orange_red1] — Local LLM triage\n"
-            f"Run: [cyan]{run_dir}[/cyan]\n"
+            f"Run: [cyan]{run_root}[/cyan]\n"
             f"Evidence: {len(events)} event(s) in the bundle",
             title="🔍 AI Triage",
         )
@@ -1361,8 +1386,8 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
     else:
         console.print(f"  [red]Triage {section['status']}: {section['reason']}[/red]")
 
-    path = attach_triage(run_dir, section)
-    _reseal_after_stage(run_dir, "triage")
+    path = attach_triage(bundle_dir, section)
+    _reseal_after_stage(run_root, "triage")
     console.print(f"  Bundle updated: [cyan]{path}[/cyan]")
     if not section.get("available"):
         raise SystemExit(1)
@@ -2507,7 +2532,7 @@ def _results_failed(
 
 
 def _require_verifiable_stage(run_dir: Path) -> None:
-    """Refuse to mutate a run that no longer matches its manifest (D33).
+    """Refuse to mutate a run whose own bytes no longer match its manifest (D33/D34).
 
     A stage that re-seals is trusting the bytes it is about to change. Checking
     the incoming state first means an out-of-band edit cannot be laundered into a
@@ -2515,6 +2540,12 @@ def _require_verifiable_stage(run_dir: Path) -> None:
     ``modified`` at a named path and must use the explicit, loud
     ``hatchery results seal --replace`` if the change was deliberate. A legacy
     run with no manifest is still allowed — an unsealed corpus must keep working.
+
+    This checks the run's **own** file set (``_depth=1``), not its nested units:
+    a nested replay is its own unit with its own manifest, and this stage neither
+    rewrites nor repairs it. A nested ``unsealed``/``broken`` state is reported by
+    ``results verify`` and fixed by ``results seal --all``; it must not turn a
+    legitimate triage of an otherwise intact run into a refusal.
     """
     from engine.results import resolve_run_root, verify_run
 
@@ -2522,7 +2553,7 @@ def _require_verifiable_stage(run_dir: Path) -> None:
         root = resolve_run_root(run_dir)
     except Exception:  # noqa: BLE001 - a path that is not a run is reported by the stage
         return
-    report = verify_run(root)
+    report = verify_run(root, _depth=1)
     if report["state"] != "broken":
         return
     console.print(
@@ -2596,6 +2627,10 @@ def results_verify(run: Path, expect_manifest: Optional[str], as_json: bool) -> 
     with no database. A legacy run with no manifest reports ``unsealed`` — never
     ``ok`` — and exits 0 so an existing corpus keeps working; pass
     ``--expect-manifest`` to make a missing manifest a failure.
+
+    A run directory's conclusion includes its nested units: a nested replay with
+    no manifest is ``nested-unsealed``, ``ok`` false and exit 1, because the
+    directory ships evidence HATCHERY cannot verify (D34).
     """
     from engine.results import ManifestError, resolve_run_root, verify_run
 
@@ -2636,7 +2671,15 @@ def results_verify(run: Path, expect_manifest: Optional[str], as_json: bool) -> 
             mark = "[green]matches the anchor[/green]" if report["anchor"]["match"] else "[red]does NOT match the anchor[/red]"
             console.print(f"  Anchor: {mark} ({report['anchor']['actual']})")
         for nested in report.get("nested_runs") or []:
-            mark = {"intact": "[green]intact[/green]", "unsealed": "[yellow]unsealed[/yellow]", "broken": "[red]broken[/red]"}[nested["state"]]
+            if nested["state"] == "unsealed":
+                console.print(
+                    f"  [bold red]⚠ nested replay {nested['run_id']}: unsealed[/bold red] "
+                    "— no manifest; HATCHERY cannot verify evidence this directory ships"
+                )
+                continue
+            mark = {"intact": "[green]intact[/green]", "broken": "[red]broken[/red]"}[
+                nested["state"]
+            ]
             console.print(f"  nested replay {nested['run_id']}: {mark}")
         if report.get("stale_temporaries"):
             console.print(
@@ -2645,6 +2688,13 @@ def results_verify(run: Path, expect_manifest: Optional[str], as_json: bool) -> 
             )
         if report.get("error"):
             console.print(f"  [yellow]{report['error']}[/yellow]")
+        if report.get("anchor") and report["anchor"].get("match") and report["state"] == "broken":
+            console.print(
+                "  [yellow]The anchor matches, so this is the parent manifest you "
+                "recorded — but the directory is still broken. The anchor proves "
+                "the parent manifest, not that every nested unit inside this "
+                "directory is verifiable.[/yellow]"
+            )
     if report["state"] == "intact":
         raise SystemExit(RESULTS_EXIT_OK)
     if report["state"] == "unsealed":
@@ -2655,18 +2705,94 @@ def results_verify(run: Path, expect_manifest: Optional[str], as_json: bool) -> 
 @results.command("seal")
 @click.argument("run", type=click.Path(path_type=Path))
 @click.option("--replace", is_flag=True, help="Re-seal a run whose existing manifest does not match")
+@click.option(
+    "--all", "all_runs", is_flag=True,
+    help="Seal every run under RUN (a results root), nested units first (D34)",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
-def results_seal(run: Path, replace: bool, as_json: bool) -> None:
-    """Seal a run written before the manifest existed.
+def results_seal(run: Path, replace: bool, all_runs: bool, as_json: bool) -> None:
+    """Seal a run written before the manifest existed — or a whole corpus.
 
-    Idempotent: a valid existing manifest is returned unchanged (its hash
-    printed) and nothing is rewritten. Refuses when an existing manifest does
-    not match the run. ``--replace`` re-seals anyway, prints the old hash and
-    states that any anchor to it is void.
+    For one run: idempotent. A valid existing manifest is returned unchanged
+    (its hash printed) and nothing is rewritten. Refuses when an existing
+    manifest does not match the run. ``--replace`` re-seals anyway, prints the
+    old hash and states that any anchor to it is void.
+
+    With ``--all``, RUN is a results root: every run under it is sealed
+    depth-first (a nested replay before its parent), so a legacy corpus becomes
+    verifiable in one command. Sealing a nested unit never rewrites the parent's
+    manifest, so a parent anchor recorded at delivery stays valid. Each unit is
+    reported as ``sealed`` or ``already`` (with its manifest sha256) or
+    ``refused`` (with reason, classification and path); hidden entries,
+    ``.deleting-*`` strays, symlinks and non-run directories are ``ignored``.
+    Exit 0 when nothing was refused, 2 when a run was refused, 1 on an
+    operational error. ``--replace`` is refused with ``--all``: re-sealing
+    mismatches across a corpus would bless tamper everywhere it is found.
     """
-    from engine.results import ManifestError, ensure_sealed
+    from engine.results import ManifestError, ensure_sealed, seal_corpus
 
     _logs_to_stderr()
+    if all_runs:
+        if replace:
+            _results_failed(
+                "replace-not-allowed",
+                "--replace cannot be used with --all: re-sealing a mismatch across a "
+                "whole corpus would bless tamper wherever it is found. Seal the one "
+                "run deliberately, then re-run --all.",
+                as_json,
+                RESULTS_EXIT_FAILURE,
+            )
+            return
+        try:
+            report = seal_corpus(run)
+        except ManifestError as exc:
+            _results_failed(exc.reason, exc.message, as_json, RESULTS_EXIT_BROKEN)
+            return
+        if as_json:
+            click.echo(json.dumps(report, indent=2, default=str))
+        else:
+            counts = report["counts"]
+            console.print(
+                Panel(
+                    f"[bold orange_red1]HATCHERY[/bold orange_red1] — Seal corpus\n"
+                    f"Root:    [cyan]{report['results_root']}[/cyan]\n"
+                    f"Sealed:  {counts['sealed']} · already {counts['already']} · "
+                    f"refused {counts['refused']} · ignored {counts['ignored']}",
+                    title="Seal --all",
+                )
+            )
+            for entry in report["sealed"]:
+                console.print(
+                    f"  [green]sealed[/green] [cyan]{entry['run_id']}[/cyan] "
+                    f"(manifest {entry['manifest_sha256']})"
+                )
+            for entry in report["already"]:
+                console.print(
+                    f"  [dim]already[/dim] [cyan]{entry['run_id']}[/cyan] "
+                    f"(manifest {entry['manifest_sha256']})"
+                )
+            for entry in report["refused"]:
+                console.print(
+                    f"  [red]refused[/red] [cyan]{entry['run_id']}[/cyan]: "
+                    f"{entry['reason']}"
+                    + (
+                        f" ({entry['classification']} at {entry['break_path']})"
+                        if entry.get("classification")
+                        else ""
+                    )
+                    + f" — {entry['message']}"
+                )
+            for entry in report["ignored"]:
+                console.print(
+                    f"  [dim]ignored[/dim] {entry['name']} ({entry['reason']})"
+                )
+            console.print(
+                "  Record each manifest sha256 when you deliver the run; sealing a "
+                "nested unit never changes its parent's hash."
+            )
+        if report["refused"]:
+            raise SystemExit(RESULTS_EXIT_FAILURE)
+        raise SystemExit(RESULTS_EXIT_OK)
     try:
         report = ensure_sealed(run, replace=replace)
     except ManifestError as exc:
@@ -2768,6 +2894,11 @@ def results_prune(
             console.print(f"  [red]resumed[/red] {resumed}")
         for refused in report.get("refused") or []:
             console.print(f"  [red]refused[/red] {refused['run_id']}: {refused['message']}")
+        if report.get("blocked"):
+            console.print(
+                "  [bold red]Plan blocked — nothing will be deleted.[/bold red] "
+                "Seal the corpus first: hatchery results seal <results-root> --all"
+            )
         for error in report.get("errors") or []:
             console.print(f"  [red]error[/red] {error}")
         console.print(
@@ -2832,11 +2963,23 @@ def results_status(
         + (", ".join(report["would_remove"]) if report["would_remove"] else "nothing")
         + f" ({report['would_free_bytes']} bytes, keep newest {report['policy']['keep_last']})"
     )
+    if report.get("unsealed_runs") or report.get("unsealed_nested"):
+        console.print(
+            f"  Unsealed: [yellow]{report['unsealed_runs']}[/yellow] run(s), "
+            f"[yellow]{report['unsealed_nested']}[/yellow] nested unit(s) — "
+            "a prune --apply would be refused until they are sealed"
+        )
     for stray in report.get("strays") or []:
         console.print(f"  [yellow]stray[/yellow] {stray['name']} ({stray['bytes']} bytes)")
     for refused in report.get("refused") or []:
         console.print(
             f"  [red]{refused['reason']}[/red] {refused['run_id']}: {refused['message']}"
+        )
+    if report.get("blocked"):
+        console.print(
+            "  [bold red]A prune --apply would refuse the whole plan and delete "
+            "nothing.[/bold red] Seal the corpus first: "
+            "hatchery results seal <results-root> --all"
         )
     if report.get("ignored"):
         console.print(f"  [dim]ignored (not runs): {', '.join(report['ignored'])}[/dim]")
