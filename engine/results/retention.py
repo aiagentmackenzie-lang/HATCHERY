@@ -329,6 +329,7 @@ class RunRecord:
     bytes: int = 0
     files: int = 0
     nested_runs: int = 0
+    nested_unsealed: int = 0
     sealed_at: Optional[str] = None
     sealed_epoch: Optional[float] = None
     stage: Optional[str] = None
@@ -345,6 +346,7 @@ class RunRecord:
             "bytes": self.bytes,
             "files": self.files,
             "nested_runs": self.nested_runs,
+            "nested_unsealed": self.nested_unsealed,
             "sealed_at": self.sealed_at,
             "stage": self.stage,
             "state": self.state,
@@ -370,6 +372,11 @@ def read_run(path: Path, *, now: Optional[float] = None) -> RunRecord:
     record.state = report["state"]
     record.classification = report["classification"]
     record.break_path = report["path"]
+    record.nested_unsealed = sum(
+        1
+        for nested in report.get("nested_runs") or []
+        if nested.get("state") == "unsealed"
+    )
     record.sealed_at = report["sealed_at"]
     record.stage = report["stage"]
     record.task_id = report["task_id"]
@@ -466,6 +473,22 @@ def plan_prune(
                     "reason": "no-manifest",
                     "message": "no manifest.json; the run cannot be verified, so it "
                     "is never deleted. Seal it first: hatchery results seal <run>",
+                }
+            )
+        elif run.state == "broken" and run.classification == "nested-unsealed":
+            # The parent's own files match, but it ships a nested unit with no
+            # manifest. Deleting the run would delete evidence nobody could
+            # verify, which D33 forbids in those words.
+            decision.update(reason="nested-unsealed")
+            refused.append(
+                {
+                    "run_id": run.run_id,
+                    "reason": "nested-unsealed",
+                    "classification": "nested-unsealed",
+                    "path": run.break_path,
+                    "message": run.message
+                    or "a nested replay unit has no manifest; seal the corpus "
+                    "with `hatchery results seal <results-root> --all` first",
                 }
             )
         elif run.state != "intact":
@@ -762,6 +785,8 @@ def status_report(
         **plan,
         "oldest": None if oldest is None else _anchor_view(oldest),
         "newest": None if newest is None else _anchor_view(newest),
+        "unsealed_runs": sum(1 for run in runs if run.state == "unsealed"),
+        "unsealed_nested": sum(run.nested_unsealed for run in runs),
         "prune_log": read_prune_log(Path(root).expanduser()),
         "growth": growth_report(
             run_count=len(runs), total_bytes=sum(run.bytes for run in runs)

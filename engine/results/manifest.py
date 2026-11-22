@@ -48,6 +48,8 @@ FORMAT = "hatchery.result-manifest"
 MANIFEST_FILENAME = "manifest.json"
 MANIFEST_VERSION = 1
 MANIFEST_TEMP_PREFIX = ".manifest.tmp-"
+#: The retention rename marker (D33). A stray is never a candidate for sealing.
+DELETING_PREFIX = ".deleting-"
 ANALYSIS_REL = "bundle/analysis.json"
 
 #: The stages that call the one manifest writer. ``seal`` is the operator's
@@ -74,6 +76,10 @@ CLASSIFICATIONS = frozenset(
         "manifest-version",
         "unsealed",
         "replaced",
+        # A run directory whose own files match but which contains a nested unit
+        # that has no manifest at all. The parent's conclusion includes every unit
+        # it ships (D34), so this is a break rather than a note.
+        "nested-unsealed",
     }
 )
 
@@ -665,15 +671,22 @@ def _verify_nested(run_root: Path) -> list[dict[str, Any]]:
         if not is_nested_run(child):
             continue
         report = verify_run(child, _depth=1)
+        if report["state"] == "unsealed":
+            # A nested unit with no manifest is its own classification: the
+            # parent ships evidence HATCHERY cannot verify, which is not a note
+            # about the child but a fact about the whole directory (D34).
+            classification = "nested-unsealed"
+            path: Optional[str] = child.name
+        else:
+            classification = report["classification"]
+            path = f"{child.name}/{report['path']}" if report["path"] else None
         nested.append(
             {
                 "run_id": child.name,
                 "ok": report["ok"],
                 "state": report["state"],
-                "classification": report["classification"],
-                "path": (
-                    f"{child.name}/{report['path']}" if report["path"] else None
-                ),
+                "classification": classification,
+                "path": path,
                 "manifest_sha256": report["manifest_sha256"],
                 "stage": report["stage"],
             }
@@ -859,13 +872,30 @@ def verify_run(
         nested = _verify_nested(run_root)
         report["nested_runs"] = nested
         broken = [item for item in nested if item["state"] == "broken"]
+        unsealed = [item for item in nested if item["state"] == "unsealed"]
         if broken:
+            # A nested break keeps its own classification and its prefixed path.
             report.update(
                 ok=False,
                 state="broken",
                 classification=broken[0]["classification"],
                 path=broken[0]["path"],
                 error=f"a nested replay run is {broken[0]['classification']}",
+            )
+        elif unsealed:
+            # `ok: true` on a directory that demonstrably contains evidence
+            # HATCHERY cannot verify is precisely the claim D30→D33 forbid.
+            first = unsealed[0]
+            report.update(
+                ok=False,
+                state="broken",
+                classification="nested-unsealed",
+                path=first["run_id"],
+                error=(
+                    f"nested replay {first['run_id']} has no manifest, so the run "
+                    "directory ships evidence that cannot be verified. Seal it "
+                    "with `hatchery results seal <results-root> --all`."
+                ),
             )
     return report
 
@@ -892,7 +922,11 @@ def ensure_sealed(
     manifest_path = run_root / MANIFEST_FILENAME
     previous: Optional[str] = None
     if manifest_path.exists() or manifest_path.is_symlink():
-        existing = verify_run(run_root)
+        # The parent's own bytes, not the nested units: a per-run seal is
+        # idempotent even while a nested unit is still unsealed (D34). "Already
+        # sealed" describes this unit, and `seal --all` is what closes the
+        # directory as a whole.
+        existing = verify_run(run_root, _depth=1)
         if existing["ok"]:
             return {
                 "run_id": run_root.name,
@@ -922,6 +956,159 @@ def ensure_sealed(
     return result
 
 
+# ---------------------------------------------------------------------------
+# The corpus seal (D34)
+# ---------------------------------------------------------------------------
+
+
+def _is_run_directory(path: Path) -> bool:
+    """A directory is a run if it holds a bundle or a manifest."""
+    return (
+        (path / "bundle").is_dir()
+        or (path / MANIFEST_FILENAME).is_file()
+        or (path / ANALYSIS_REL).is_file()
+    )
+
+
+def _nested_children(run_root: Path) -> list[Path]:
+    try:
+        return sorted(
+            (
+                child
+                for child in run_root.iterdir()
+                if child.is_dir() and not child.is_symlink() and is_nested_run(child)
+            ),
+            key=lambda child: child.name,
+        )
+    except OSError:  # pragma: no cover - an unreadable run directory
+        return []
+
+
+def _refusal(path: Path, exc: ManifestError, *, nested: bool) -> dict[str, Any]:
+    """One refused entry with a reason, a classification and a path."""
+    classification: Optional[str] = None
+    break_path: Optional[str] = exc.path
+    if exc.reason in CLASSIFICATIONS:
+        classification = exc.reason
+    elif exc.reason == "manifest-mismatch":
+        # The refusal is about a real break this run already had; name it rather
+        # than only saying that re-sealing was refused.
+        current = verify_run(path, _depth=1)
+        classification = current["classification"]
+        break_path = current["path"]
+    return {
+        "run_id": path.name,
+        "path": str(path),
+        "reason": exc.reason,
+        "classification": classification,
+        "break_path": break_path,
+        "message": exc.message,
+        "nested": nested,
+    }
+
+
+def seal_corpus(root: str | os.PathLike[str]) -> dict[str, Any]:
+    """``hatchery results seal <results-root> --all``: seal every run under a root.
+
+    Depth-first and idempotent: a nested replay unit is sealed before its parent
+    (sealing it never changes the parent's manifest bytes, so a parent anchor
+    recorded at delivery stays valid), a run whose own manifest already matches
+    is reported ``already`` and not rewritten, and one unverifiable run is
+    refused without blessing it. A hidden entry, a ``.deleting-*`` stray, a
+    symlink and a directory that is not a run are reported as ignored, never
+    followed or sealed.
+
+    ``--replace`` is deliberately not accepted here: re-sealing a mismatch across
+    a whole corpus would bless an out-of-band edit everywhere it is found.
+    """
+    root_path = Path(root).expanduser()
+    if not root_path.exists():
+        raise ManifestError("not-found", f"{root_path} does not exist", str(root_path))
+    if not root_path.is_dir():
+        raise ManifestError(
+            "not-a-run", f"{root_path} is not a directory", str(root_path)
+        )
+
+    report: dict[str, Any] = {
+        "results_root": str(root_path),
+        "sealed": [],
+        "already": [],
+        "refused": [],
+        "ignored": [],
+    }
+
+    def seal_tree(run_root: Path, *, nested: bool) -> None:
+        for child in _nested_children(run_root):
+            seal_tree(child, nested=True)
+        try:
+            result = ensure_sealed(run_root)
+        except ManifestError as exc:
+            report["refused"].append(_refusal(run_root, exc, nested=nested))
+            return
+        entry = {
+            "run_id": run_root.name,
+            "path": str(run_root),
+            "manifest_sha256": result["manifest_sha256"],
+            "stage": result["stage"],
+            "sealed_at": result["sealed_at"],
+            "file_count": result["file_count"],
+            "total_bytes": result["total_bytes"],
+            "nested": nested,
+        }
+        (report["sealed"] if result.get("written") else report["already"]).append(
+            entry
+        )
+
+    # `--all <run>` on a single run directory is the same operation, not a
+    # special case: the depth-first walk and the refusals are identical.
+    if _is_run_directory(root_path):
+        seal_tree(root_path, nested=False)
+    else:
+        for entry in sorted(root_path.iterdir(), key=lambda item: item.name):
+            if entry.is_symlink():
+                report["ignored"].append(
+                    {"name": entry.name, "path": str(entry), "reason": "symlink"}
+                )
+                continue
+            if entry.name.startswith("."):
+                report["ignored"].append(
+                    {"name": entry.name, "path": str(entry), "reason": "hidden"}
+                )
+                continue
+            if not entry.is_dir():
+                report["ignored"].append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "reason": "not-a-directory",
+                    }
+                )
+                continue
+            if DELETING_PREFIX in entry.name:
+                report["ignored"].append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "reason": "deleting-stray",
+                    }
+                )
+                continue
+            if not _is_run_directory(entry):
+                report["ignored"].append(
+                    {"name": entry.name, "path": str(entry), "reason": "not-a-run"}
+                )
+                continue
+            seal_tree(entry, nested=False)
+
+    report["counts"] = {
+        "sealed": len(report["sealed"]),
+        "already": len(report["already"]),
+        "refused": len(report["refused"]),
+        "ignored": len(report["ignored"]),
+    }
+    return report
+
+
 def manifest_state(path: str | os.PathLike[str]) -> dict[str, Any]:
     """The seal state of a run, as the compact record a replay carries (D5).
 
@@ -949,6 +1136,7 @@ def manifest_state(path: str | os.PathLike[str]) -> dict[str, Any]:
 __all__ = [
     "ANALYSIS_REL",
     "CLASSIFICATIONS",
+    "DELETING_PREFIX",
     "FORMAT",
     "MANIFEST_FILENAME",
     "MANIFEST_TEMP_PREFIX",
@@ -966,6 +1154,7 @@ __all__ = [
     "manifest_state",
     "resolve_run_root",
     "safe_relative_path",
+    "seal_corpus",
     "seal_run",
     "serialize",
     "verify_run",

@@ -17,7 +17,9 @@ second source of truth for the analysis.
 from __future__ import annotations
 
 from engine.results.manifest import (
+    ANALYSIS_REL,
     CLASSIFICATIONS,
+    DELETING_PREFIX,
     FORMAT,
     MANIFEST_FILENAME,
     MANIFEST_VERSION,
@@ -34,6 +36,7 @@ from engine.results.manifest import (
     manifest_state,
     resolve_run_root,
     safe_relative_path,
+    seal_corpus,
     seal_run,
     serialize,
     verify_run,
@@ -66,11 +69,13 @@ from engine.results.retention import (
 )
 
 __all__ = [
+    "ANALYSIS_REL",
     "CLASSIFICATIONS",
     "DEFAULT_KEEP_LAST",
     "DEFAULT_WARN_BYTES",
     "DEFAULT_WARN_RUNS",
     "DELETING_MARKER",
+    "DELETING_PREFIX",
     "FORMAT",
     "KEEP_LAST_ENV",
     "MANIFEST_FILENAME",
@@ -105,6 +110,7 @@ __all__ = [
     "results_lock",
     "safe_relative_path",
     "scan_root",
+    "seal_corpus",
     "seal_run",
     "serialize",
     "status_report",
