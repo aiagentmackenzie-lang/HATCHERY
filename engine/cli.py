@@ -524,7 +524,13 @@ def submit(
     console.print(f"  Registry keys: [red]{len(strings.registry_keys)}[/red]")
     console.print(f"  Total strings: [dim]{len(strings.all_strings)}[/dim]")
 
-    # PE/ELF analysis
+    # PE/ELF analysis. The result objects are kept: the bundle is the source of
+    # truth (D4) and its ``static.pe``/``static.elf`` sections are what the API's
+    # pe_json/elf_json columns, the report and the cluster fingerprint read (D38).
+    # They were previously printed and thrown away, so the readers always found
+    # nothing. ``None`` in the bundle means "not applicable", never "we dropped it".
+    pe_result: Any = None
+    elf_result: Any = None
     if metadata.file_type == "PE":
         console.print("\n[bold]▸ PE Analysis[/bold]")
         pe_analyzer = PEAnalyzer()
@@ -822,7 +828,24 @@ def submit(
         "capa": capa_result.to_dict(),
         "packer": packer_result.to_dict(),
         "delivery": delivery_dict,
+        # Binary structure, when the sample is one of the two formats HATCHERY
+        # parses. ``is_valid_*`` is checked so a parse failure is not published
+        # as an empty-but-valid section; the error goes to ``bundle.errors``.
+        "pe": pe_result.to_dict() if (pe_result is not None and pe_result.is_valid_pe) else None,
+        "elf": elf_result.to_dict() if (elf_result is not None and elf_result.is_valid_elf) else None,
     }
+
+    binary_errors: list[str] = []
+    if metadata.file_type == "PE" and static_data["pe"] is None:
+        binary_errors.append(
+            "PE analysis produced no metadata: "
+            f"{getattr(pe_result, 'error', None) or 'analyzer did not run'}"
+        )
+    if metadata.file_type == "ELF" and static_data["elf"] is None:
+        binary_errors.append(
+            "ELF analysis produced no metadata: "
+            f"{getattr(elf_result, 'error', None) or 'analyzer did not run'}"
+        )
 
     ioc_report = extractor.extract(
         static_data=static_data, emulation_data=emulation_result_dict
@@ -908,7 +931,7 @@ def submit(
         events=events,
         emulation_events=emulation_events,
         limitations=limitations,
-        errors=[e for e in (sandbox_error, emulation_error) if e],
+        errors=[e for e in (sandbox_error, emulation_error, *binary_errors) if e],
     )
 
     # Local LLM triage (D22). Opt-in, because it costs a model call and needs

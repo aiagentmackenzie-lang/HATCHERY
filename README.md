@@ -65,7 +65,8 @@ Output lands in `results/<task_id>/`:
 results/<task_id>/
 ├── manifest.json        # D33: SHA-256 of every file below, written last
 ├── bundle/
-│   ├── analysis.json     # the whole analysis document, incl. limitations
+│   ├── analysis.json     # the whole analysis document (schema 1.1), incl. limitations
+│   │                     #   and static.pe / static.elf for parsed binaries
 │   └── events.jsonl      # one normalized behavioral event per line
 ├── sandbox/
 │   ├── strace/strace.log
@@ -95,7 +96,7 @@ Not aspirational. What is in the code today.
 
 | Capability | Status | Notes |
 |:--|:--:|:--|
-| Hash (MD5/SHA1/SHA256), string extraction, PE/ELF parsing | ✅ | PE structure + imports; ELF header/sections/symbols/dynamic/security (D36); ELF metadata is shown at submit, not yet carried in the bundle |
+| Hash (MD5/SHA1/SHA256), string extraction, PE/ELF parsing | ✅ | PE structure + imports; ELF header/sections/symbols/dynamic/security (D36); both are carried in the bundle as `static.pe`/`static.elf` (D38), rendered in `report.md` and persisted by the API |
 | YARA-X scanning | ✅ | Rust engine; YARA 4 is in maintenance mode upstream |
 | Rule lint gate (`hatchery rules lint`) | ✅ | naming + required metadata are CI errors, not warnings |
 | capa capability extraction | ✅ | static capa 9.x, plus `capa_dynamic` (below) over emulator memory snapshots |
@@ -125,7 +126,7 @@ Not aspirational. What is in the code today.
 | **Unpacking / config extraction** | ⚠️ | Windows PE config comes from emulation (above, D21). Delivery containers are unpacked statically (D19); 7z, RAR and CAB are detected and reported as unsupported |
 | **AI triage** | ⚠️ | `hatchery triage <run_dir>` / `submit --triage` runs a **local** Ollama model under a versioned prompt contract: JSON-schema-validated output, every claim must cite an evidence id that exists in the run, and a verdict left with no grounded finding is INCONCLUSIVE. Sample text is wrapped in an untrusted-data boundary (an anti-injection test is in CI). A remote endpoint or a `:cloud` model is refused unless `--allow-remote-model`; the run says so when it is. Advisory only — not ground truth |
 | **Candidate Sigma rules** | ⚠️ | generated drafts from observed behaviour; labelled as requiring review, never claimed validated |
-| **Campaign clustering** | ⚠️ | `hatchery cluster [path]` fingerprints each run from what the engine already recorded (import hash, imports, capa, YARA, ATT&CK, IOCs, emulated APIs, sections, classified strings) and groups similar runs by a weighted Jaccard score with a token simhash cross-check. Derived on demand — never a second producer. Lists the shared features that justify each group and **never names a family**: similarity is a lead, not attribution. 34 tests |
+| **Campaign clustering** | ⚠️ | `hatchery cluster [path]` fingerprints each run from what the engine already recorded (import hash, imports, capa, YARA, ATT&CK, IOCs, emulated APIs, sections, classified strings — the PE import/export features only became real in D38, when `static.pe` gained a producer) and groups similar runs by a weighted Jaccard score with a token simhash cross-check. Derived on demand — never a second producer. Lists the shared features that justify each group and **never names a family**: similarity is a lead, not attribution. 34 tests |
 | **MCP server** | ⚠️ | `hatchery mcp` exposes `submit_sample`, `list_runs`, `get_report`, `get_iocs`, `triage_run` and `cluster_runs` over newline-delimited JSON-RPC 2.0 on **stdio**, so an agent can call HATCHERY as a tool. Stdlib only, no SDK. Local stdio only — never expose it on a socket; the `triage_run` tool cannot be told to use a remote model |
 | **Deterministic replay** | ⚠️ | `hatchery replay <run_dir>` re-analyses the same sample under the settings the bundle recorded and classifies every signal. Deterministic static facts (hashes, file type, delivery format + child hashes, YARA rule set, capa capability set, ATT&CK id set, static IOC set) must be identical or the replay is a loud `static-mismatch`; dynamic observations (event counts, durations, IOC order, evasion score) are reported as drift and never failed on. A missing/changed sample, an unreproduced tier/collector, or a bundle missing a section is INCONCLUSIVE, never a silent pass. The old bundle is never mutated — see D26 |
 | **Durable job queue + workers** | ⚠️ | `hatchery submit --enqueue` writes a job to a stdlib-SQLite queue and `hatchery worker` executes it by running the existing `submit` pipeline (one producer per data path). Atomic claims (`BEGIN IMMEDIATE`) so two workers never run the same job, bounded `--concurrency`, a lease renewed while a job runs, and **fail-closed recovery**: an expired lease is requeued and, after `max_attempts`, failed with the reason — never left `running`. The bundle is the authority, so exit 0 without a bundle is a failure and `worker --once` exits non-zero if a job failed. The API enqueues instead of spawning and reflects queue state on read. Single host only — no broker or remote workers; see D27 |

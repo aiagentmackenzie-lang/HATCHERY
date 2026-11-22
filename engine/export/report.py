@@ -16,6 +16,34 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _hex(value: object) -> str:
+    """A stable ``0x`` rendering for an address from a possibly hand-edited doc."""
+    if isinstance(value, int):
+        return f"0x{value:x}"
+    if isinstance(value, str):
+        try:
+            return f"0x{int(value, 0):x}"
+        except ValueError:
+            return value
+    return "0x0" if value is None else str(value)
+
+
+def _section_list(sections: list) -> str:
+    """First sections of a PE/ELF as ``name (flags, size)``, bounded and safe."""
+    rendered: list[str] = []
+    for section in sections[:20]:
+        if not isinstance(section, dict):
+            continue
+        name = str(section.get("name") or "<unnamed>")
+        size = section.get("raw_size", section.get("size", 0))
+        flags = str(section.get("flags") or "")
+        suffix = f", {flags}" if flags else ""
+        rendered.append(f"`{name}` ({size} B{suffix})")
+    if len(sections) > 20:
+        rendered.append(f"+{len(sections) - 20} more")
+    return ", ".join(rendered) or "none"
+
+
 class ReportGenerator:
     """Generate analysis reports from HATCHERY results.
 
@@ -88,6 +116,11 @@ class ReportGenerator:
         if static_results:
             lines.append("## Static Analysis")
             lines.append("")
+
+            # Binary structure first: the format is the most basic fact about a
+            # sample, and D38 made it reach the bundle. Absent sections are
+            # omitted; ``None`` means the sample is not that format.
+            self._render_binary_sections(lines, static_results)
 
             # YARA matches
             yara = static_results.get("yara", {})
@@ -402,6 +435,94 @@ class ReportGenerator:
         lines.append(footer)
 
         return "\n".join(lines)
+
+    def _render_binary_sections(self, lines: list[str], static_results: dict) -> None:
+        """PE/ELF structure from the bundle's ``static.pe``/``static.elf`` (D38).
+
+        These sections are engine-produced facts, not analysis opinion. The
+        renderer stays bounded (first 20 sections, first 10 imports) and reads
+        defensively: a hand-edited or truncated ``analysis.json`` must render
+        what is there without raising.
+        """
+        pe = static_results.get("pe")
+        if isinstance(pe, dict) and pe.get("is_valid_pe"):
+            lines.append("### PE Structure")
+            lines.append("")
+            machine = str(pe.get("machine_type") or "unknown")
+            if pe.get("is_64bit"):
+                machine += ", 64-bit"
+            lines.append(f"- **Machine:** {machine}")
+            if pe.get("subsystem"):
+                lines.append(f"- **Subsystem:** {pe['subsystem']}")
+            if pe.get("compile_timestamp"):
+                lines.append(f"- **Compiled:** {pe['compile_timestamp']}")
+            lines.append(f"- **Entry point:** `{_hex(pe.get('entry_point'))}`")
+            sections = pe.get("sections") or []
+            lines.append(f"- **Sections ({len(sections)}):** " + _section_list(sections))
+            imports = pe.get("imports") or []
+            if imports:
+                rendered = [
+                    f"`{row.get('dll', '?')}!{row.get('function', '?')}`"
+                    for row in imports[:10]
+                    if isinstance(row, dict)
+                ]
+                more = f" (+{len(imports) - 10} more)" if len(imports) > 10 else ""
+                lines.append(f"- **Imports ({len(imports)}):** " + ", ".join(rendered) + more)
+            else:
+                lines.append("- **Imports:** none")
+            exports = pe.get("exports") or []
+            lines.append(f"- **Exports:** {len(exports)}")
+            indicators = pe.get("suspicious_indicators") or []
+            if indicators:
+                lines.append("- **Suspicious indicators:**")
+                for indicator in indicators[:10]:
+                    lines.append(f"  - {indicator}")
+            lines.append("")
+
+        elf = static_results.get("elf")
+        if isinstance(elf, dict) and elf.get("is_valid_elf"):
+            lines.append("### ELF Structure")
+            lines.append("")
+            architecture = str(elf.get("arch") or "unknown")
+            if elf.get("bits"):
+                architecture += f", {elf['bits']}-bit"
+            if elf.get("endian"):
+                architecture += f", {elf['endian']}"
+            lines.append(f"- **Architecture:** {architecture}")
+            if elf.get("elf_type"):
+                lines.append(f"- **Type:** {elf['elf_type']}")
+            lines.append(f"- **Entry point:** `{_hex(elf.get('entry_point'))}`")
+            sections = elf.get("sections") or []
+            lines.append(f"- **Sections ({len(sections)}):** " + _section_list(sections))
+            libraries = elf.get("dynamic_libraries") or []
+            lines.append(
+                "- **Dynamic libraries:** " + (", ".join(map(str, libraries[:10])) or "none")
+            )
+            exported = elf.get("exported_symbols") or []
+            imported = elf.get("imported_symbols") or []
+            lines.append(f"- **Symbols:** {len(exported)} exported, {len(imported)} imported")
+            security = elf.get("security") or {}
+            if isinstance(security, dict):
+                lines.append(
+                    "- **Hardening:** "
+                    + ", ".join(
+                        f"{label} {'on' if security.get(key) else 'off'}"
+                        for key, label in (
+                            ("has_nx", "NX"),
+                            ("is_pie", "PIE"),
+                            ("has_relro", "RELRO"),
+                            ("has_full_relro", "full RELRO"),
+                            ("has_canary", "canary"),
+                            ("is_stripped", "stripped"),
+                        )
+                    )
+                )
+            indicators = elf.get("suspicious_indicators") or []
+            if indicators:
+                lines.append("- **Suspicious indicators:**")
+                for indicator in indicators[:10]:
+                    lines.append(f"  - {indicator}")
+            lines.append("")
 
     def _render_triage(self, triage: dict) -> list[str]:
         """Render the advisory LLM triage section, grounded and clearly labelled.

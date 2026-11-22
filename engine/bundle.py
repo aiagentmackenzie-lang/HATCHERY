@@ -33,7 +33,7 @@ from engine.sandbox.isolation import IsolationTier, TIER_GUEST_TELLS, TIER_PROFI
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"  # 1.1 adds static.pe/static.elf (D38); additive, readers of 1.0 still work
 ANALYSIS_FILENAME = "analysis.json"
 EVENTS_FILENAME = "events.jsonl"
 # Emulated events are a separate stream: a run of an emulator is not a run of

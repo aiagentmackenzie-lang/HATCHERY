@@ -138,6 +138,36 @@ else
   tail -20 "$CLI_OUT"
 fi
 
+# D38: the binary structure the analyzers already produced now reaches the
+# bundle (and therefore pe_json/elf_json, the report route and the cluster
+# fingerprint). Before this, static.pe/static.elf never existed and every
+# reader found nothing.
+BIN_RUN="$WORK/bin-meta"
+if HATCHERY_SAMPLE_STORE="$WORK/bin-samples" HATCHERY_RESULTS_ROOT="$WORK/results" \
+    HATCHERY_QUEUE_DB="$WORK/bin-queue.db" \
+    "$PY" -m engine.cli submit "$ROOT/tests/fixtures/acceptance/benign/benign_pe.exe" \
+      --no-sandbox -o "$BIN_RUN" >"$WORK/bin-meta.log" 2>&1; then
+  if "$PY" - "$BIN_RUN/bundle/analysis.json" "$BIN_RUN/report.md" <<'CHECKBIN'
+import json, sys
+analysis = json.load(open(sys.argv[1]))
+pe = analysis["static"]["pe"]
+assert analysis["schema_version"] == "1.1", analysis["schema_version"]
+assert pe and pe["is_valid_pe"] is True, pe
+assert pe["machine_type"] == "x64 (AMD64)", pe["machine_type"]
+assert analysis["static"]["elf"] is None, "a PE run must not claim ELF metadata"
+report = open(sys.argv[2]).read()
+assert "### PE Structure" in report, "the report must render the structure it carries"
+assert "x64 (AMD64)" in report
+CHECKBIN
+  then
+    pass "bundle/binary-metadata" "PE structure in static.pe, rendered in report.md"
+  else
+    fail "bundle/binary-metadata" "static.pe or the rendered report is missing the structure"
+  fi
+else
+  fail "bundle/binary-metadata" "submission of the PE fixture failed; see $WORK/bin-meta.log"
+fi
+
 # The sample reached the store encrypted, content-addressed, and with no
 # plaintext left anywhere in the store directory (D28).
 STORE_STATUS="$WORK/store-status.json"

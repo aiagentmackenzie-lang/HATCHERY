@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from _results_builder import base_env, cli_json, run_cli, submit
+from engine.bundle import SCHEMA_VERSION
 from engine.mcp.tools import build_tools
 
 
@@ -69,7 +70,7 @@ def test_the_cli_report_and_stix_exports_are_unchanged(tmp_path: Path) -> None:
     analysis = json.loads((run_dir / "bundle" / "analysis.json").read_text())
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert analysis["task_id"] and analysis["task_id"] == manifest["task_id"]
-    assert analysis["schema_version"] == "1.0"
+    assert analysis["schema_version"] == SCHEMA_VERSION
     stix = json.loads((run_dir / "stix_bundle.json").read_text())
     assert stix["type"] == "bundle"
     assert set(analysis["exports"]) >= {"stix", "navigator", "ocsf", "sigma"}
