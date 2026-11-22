@@ -2,9 +2,9 @@
 
 This is the operator's guide to the Phase 4a sample store: what it guarantees,
 what it deliberately does not, and the clean-copy evidence behind those claims.
-The decision record is [`docs/DECISIONS.md`](DECISIONS.md) D28; the baseline
-counts and the three known detector defects are in
-[`docs/BASELINE.md`](BASELINE.md). Key rotation, retired keys and
+The decision record is [`docs/DECISIONS.md`](DECISIONS.md) D28; the current
+baseline counts (and the fact that the fixture scorecard now records no known
+defects, D36/D37) are in [`docs/BASELINE.md`](BASELINE.md). Key rotation, retired keys and
 backup/restore are Phase 4b (D29) and have their own operator guide and
 clean-copy transcript in [`docs/BACKUP.md`](BACKUP.md); this page describes the
 store's storage and retention guarantees, which D29 does not replace.

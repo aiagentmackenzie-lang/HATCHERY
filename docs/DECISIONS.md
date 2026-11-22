@@ -1672,6 +1672,86 @@ leaves one `0600` duplicate of the key beside the real one until `store
 reconcile` — the same exposure as the key itself, stated rather than hidden; a
 network filesystem where `link` is not atomic was not exercised.
 
+## D36 — ELF metadata on pyelftools' two header shapes (2026-11-22)
+
+**Decision.** Normalise the ELF header enums before they are used or printed.
+pyelftools before 0.33 returns integers (`e_machine == 62`); 0.33 and later return
+the enum *name* (`"EM_X86_64"`). `_enum_number()` resolves either through the
+library's own name→integer tables, and `_enum_label()` maps the number through
+HATCHERY's tables, falling back to the raw name rather than to `:x`. PIE is
+decided from the normalised type (`3`), not from a string comparison. An unknown
+value is reported as a number, never formatted to death.
+
+**Why.** `ELF_MACHINES.get(elf.header.e_machine, f"0x{...:04x}")` evaluates its
+fallback **eagerly**, so every ELF raised `Unknown format code 'x' for object of
+type 'str'` before any metadata was reported: `hatchery submit` printed nothing
+for an ELF and the fixture test pinned the failure with a strict `xfail`. The
+same string/integer split made `is_pie = e_type == 3` false for every `ET_DYN`
+binary — a second, quieter defect in the same three lines that the fixture
+(an `ET_EXEC`) could not show.
+
+**Evidence.** `tests/fixtures/acceptance/benign/hello.elf` now reports
+`x86-64 / 64-bit / EXEC (executable) / entry 0x401000 / 3 sections`, PIE false and
+stripped true; the fixture manifest and the generator carry those expectations
+and the `elf-enum` known defect is gone. `tests/test_elf_analyzer.py` pins both
+header representations, the unknown-value fallback, PIE from the normalised
+type, and a non-ELF input as a named error rather than a traceback. Scorecard:
+**16 passed, 0 failed, 0 known defects** (was 13/0/3).
+
+**Not done, deliberately.** `analysis.json` still carries **no ELF section**: the
+analyzer is used by the submit display and the fixture scorecard, not by the one
+analysis producer (D4). Putting its output in the bundle is a producer/schema
+change, not a parser fix, and is left as its own slice. Only one ELF64 x86-64
+`ET_EXEC` fixture is exercised end to end — the enum shim is unit-tested for the
+other form, but no AArch64/RISC-V fixture exists. `entry_point` is not validated
+against any section, and no dynamic-linking fixture was available (the fixture
+has no `.dynamic`).
+
+## D37 — An unreadable capture is an error, and a clean PE scores clean (2026-11-22)
+
+**Decision.** Three calibrations, one slice:
+
+1. `NetworkCapture.analyze_pcap` chooses tshark when it is installed and treats a
+   non-zero exit from the first probe as "this file cannot be read": one named
+   error (`PCAP could not be read: …`) is recorded and analysis stops, instead of
+   four empty `stdout` reads being summarised as an empty capture. The scapy
+   fallback is for a host with **no** tshark, not for a capture tshark refused;
+   it records its own errors when it fails.
+2. `HATCHERY_Suspicious_HexStrings` ignores a PE's own `MZ` header (and a ZIP's
+   own local-file header), while an embedded header inside any other file still
+   matches. The rule exists to find a PE inside a container, not a file's own
+   magic.
+3. `HATCHERY_Packing_Generic_HighEntropy` checks the entropy its name promises
+   (`math.entropy(0, filesize) >= 7.2`) in addition to the two-or-fewer-section
+   shape.
+
+**Why.** An unreadable PCAP produced `total_packets == 0, errors == []` —
+indistinguishable from a valid empty capture, so a failed parse could be read as
+"no traffic". That is the same "claims more than it checks" shape D30–D34
+exist to prevent. The hex-string rule matched **every** PE on its own two header
+bytes. The packing rule asserted high entropy in its name and never measured it,
+so a 1 KiB hand-built PE with 0.85 bits/byte and one section was reported as
+likely packed. A clean file must be able to score clean, or the low-severity
+noise teaches operators to ignore the rule.
+
+**Evidence.** `replay/pcap-malformed` is now `PASS` with the tshark reason;
+`static/benign-pe-yara` is `PASS` with `0 matches with 5 rule files loaded`; the
+embedded-header positive control in `tests/test_acceptance_fixtures.py` still
+matches `HATCHERY_Suspicious_HexStrings`; EICAR still matches exactly one rule;
+`hatchery rules lint` passes with its one accepted warning. Scorecard:
+**16 passed, 0 failed, 0 known defects, 0 changed**.
+
+**Not done, deliberately.** The 7.2 entropy threshold is a judgement with no
+packed corpus in this repository: a packed sample whose whole-file entropy is
+pulled down by headers (very small files) would not match, and a
+high-entropy-but-unpacked file would. The rule stays `severity = "low"`; the
+packer detector remains the primary signal. An empty-but-valid capture and an
+unreadable one are now distinguishable through `errors`, but no `capture_state`
+field carries that distinction into the bundle summary — every consumer must read
+`errors`. The scapy fallback was not exercised on this host (tshark is present),
+and no capture larger than one packet or a real malformed-yet-partially-readable
+file was tested.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.

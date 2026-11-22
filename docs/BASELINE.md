@@ -1,8 +1,9 @@
 # Baseline verification
 
-Verified **22 November 2026** on top of revision `2d60c69` plus D35 (the first store key
-is published atomically; Phase 4f — nested-unit verification, corpus seal, client
-verifier and the store-busy fix — is D34). The
+Verified **22 November 2026** on top of revision `cd70b55` (D36 ELF metadata and
+D37 PCAP error path + rule calibration, plus D35 atomic key publication on `2d60c69`).
+The D34 baseline was `2d60c69` (Phase 4f: nested-unit verification, corpus seal,
+client verifier and the store-busy fix). The
 D33 baseline was `e64ca71`. The D28
 store baseline was `be9386d`, whose clean-copy transcript is in
 [`RETENTION.md`](RETENTION.md#captured-transcript); the D29 transcript is in
@@ -32,13 +33,18 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
-  dashboard, and passes the full Python suite: **880 passed, 17 skipped,
-  3 xfailed** (was 875 at D34; 5 tests cover atomic key publication: a loser of
-the first-key race uses the winner's key, an existing key is never overwritten
-and leaves no temporary, the final name is linked only after the bytes are
-complete and `0600`, a reader waits out an older create-then-fill writer, and a
-permanently empty key file is a named `key-invalid`). `ruff` is clean and
-`mypy engine/` reports no issues in **86 source files**.
+  dashboard, and passes the full Python suite: **889 passed, 17 skipped,
+  0 xfailed** (was 880/17/3 at D35). The three formerly pinned defects now pass
+  (`test_benign_pe_has_no_unsupported_matches`, `test_elf_analyzer_parses_valid_elf`,
+  `test_malformed_capture_is_reported`), and 8 tests were added: 5 pin atomic key
+  publication (D35: the race loser uses the winner's key, an existing key is never
+  overwritten and leaves no temporary, the final name is linked only after the bytes
+  are complete and `0600`, a reader waits out an older create-then-fill writer, a
+  permanently empty key file is a named `key-invalid`), 5 pin the ELF parser (D36: both
+  pyelftools header forms, the unknown-value fallback, PIE from the normalised type,
+  the real fixture, a non-ELF error), and 1 pins the calibration positive control
+  (D37: an embedded `MZ`/`PK` header in a non-PE file still matches). `ruff` is clean
+  and `mypy engine/` reports no issues in **86 source files**.
 - **The server suite is 97 node tests, 0 failing** (was 84 at `511a978`; 35 cover
   token lifecycle, CORS and the D30 audit chain, 15 cover D31 keying, key sources,
   anchoring and the file posture, and 13 cover D32 compaction: cross-segment
@@ -51,10 +57,12 @@ permanently empty key file is a named `key-invalid`). `ruff` is clean and
   from byte templates, no compiler or download) with a manifest of SHA-256 and
   expected outcomes. `--check` fails if either the bytes or the expectations
   drift.
-- The fixture scorecard is **13 passed, 0 failed, 3 known defects**. It
+- The fixture scorecard is **16 passed, 0 failed, 0 known defects**. It
   distinguishes a genuine match (EICAR), a completed scan with zero findings
-  (negative text with rules loaded), and a detector that could not run (capa
-  unavailable, with its exit code and stderr preserved).
+  (negative text with rules loaded), a clean result from a valid minimal PE (D37),
+  real ELF metadata (D36), an unreadable capture reported as an error with the
+  tshark reason (D37), and a detector that could not run (capa unavailable, with
+  its reason preserved).
 - `scripts/verify_setup.sh` exercises the normal entry points against temporary
   state: **32 passed, 0 failed** (was 19/0 at D28; 21 at D29/D30; 24 at D31, which added
   `api/db-permissions`, `api/audit-chain-keyed` and `api/audit-key-announced`; 26 at D32,
@@ -112,29 +120,30 @@ permanently empty key file is a named `key-invalid`). `ruff` is clean and
 |---|---|
 | `samples/eicar.com` | `HATCHERY_EICAR_TestFile` |
 | `tests/fixtures/acceptance/benign/negative.txt` | 0 matches with rules loaded |
-| `tests/fixtures/acceptance/benign/benign_pe.exe` | valid PE32+ x64; two recorded rule matches (see defects) |
-| `tests/fixtures/acceptance/benign/hello.elf` | independently valid ELF64 x86-64 `ET_EXEC` (see defects) |
+| `tests/fixtures/acceptance/benign/benign_pe.exe` | valid PE32+ x64; **0 rule matches** with rules loaded (D37) |
+| `tests/fixtures/acceptance/benign/hello.elf` | independently valid ELF64 x86-64 `ET_EXEC`; analyzer reports `x86-64 / 64-bit / EXEC (executable)` (D36) |
 | `replay/trace_timestamp.log`, `trace_pid_first.log` | 9 events, process tree `1000 -> 1001`, 1 connection each |
 | `replay/file_events.log` | 5 events: 1 created, 1 modified, 1 deleted |
 | `replay/one_packet.pcap` | 1 packet, 1 connection (`tshark`) |
 | `replay/empty.pcap` | 0 packets, no error |
-| `replay/malformed.pcap` | recorded defect: reported as empty |
+| `replay/malformed.pcap` | unreadable: 0 packets **and** an error naming the tshark reason (D37) |
 
 The manifest records the SHA-256 of each input; the generator reproduces them
 byte-identically.
 
 ## Known defects on this baseline
 
-| Defect | Evidence | Effect |
-|---|---|---|
-| Rule calibration | A benign one-section PE matches `HATCHERY_Suspicious_HexStrings` (its own MZ header) and `HATCHERY_Packing_Generic_HighEntropy` | Both are declared low severity, but a clean PE cannot score clean |
-| ELF parser | `ELFAnalyzer` raises `Unknown format code 'x' for object of type 'str'` on pyelftools 0.33 enums | Valid ELF input gets no metadata; the fixture is independently validated so the parse failure is attributable |
-| PCAP backend | An unreadable capture yields 0 packets and an empty `errors` list | Indistinguishable from a valid empty capture |
+**None.** The three defects recorded at D34 are closed:
 
-Each is pinned by a strict `xfail` in `tests/test_acceptance_fixtures.py` and a
-`KNOWN-DEFECT` row in the scorecard. Fixing one makes the test fail until the
-manifest, expectation and this document are updated — the baseline cannot drift
-silently.
+| Defect (closed) | Fixed by | Now |
+|---|---|---|
+| Every PE matched `HATCHERY_Suspicious_HexStrings` on its own `MZ` header, and any PE with <=2 sections matched `HATCHERY_Packing_Generic_HighEntropy` | D37 | The hex-string rule ignores a file's own `MZ`/`PK` header; the packing rule measures the entropy its name promises. A benign minimal PE scores clean. |
+| `ELFAnalyzer` raised `Unknown format code 'x' for object of type 'str'` on pyelftools 0.33 enums | D36 | Header enums are normalised for both pyelftools representations; valid ELF metadata is reported and `ET_DYN` is correctly recognised as PIE. |
+| An unreadable capture yielded 0 packets and an empty `errors` list | D37 | A non-zero tshark exit is one named error, and analysis stops. |
+
+The convention remains: a new recorded defect is pinned by a strict `xfail` in
+`tests/test_acceptance_fixtures.py` and a `KNOWN-DEFECT` row in the scorecard, so
+the baseline cannot drift silently.
 
 ## Not covered by this baseline
 
@@ -146,7 +155,17 @@ suite and [`API-SECURITY.md`](API-SECURITY.md) (D30). This baseline is about
 installation, packaging, normal entry points and static acceptance inputs; it
 does not re-certify those features.
 
-### Known gaps introduced or inherited by D35
+### Known gaps introduced or inherited by D36/D37
+
+| Gap | What it means |
+|:--|:--|
+| ELF metadata is not in the bundle | `ELFAnalyzer` is now correct and is used by the submit display and the fixture scorecard, but `analysis.json` still has no ELF section. A recipient of the run gets no ELF metadata. Wiring it in is a producer/schema change (D4), not part of this slice. |
+| One ELF fixture, one shape | Only an ELF64 x86-64 `ET_EXEC` is exercised end to end. The enum shim is unit-tested for the integer and name forms, but no AArch64/RISC-V or `ET_DYN` fixture exists, and `entry_point`/sections are not cross-validated against an independent tool beyond the header check. |
+| The entropy threshold is a judgement | `math.entropy(0, filesize) >= 7.2` has no packed corpus behind it. A small packed file whose headers dominate its entropy would not match; a high-entropy non-packed file would. The rule is `severity = "low"`; the packer detector remains the primary signal. |
+| Errors, not a capture state | An empty-but-valid capture and an unreadable one are now distinguishable through `errors`, but the bundle summary carries no `capture_state`. Every consumer must read `errors`; a consumer that reads only `total_packets` still sees 0 for both. |
+| The scapy fallback is untested here | This host has tshark, so the no-tshark path was not exercised. Its failures are recorded as errors, but a scapy parse of a hostile PCAP is not covered by the fixture suite. |
+
+Known gaps introduced or inherited by D35
 
 | Gap | What it means |
 |:--|:--|
@@ -230,8 +249,8 @@ HATCHERY_DB_PATH=/tmp/hatchery-tokens.db node server/scripts/audit.mjs verify   
 node server/scripts/audit.mjs verify --archive /tmp/audit-archives/audit-000001-000002.jsonl
 ```
 
-Expected: `880 passed, 17 skipped, 3 xfailed`; the fixture scorecard
-`13 passed, 0 failed, 3 known defects`; the setup check `32 passed, 0 failed`; the
+Expected: `889 passed, 17 skipped, 0 xfailed`; the fixture scorecard
+`16 passed, 0 failed, 0 known defects`; the setup check `32 passed, 0 failed`; the
 server suite `97 passed, 0 failing`.
 
 ```bash
@@ -253,6 +272,84 @@ python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/
 3. Update an expectation only for an intentional behaviour change. When a
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
+
+## Captured transcript (Phase 4g, `cd70b55`)
+
+Clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/` or
+caches, produced from the code commit with `git archive` and run on the host
+described above.
+
+```text
+$ uname -srm; sw_vers | head -3; node -v; npm -v
+Darwin 27.2.0 arm64
+ProductName:            macOS
+ProductVersion:         27.2.1
+BuildVersion:           26B131
+v26.13.0
+12.2.2
+$ pip show yara-x pyelftools flare-capa | grep -E "^(Name|Version)"
+Name: yara-x
+Version: 1.24.0
+Name: pyelftools
+Version: 0.33
+Name: flare-capa
+Version: 10.0.0
+
+$ python -m pytest -q
+889 passed, 17 skipped in 37.67s
+
+$ python tests/fixtures/acceptance/tools/generate_fixtures.py --check
+ok       tests/fixtures/acceptance/replay/one_packet.pcap
+ok       tests/fixtures/acceptance/replay/empty.pcap
+ok       tests/fixtures/acceptance/replay/malformed.pcap
+
+$ python scripts/verify_fixtures.py
+fixture/hashes               PASS          10 files match the manifest
+static/eicar                 PASS          HATCHERY_EICAR_TestFile; 5 rule files loaded
+static/negative-control      PASS          0 matches with 5 rule files loaded
+static/benign-pe-structure   PASS          PE32+ x64 (AMD64); Windows CUI (Console)
+static/benign-pe-yara        PASS          0 matches with 5 rule files loaded
+static/benign-elf-fixture    PASS          independently parsed: EM_X86_64 ET_EXEC
+static/benign-elf-analyzer   PASS          x86-64, 64-bit, EXEC (executable), 3 sections
+static/packer-pe             PASS          no packer indicators, no error
+static/packer-elf            PASS          inapplicable with an explicit error: Failed to parse PE: 'DOS Header magic not found.'
+detector/capa                PASS          unavailable (Python) with preserved reason: capa Python API not usable: module 'capa' has no attribute 'main'
+replay/strace-timestamp      PASS          9 events, tree {'1000': [1001]}, 1 connection
+replay/strace-pid-first      PASS          9 events, tree {'1000': [1001]}
+replay/file-events           PASS          {'total_events': 5, 'created_files': 1, 'modified_files': 1, 'deleted_files': 1}
+replay/pcap-one-packet       PASS          1 packets, 1 connections
+replay/pcap-empty            PASS          0 packets, 0 connections
+replay/pcap-malformed        PASS          unreadable capture reported: PCAP could not be read: tshark: The file "..." isn't a capture file in a format TShark understands.
+
+16 passed, 0 failed, 0 known defects, 0 unverified, 0 changed
+
+$ PYTHON=$PWD/.venv/bin/python scripts/verify_setup.sh
+PASS  python/package-installed           0.1.0
+PASS  ports/free                         API (3002) and dashboard (5173) are available
+PASS  fixtures/manifest                  checked-in fixtures regenerate byte-identically
+PASS  fixtures/outcomes                  16 passed, 0 failed, 0 known defects, 0 unverified, 0 changed
+PASS  cli/submit-static                  bundle sha256 and EICAR rule recorded
+PASS  store/encrypted-at-rest            content-addressed AES-256-GCM blob, 0600, no plaintext
+PASS  store/first-key-race               4 concurrent first submits: one complete key, no partial read
+...
+PASS  data/repository-untouched          databases, results, uploads and EICAR unchanged
+RESULT: baseline verified
+# 32 PASS, 0 FAIL
+
+$ ruff check engine/ tests/ scripts/
+All checks passed!
+$ mypy engine/
+Success: no issues found in 86 source files
+
+$ (cd server && npm ci && npm run typecheck && npm run build && npm test)
+# tests 97, pass 97, fail 0
+$ (cd server && node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs)
+# pass 3, fail 0
+$ (cd dashboard && npm ci && npm run build)
+# built in 514ms
+```
+
+The clean copy contained no `data/`, `results/` or `uploads/` after every gate.
 
 ## Captured transcript (detector baseline, `4b48490`)
 
