@@ -71,6 +71,12 @@ LEGACY_LABEL = "plaintext-legacy"
 
 KEY_FILE_NAME = ".sample-key"
 MAX_KEY_FILE_BYTES = 4096
+# A generated key is published atomically (D35). The wait below is only for a
+# concurrent writer from an older version that creates the file before filling
+# it, and for an empty file left behind by a crash. Parsing still requires
+# exactly 32 bytes, so a partial file is never accepted as a key.
+KEY_FILE_READ_ATTEMPTS = 200
+KEY_FILE_READ_INTERVAL_SECONDS = 0.01
 
 # The key ring is the store's own record of key lifecycle (D29). It is a small,
 # versioned JSON document, 0600 like any other secret, holding the active key and
@@ -289,32 +295,55 @@ def _read_key_file(path: Path) -> str:
 
 
 def write_key_file(path: Path, material: bytes) -> None:
-    """Create a key file (0600, no overwrite) for ``hatchery store keygen``."""
+    """Create a key file (0600, no overwrite) for ``hatchery store keygen``.
+
+    Publication is atomic (D35): the bytes are written to a 0600 temporary in the
+    same directory and fsynced, and only then linked to the final name. A
+    concurrent opener therefore sees either no key file or a complete one — never
+    the empty file that ``O_CREAT|O_EXCL`` exposes between creation and the write.
+    The final name is created without overwriting, so ``key-file-exists`` keeps
+    its meaning. The temporary uses the store's ``.tmp-`` prefix so ``store
+    reconcile`` reaps one left by a crash after its grace period.
+    """
     if len(material) != KEY_LEN:  # pragma: no cover - generated internally
         raise SampleStoreError(KEY_INVALID, "generated key material has the wrong length")
     path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".tmp-key-{os.getpid()}-{secrets.token_hex(8)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise SampleStoreError(
-            KEY_FILE_EXISTS, f"{path} already exists; refusing to overwrite a key"
-        ) from exc
+        fd = os.open(temporary, flags, 0o600)
     except OSError as exc:
-        raise SampleStoreError(KEY_INVALID, f"could not create the key file {path}: {exc}") from exc
+        raise SampleStoreError(
+            KEY_INVALID, f"could not create a temporary key file in {path.parent}: {exc}"
+        ) from exc
     try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, base64.b64encode(material) + b"\n")
-        os.fsync(fd)
+        try:
+            os.fchmod(fd, 0o600)
+            payload = base64.b64encode(material) + b"\n"
+            written = 0
+            while written < len(payload):
+                written += os.write(fd, payload[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise SampleStoreError(
+                KEY_FILE_EXISTS, f"{path} already exists; refusing to overwrite a key"
+            ) from exc
+        except OSError as exc:
+            raise SampleStoreError(
+                KEY_INVALID, f"could not publish the key file {path}: {exc}"
+            ) from exc
     finally:
-        os.close(fd)
-    try:
-        directory = os.open(path.parent, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    _fsync_directory(path.parent)
 
 
 def load_key_file(path: Path | str) -> SampleKey:
@@ -329,17 +358,51 @@ def load_key_file(path: Path | str) -> SampleKey:
     )
 
 
+def _read_generated_key_file(path: Path) -> bytes:
+    """Read the store's own key file, waiting out a writer that is mid-create.
+
+    Keys are published atomically (D35), so a racing opener normally reads a
+    complete file on the first attempt. The bounded wait exists for two legacy
+    cases: a concurrent writer from an older version that creates the file
+    before filling it, and an empty file left behind by a crash. The text is
+    parsed as exactly 32 bytes, so partial material is never accepted, and the
+    message names the path without ever naming the key.
+    """
+    last_error: Optional[SampleStoreError] = None
+    for attempt in range(KEY_FILE_READ_ATTEMPTS):
+        try:
+            text = _read_key_file(path)
+        except SampleStoreError as exc:
+            if exc.reason != KEY_FILE_MISSING:
+                raise
+            text = ""
+        try:
+            return parse_key_material(text)
+        except SampleStoreError as exc:
+            last_error = exc
+        if attempt + 1 < KEY_FILE_READ_ATTEMPTS:
+            time.sleep(KEY_FILE_READ_INTERVAL_SECONDS)
+    waited = KEY_FILE_READ_ATTEMPTS * KEY_FILE_READ_INTERVAL_SECONDS
+    raise SampleStoreError(
+        KEY_INVALID,
+        f"the key file {path} did not contain a complete key after {waited:.1f}s; "
+        "if nothing was ever stored, remove it and retry, otherwise restore the "
+        "key from a backup",
+    ) from last_error
+
+
 def _generate_key_file(path: Path) -> SampleKey:
     material = secrets.token_bytes(KEY_LEN)
     try:
         write_key_file(path, material)
     except SampleStoreError as exc:
         # Two processes racing to create the first key: the loser must use the
-        # winner's key, not fail. The file is read back and validated (regular
-        # file, 0600, correct length) before it is trusted.
+        # winner's key, not fail. Publication is atomic, so the winner's file is
+        # complete; the reader still validates it (regular file, 0600, 32 bytes)
+        # and waits briefly for an older writer's create-then-fill window.
         if exc.reason != KEY_FILE_EXISTS:
             raise
-        existing = parse_key_material(_read_key_file(path))
+        existing = _read_generated_key_file(path)
         return SampleKey(
             material=existing,
             source=f"file:{path}",
@@ -577,9 +640,13 @@ def resolve_key_ring(store_root: Path, *, create: bool = False) -> Optional[KeyR
     if key is None:
         configured_file = os.environ.get("HATCHERY_SAMPLE_KEY_FILE", "").strip()
         path = Path(configured_file).expanduser() if configured_file else key_file_path(root)
-        explicit = bool(configured_file)
-        if path.exists() or explicit:
+        if configured_file:
             material = parse_key_material(_read_key_file(path))
+            key = SampleKey(material, f"file:{path}", key_id_for(material), created_at=_now_iso())
+        elif path.exists() or path.is_symlink():
+            # Never trust a half-written generated key (D35): the store's own key
+            # is published atomically, and this waits out an older writer.
+            material = _read_generated_key_file(path)
             key = SampleKey(material, f"file:{path}", key_id_for(material), created_at=_now_iso())
     if key is None:
         if not create:

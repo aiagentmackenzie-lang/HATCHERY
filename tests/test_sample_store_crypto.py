@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from _store_builder import KEY, KEY_BYTES, OTHER_KEY
+from _store_builder import KEY, KEY_BYTES, OTHER_KEY, OTHER_KEY_BYTES
 
 from engine.store import SampleStore, SampleStoreError
 from engine.store.crypto import (
@@ -26,12 +28,15 @@ from engine.store.crypto import (
     HEADER_LEN,
     MAGIC,
     SampleKey,
+    _generate_key_file,
+    _read_generated_key_file,
     decrypt,
     encrypt,
     is_envelope,
     key_id_for,
     parse_key_material,
     resolve_key,
+    write_key_file,
 )
 
 PAYLOAD = b"MZ\x90\x00 not really a PE, but hostile-looking bytes \x00\x01\x02\n" * 8
@@ -305,3 +310,100 @@ def test_direct_decrypt_rejects_a_non_envelope() -> None:
     with pytest.raises(SampleStoreError) as excinfo:
         decrypt(b"%PDF-1.7 not an envelope", KEY)
     assert excinfo.value.reason == "unknown-version"
+
+
+# ---------------------------------------------------------------------------
+# Key publication (D35): concurrent first writers never expose a partial key
+# ---------------------------------------------------------------------------
+
+
+def test_a_loser_of_the_first_key_race_uses_the_winner_key(tmp_path: Path) -> None:
+    key_file = tmp_path / "samples" / ".sample-key"
+    write_key_file(key_file, KEY_BYTES)  # the winner publishes a complete file
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+
+    loser = _generate_key_file(key_file)
+
+    assert loser.material == KEY_BYTES
+    assert loser.key_id == KEY.key_id
+    assert loser.generated is False
+    # Neither a second key nor a publication temporary is left behind.
+    assert [entry.name for entry in key_file.parent.iterdir()] == [key_file.name]
+
+
+def test_key_publication_never_overwrites_and_removes_its_temporary(
+    tmp_path: Path,
+) -> None:
+    key_file = tmp_path / "sample.key"
+    write_key_file(key_file, KEY_BYTES)
+    before = key_file.read_bytes()
+
+    with pytest.raises(SampleStoreError) as excinfo:
+        write_key_file(key_file, OTHER_KEY_BYTES)
+
+    assert excinfo.value.reason == "key-file-exists"
+    assert key_file.read_bytes() == before
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["sample.key"]
+
+
+def test_the_final_name_is_linked_only_after_the_bytes_are_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import engine.store.crypto as crypto
+
+    key_file = tmp_path / ".sample-key"
+    observed: dict[str, object] = {}
+    real_link = os.link
+
+    def observing_link(source: str | bytes | os.PathLike[str], destination: str | bytes | os.PathLike[str]) -> None:
+        observed["target_existed"] = key_file.exists()
+        observed["payload"] = Path(source).read_text(encoding="utf-8")
+        observed["mode"] = stat.S_IMODE(Path(source).stat().st_mode)
+        real_link(source, destination)
+
+    monkeypatch.setattr(crypto.os, "link", observing_link)
+    write_key_file(key_file, KEY_BYTES)
+
+    # A concurrent opener sees either no key file or a complete one.
+    assert observed["target_existed"] is False
+    assert parse_key_material(str(observed["payload"])) == KEY_BYTES
+    assert observed["mode"] == 0o600
+    assert parse_key_material(key_file.read_text(encoding="utf-8")) == KEY_BYTES
+
+
+def test_a_reader_waits_out_a_create_then_fill_writer(tmp_path: Path) -> None:
+    """An older checkout creates the file before writing it; the reader waits."""
+    key_file = tmp_path / ".sample-key"
+    key_file.write_text("", encoding="utf-8")
+    os.chmod(key_file, 0o600)
+
+    def fill() -> None:
+        time.sleep(0.05)
+        key_file.write_text(KEY_BYTES.hex() + "\n", encoding="utf-8")
+
+    writer = threading.Thread(target=fill)
+    writer.start()
+    try:
+        assert _read_generated_key_file(key_file) == KEY_BYTES
+    finally:
+        writer.join()
+
+
+def test_a_permanently_empty_key_file_is_a_named_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import engine.store.crypto as crypto
+
+    monkeypatch.setattr(crypto, "KEY_FILE_READ_ATTEMPTS", 3)
+    monkeypatch.setattr(crypto, "KEY_FILE_READ_INTERVAL_SECONDS", 0.001)
+    key_file = tmp_path / ".sample-key"
+    key_file.write_text("", encoding="utf-8")
+    os.chmod(key_file, 0o600)
+
+    with pytest.raises(SampleStoreError) as excinfo:
+        _read_generated_key_file(key_file)
+
+    assert excinfo.value.reason == "key-invalid"
+    assert str(key_file) in excinfo.value.message
+    assert "restore the key from a backup" in excinfo.value.message
+    assert KEY_BYTES.hex() not in excinfo.value.message

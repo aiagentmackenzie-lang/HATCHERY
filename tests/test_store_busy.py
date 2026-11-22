@@ -6,6 +6,12 @@ simultaneous openers could make one ``SampleStore()`` raise
 tests use one real store on purpose, because the store is exactly what is under
 test: N concurrent real ``hatchery submit`` processes, and a forced-busy
 constructor that must fail closed with ``store-busy`` and exit 1.
+
+The concurrent-submit test is also the regression gate for D35: these processes
+race to create the store's **first** key, and before atomic publication one of
+them could read the winner's file while it was still empty and exit 1 with
+``key-invalid``. The test is unchanged; what changed is that the key file is only
+visible once it is complete.
 """
 
 from __future__ import annotations

@@ -180,6 +180,44 @@ fi
 
 
 # ---------------------------------------------------------------------------
+# 2a. D35: the first store key is published complete under concurrent writers
+# ---------------------------------------------------------------------------
+# A fresh store, several simultaneous first submits. Publication is a link of a
+# fully written 0600 temporary (D35), so no opener may observe an empty key and
+# fail with key-invalid. Each process must exit 0, exactly one key file and one
+# content-addressed blob must remain, and no publication temporary may be left.
+RACE_ROOT="$WORK/key-race"
+mkdir -p "$RACE_ROOT/results"
+RACE_PIDS=""
+for index in 1 2 3 4; do
+  (
+    cd "$RACE_ROOT" || exit 1
+    HATCHERY_SAMPLE_STORE="$RACE_ROOT/samples" \
+    HATCHERY_RESULTS_ROOT="$RACE_ROOT/results" \
+    HATCHERY_QUEUE_DB="$RACE_ROOT/queue.db" \
+    "$PY" -m engine.cli submit "$ROOT/samples/eicar.com" --no-sandbox \
+      -o "$RACE_ROOT/results/run-$index" >"$RACE_ROOT/out-$index.log" 2>&1
+  ) &
+  RACE_PIDS="$RACE_PIDS $!"
+done
+RACE_FAILED=0
+for pid in $RACE_PIDS; do
+  wait "$pid" || RACE_FAILED=1
+done
+RACE_KEYS=$(find "$RACE_ROOT/samples" -maxdepth 1 -name '.sample-key' 2>/dev/null | wc -l | tr -d ' ')
+RACE_TEMPS=$(find "$RACE_ROOT/samples" -maxdepth 1 -name '.tmp-key-*' 2>/dev/null | wc -l | tr -d ' ')
+RACE_BLOBS=$(find "$RACE_ROOT/samples" -maxdepth 1 -name '*.sample' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$RACE_FAILED" -eq 0 ] && [ "$RACE_KEYS" = "1" ] && [ "$RACE_TEMPS" = "0" ] \
+    && [ "$RACE_BLOBS" = "1" ] \
+    && ! grep -q "key-invalid" "$RACE_ROOT"/out-*.log 2>/dev/null; then
+  pass "store/first-key-race" "4 concurrent first submits: one complete key, no partial read"
+else
+  fail "store/first-key-race" "exit=$RACE_FAILED keys=$RACE_KEYS temps=$RACE_TEMPS blobs=$RACE_BLOBS"
+  grep -h "key-invalid\|Traceback\|OperationalError" "$RACE_ROOT"/out-*.log 2>/dev/null | head -3
+fi
+
+
+# ---------------------------------------------------------------------------
 # 2b. Result bundles (D33): sealed at submit, verified, tamper-detected, pruned
 # ---------------------------------------------------------------------------
 RESULTS_VERIFY="$WORK/results-verify.json"
