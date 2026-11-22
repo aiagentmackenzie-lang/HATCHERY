@@ -122,7 +122,11 @@ def test_a_runner_exception_fails_the_job_with_the_reason(tmp_path: Path) -> Non
 def test_concurrency_is_bounded_and_every_job_runs(tmp_path: Path) -> None:
     store = JobStore(tmp_path / "queue.db")
     jobs = [
-        store.enqueue(make_sample(tmp_path, f"{index}.bin"), job_id=f"job-{index}")
+        store.enqueue(
+            make_sample(tmp_path, f"{index}.bin"),
+            output_dir=tmp_path / f"out-{index}",
+            job_id=f"job-{index}",
+        )
         for index in range(4)
     ]
 
@@ -219,7 +223,7 @@ def test_worker_returns_nothing_on_an_empty_queue(tmp_path: Path) -> None:
     worker = make_worker(store, tmp_path, WorkerConfig(), runner=runner_writing_bundle())
     assert worker.run_once() == []
     # recovery is still run, so a stale running job is not stranded
-    store.enqueue(make_sample(tmp_path, "a.bin"))
+    store.enqueue(make_sample(tmp_path, "a.bin"), output_dir=tmp_path / "out")
     store.claim("dead", lease_seconds=0.01)
     time.sleep(0.05)
     worker.run_once()
