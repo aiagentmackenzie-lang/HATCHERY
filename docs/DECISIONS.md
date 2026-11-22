@@ -1581,12 +1581,21 @@ lock file and every D28/D29 semantic are unchanged.
 
 ### Evidence — clean copy of the code+tests commit
 
-Transcript: [`RESULTS.md`](RESULTS.md#captured-transcript). Counts are recorded
-there and in [`BASELINE.md`](BASELINE.md); the new tests are
-`test_results_nested.py`, `test_results_corpus.py` and `test_store_busy.py`, plus
-the triage-path and MCP cases, all using real runs, real files and temporary
-roots. `verify_setup.sh` gains `results/seal-corpus` and
-`results/client-verifier`.
+Transcript: [`RESULTS.md`](RESULTS.md#captured-transcript-d34). Counts are recorded
+there and in [`BASELINE.md`](BASELINE.md): **875 passed, 17 skipped, 3 xfailed**
+(was 854), fixtures **13/0/3** unchanged, setup **31 passed, 0 failed** (was 29),
+ruff clean, mypy **86 files**, rules lint, server **97**, queue **3**, dashboard
+build. The new tests are `test_results_nested.py`, `test_results_corpus.py`,
+`test_client_verifier.py` and `test_store_busy.py`, plus the triage-path and MCP
+cases, all using real runs, real files and temporary roots. `verify_setup.sh`
+gains `results/seal-corpus` and `results/client-verifier`.
+
+The archive also caught a pre-existing test defect on the invariant this slice
+was told not to weaken: two queue-worker tests enqueued with the default
+`output_dir` (`results/<job_id>`) and then ran a bundle-writing runner, so a
+full-suite run wrote into the repository's `results/`. `3f774b7` passes a
+`tmp_path` output dir; the re-archived clean run leaves `results/`, `data/` and
+`uploads/` absent after every gate.
 
 **Not done, deliberately.**
 

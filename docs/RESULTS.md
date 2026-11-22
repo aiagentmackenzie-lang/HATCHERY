@@ -9,7 +9,8 @@ D34 (nested units, the corpus seal, the client verifier and store-busy); the sam
 store's own retention is D28
 ([`RETENTION.md`](RETENTION.md)) and the audit log's is D32
 ([`AUDIT-RETENTION.md`](AUDIT-RETENTION.md)). The clean-copy evidence is the
-[transcript](#captured-transcript) at the bottom of this page.
+[D33 transcript](#captured-transcript) and the
+[D34 transcript](#captured-transcript-d34) at the bottom of this page.
 
 ## The shape of a run
 
@@ -536,3 +537,217 @@ demo root: /var/folders/zv/n4210phd6_d5lqqfx462c9gw0000gn/T//hatchery-d33-demo.r
 === repository state after every gate ===
 (clean: no repository data/, results/, uploads/ or samples/ file was created)
 ```
+
+<a id="captured-transcript-d34"></a>
+
+## Captured transcript — Phase 4f (D34)
+
+Clean copy of `3f774b7` (the D34 code+tests commit plus the test-hygiene fix),
+taken with `git archive`; no `.venv`, `node_modules`, `data/`, `results/`,
+`uploads/` or caches are in the archive. The interpreter is again the uv-installed
+CPython 3.12.14 (this host has no `python3.12` on `PATH`; `python3` is 3.15, which
+`requires-python` excludes), and `python -m ensurepip --upgrade` ran before
+`pip install -e ".[dev]"`.
+
+```text
+# HATCHERY Phase 4f — clean-copy verification transcript
+
+Captured: 2026-11-21T22:22:00Z (UTC)
+Source: `git archive 3f774b7` extracted into a fresh directory.
+        `git status --short` was empty before the archive was taken.
+
+$ uname -srm; sw_vers
+Darwin 27.2.0 arm64
+ProductName:		macOS
+ProductVersion:		27.2.1
+BuildVersion:		26B131
+
+$ python -V; node -v; npm -v
+Python 3.12.14
+v26.13.0
+12.2.2
+
+$ python -m pip show cryptography | grep -E '^(Name|Version)'
+Name: cryptography
+Version: 50.0.2
+
+$ python -m pytest -q
+875 passed, 17 skipped, 3 xfailed in 61.42s
+# was 854/17/3 at D33; 21 new tests (nested verification and retention, the
+# corpus seal, the client verifier, the triage path forms, store-busy).
+
+$ python tests/fixtures/acceptance/tools/generate_fixtures.py --check
+ok       tests/fixtures/acceptance/replay/empty.pcap
+ok       tests/fixtures/acceptance/replay/malformed.pcap
+
+$ python scripts/verify_fixtures.py
+13 passed, 0 failed, 3 known defects, 0 unverified, 0 changed
+# unchanged; no pinned defect was "fixed" in this slice.
+
+$ ruff check engine/ tests/ scripts/
+All checks passed!
+$ mypy engine/
+Success: no issues found in 86 source files
+$ hatchery rules lint
+Rule lint passed
+
+$ scripts/verify_setup.sh
+PASS  python/package-installed           0.1.0
+PASS  ports/free                         API (3002) and dashboard (5173) are available
+PASS  fixtures/manifest                  checked-in fixtures regenerate byte-identically
+PASS  fixtures/outcomes                  13 passed, 0 failed, 3 known defects, 0 unverified, 0 changed
+PASS  cli/submit-static                  bundle sha256 and EICAR rule recorded
+PASS  store/encrypted-at-rest            content-addressed AES-256-GCM blob, 0600, no plaintext
+PASS  results/manifest-sealed            run root manifest, 0600, hashes verified, stage submit
+PASS  results/tamper-detected            modified artifact named with its path, exit 1
+PASS  results/prune-keeps-anchor         dry-run order applied, anchor kept, 0600 prune log
+PASS  results/seal-corpus                nested-first, already kept, tamper refused, strays ignored, anchor-safe
+PASS  results/client-verifier            copied run verifies stdlib-only; a modified run exits 1
+PASS  server/npm-ci                      dependencies installed from the lockfile
+PASS  server/build                       production build succeeded
+PASS  dashboard/npm-ci                   dependencies installed from the lockfile
+PASS  dashboard/build                    production build succeeded
+PASS  api/compiled-start                 node dist/index.js answered /api/health
+PASS  api/enqueue                        task 7c814f15-40c queued (no subprocess held open)
+PASS  api/restart-durability             task survived an API restart
+PASS  worker/executes-job                worker drained the queue and exited 0
+PASS  worker/store-backed-job            job records a content address and completed from it
+PASS  api/ingest-after-worker            completed task has the expected hash and static results
+PASS  api/db-permissions                 API database is 0600 (audit log and token hashes)
+PASS  api/audit-chain-keyed              audit chain verifies as keyed, every row MAC'd
+PASS  api/audit-key-announced            startup names the audit key id and never the material
+PASS  api/audit-compaction               segment archived 0600, manifest written last, chain handed off
+PASS  api/audit-archive-verified         live chain verifies across the boundary; archived rows were read
+PASS  store/key-rotation                 every blob re-wrapped; verify passes on the new active key
+PASS  store/backup-restore               manifest hashes every blob; restored job ids and samples verify
+PASS  dashboard/dev-server               http://localhost:5173/ returned 200
+PASS  dashboard/api-proxy                /api/health proxied to the API
+PASS  data/repository-untouched          databases, results, uploads and EICAR unchanged
+RESULT: baseline verified                 # 31 passed, 0 failed (was 29)
+
+$ (cd server && npm run typecheck && npm run build && npm test)
+ℹ tests 97
+ℹ pass 97
+ℹ fail 0
+
+$ (cd server && node --test test/queue_e2e.test.mjs test/queue_migration.test.mjs)
+ℹ tests 3
+ℹ pass 3
+ℹ fail 0
+
+$ (cd dashboard && npm run build)
+✓ built in 503ms
+
+# Repository state: after every gate above, `results/`, `data/` and `uploads/`
+# were absent from the clean checkout. Nothing was written to them.
+# Note: the D33-era queue-worker tests enqueued with the default output_dir
+# (results/<job_id>) and then ran a bundle-writing runner, so a full-suite run
+# wrote into results/; that is why 3f774b7 passes tmp_path output dirs. The
+# defect was found by running the archive, not by reading the test.
+
+=== result bundles: live commands against temporary roots (D34) ===
+
+$ hatchery results verify results/run-with-legacy-replay --expect-manifest 4cbc20745a8097d6466e800551c3f6a5ff8c41ff69dbae6a563a4d1cac471b72
+exit=1
+  ╭─────────────────────────────────── Verify ───────────────────────────────────╮
+  │ HATCHERY — Result bundle                                                     │
+  │ Run:    /tmp/hatchery-d34-demo2/results/run-with-legacy-replay               │
+  │ State:  broken                                                               │
+  │ Break:  nested-unsealed at replay-deadbeef                                   │
+  │ Stage:  seal · sealed 2026-10-23T01:22:01.659836+00:00                       │
+  ╰──────────────────────────────────────────────────────────────────────────────╯
+    manifest.json: 4cbc20745a8097d6466e800551c3f6a5ff8c41ff69dbae6a563a4d1cac471b72
+    Files: 8 (8 hashed) · bytes: 14879 · manifest v1
+    Anchor: matches the anchor (4cbc2074…)
+    ⚠ nested replay replay-deadbeef: unsealed — no manifest; HATCHERY cannot
+      verify evidence this directory ships
+    nested replay replay-deadbeef has no manifest, so the run directory ships
+      evidence that cannot be verified. Seal it with `hatchery results seal
+      <results-root> --all`.
+    The anchor matches, so this is the parent manifest you recorded — but the
+      directory is still broken. The anchor proves the parent manifest, not that
+      every nested unit inside this directory is verifiable.
+
+$ hatchery results status --json --results results
+exit=0
+{'runs': 2, 'unsealed_runs': 0, 'unsealed_nested': 1, 'blocked': True, 'would_remove': []}
+
+$ hatchery results prune --older-than 10d --keep-last 1 --apply --json --results results
+exit=2
+applied: True | removed: [] | blocked: True
+decisions: [('run-with-legacy-replay', 'keep', 'nested-unsealed'),
+            ('run-newer', 'keep', 'not-expired')]
+refused: [('run-with-legacy-replay', 'nested-unsealed', 'nested-unsealed',
+           'replay-deadbeef')]
+nested evidence still present: yes
+
+$ hatchery results seal results --all --json
+exit=0
+counts: {'sealed': 1, 'already': 2, 'refused': 0, 'ignored': 2}
+sealed (depth-first): ['replay-deadbeef']
+parent manifest after: 4cbc20745a8097d6466e800551c3f6a5ff8c41ff69dbae6a563a4d1cac471b72
+# identical to the anchor recorded before sealing: sealing the nested unit
+# did not touch the parent's manifest bytes.
+
+$ hatchery results verify results/run-with-legacy-replay --json
+exit=0
+{'ok': True, 'state': 'intact', 'classification': None, 'path': None}
+
+$ hatchery results prune --older-than 10d --keep-last 1 --apply --json --results results
+exit=0
+removed: [{'run_id': 'run-with-legacy-replay', 'bytes': 32740, 'nested_runs': 1}]
+bytes_freed: 32740 | refused: []
+parent present after prune: no
+
+=== the verifier the recipient runs: a copied run, no store, no toolchain ===
+
+$ python /path/to/scripts/verify_manifest.py /tmp/hatchery-d34-delivery2/renamed-run --json
+exit=0
+{'ok': True, 'state': 'intact', 'classification': None,
+ 'run_dir': '/tmp/hatchery-d34-delivery2/renamed-run'}
+# run from a directory outside the checkout, with HATCHERY_SAMPLE_STORE pointing
+# at a path that does not exist.
+
+$ python verify_manifest.py /tmp/hatchery-d34-delivery2/renamed-run   # after one appended line
+exit=1
+  HATCHERY result bundle
+  Run:    /tmp/hatchery-d34-delivery2/renamed-run
+  State:  broken
+  Break:  modified at bundle/events.jsonl
+  Manifest: 57ca496a1b23f6c47be471683b508849949dcd8dc5e784b92d3907d3f568d6d7
+  Stage:  submit · sealed 2026-11-22T01:22:02.038361+00:00
+  Files:  8 (7 hashed) · 14879 bytes · manifest v1
+  modified at bundle/events.jsonl
+
+$ python - <<'PY'   # click/rich/yara_x/capa/docker blocked from import, then run it
+click import blocked as intended
+{
+  "ok": false,
+  "state": "broken",
+  "classification": "modified",
+  "path": "bundle/events.jsonl",
+  "run_id": "run-newer",
+  "run_dir": "/tmp/hatchery-d34-delivery2/renamed-run",
+  "manifest_sha256": "57ca496a1b23f6c47be471683b508849949dcd8dc5e784b92d3907d3f568d6d7",
+  "manifest_version": 1,
+  "stage": "submit",
+  "sealed_at": "2026-11-22T01:22:02.038361+00:00",
+  "created_at": "2026-11-22T01:22:02.032521+00:00",
+  "task_id": "f6a33f890729",
+  "hatchery_version": "0.1.0",
+  "file_count": 8,
+  "total_bytes": 14879,
+  "hashed": 7,
+  "nested_runs": [],
+  "error": "modified at bundle/events.jsonl",
+  "run": "/tmp/hatchery-d34-delivery2/renamed-run"
+}
+exit=1
+
+=== repository state after every gate ===
+(clean: no repository data/, results/, uploads/ or samples/ file was created)
+```
+
+The anchor hash in the live run is content-derived (it moves with the
+`sealed_at` timestamp in the manifest), so it is recorded here as evidence of the
+property — before and after `seal --all` are identical — not as a value to reuse.

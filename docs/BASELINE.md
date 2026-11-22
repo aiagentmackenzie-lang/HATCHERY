@@ -8,7 +8,8 @@ store baseline was `be9386d`, whose clean-copy transcript is in
 [`BACKUP.md`](BACKUP.md#captured-transcript); the D30/D31 transcript is in
 [`API-SECURITY.md`](API-SECURITY.md#captured-transcript); the D32 transcript is in
 [`AUDIT-RETENTION.md`](AUDIT-RETENTION.md#captured-transcript); the D33 transcript is in
-[`RESULTS.md`](RESULTS.md#captured-transcript), together with the D34 transcript. The
+[`RESULTS.md`](RESULTS.md#captured-transcript), and the D34 transcript is at
+[`RESULTS.md`](RESULTS.md#captured-transcript-d34). The
 detector scorecard is unchanged from
 `4b48490`.
 
