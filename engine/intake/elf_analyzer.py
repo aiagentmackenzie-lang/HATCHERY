@@ -14,6 +14,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 try:
+    from elftools.elf import enums as elf_enums
     from elftools.elf.elffile import ELFFile
     from elftools.elf.sections import SymbolTableSection
     HAS_PYELFTOOLS = True
@@ -125,6 +126,38 @@ ELF_MACHINES: dict[int, str] = {
     243: "RISC-V",
 }
 
+# pyelftools >= 0.33 hands back enum *names* (``"EM_X86_64"``, ``"ET_EXEC"``)
+# from the ELF header; earlier versions hand back integers. Both are accepted, so
+# the analyzer does not depend on which one is installed (D36).
+_ELF_MACHINE_NAMES: dict[str, int] = {}
+_ELF_TYPE_NAMES: dict[str, int] = {}
+if HAS_PYELFTOOLS:  # pragma: no branch - constant when pyelftools is present
+    _ELF_MACHINE_NAMES = dict(getattr(elf_enums, "ENUM_E_MACHINE", {}))
+    _ELF_TYPE_NAMES = dict(getattr(elf_enums, "ENUM_E_TYPE", {}))
+
+
+def _enum_number(value: object, names: dict[str, int]) -> Optional[int]:
+    """The integer behind a pyelftools header enum, whatever form it takes."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        number = names.get(value)
+        if number is not None:
+            return number
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _enum_label(value: object, names: dict[str, int], labels: dict[int, str], width: int) -> str:
+    """A stable human label for a header enum, in both pyelftools forms."""
+    number = _enum_number(value, names)
+    if number is None:
+        return str(value)
+    return labels.get(number, f"0x{number:0{width}x}")
+
 
 class ELFAnalyzer:
     """Analyze ELF (Linux executable) files for structural information.
@@ -155,10 +188,15 @@ class ELFAnalyzer:
             with open(file_path, "rb") as f:
                 elf = ELFFile(f)
                 result.is_valid_elf = True
-                result.arch = ELF_MACHINES.get(elf.header.e_machine, f"0x{elf.header.e_machine:04x}")
+                result.arch = _enum_label(
+                    elf.header.e_machine, _ELF_MACHINE_NAMES, ELF_MACHINES, 4
+                )
                 result.bits = elf.elfclass
                 result.endian = "Little-endian" if elf.little_endian else "Big-endian"
-                result.elf_type = ELF_TYPES.get(elf.header.e_type, f"0x{elf.header.e_type:04x}")
+                elf_type = _enum_number(elf.header.e_type, _ELF_TYPE_NAMES)
+                result.elf_type = _enum_label(
+                    elf.header.e_type, _ELF_TYPE_NAMES, ELF_TYPES, 4
+                )
                 result.entry_point = elf.header.e_entry
 
                 # Sections
@@ -171,7 +209,7 @@ class ELFAnalyzer:
                 result.exported_symbols, result.imported_symbols = self._analyze_symbols(elf)
 
                 # Security properties
-                result.security = self._analyze_security(elf, suspicious)
+                result.security = self._analyze_security(elf, suspicious, elf_type)
 
                 result.suspicious_indicators = suspicious
 
@@ -251,7 +289,7 @@ class ELFAnalyzer:
         return exported, imported
 
     def _analyze_security(
-        self, elf: ELFFile, suspicious: list[str]
+        self, elf: ELFFile, suspicious: list[str], elf_type: Optional[int]
     ) -> ELFSecurityProps:
         """Check ELF security hardening properties."""
         props = ELFSecurityProps()
@@ -263,8 +301,10 @@ class ELFAnalyzer:
                 props.has_nx = not bool(section["sh_flags"] & 0x4)
                 break
 
-        # PIE — check if ELF type is DYN (shared object)
-        props.is_pie = elf.header.e_type == 3
+        # PIE — check if ELF type is DYN (shared object). The header may carry
+        # the integer (pyelftools < 0.33) or the enum name (>= 0.33); both are
+        # normalised by the caller so this is not a string comparison.
+        props.is_pie = elf_type == 3
 
         # RELRO — check for .rela.dyn and BIND_NOW flag
         for section in elf.iter_sections():

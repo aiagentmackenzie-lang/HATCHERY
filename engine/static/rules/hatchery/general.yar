@@ -43,5 +43,10 @@ rule HATCHERY_Suspicious_HexStrings {
         $pk = { 50 4B 03 04 }   // embedded ZIP/archive header
 
     condition:
-        any of them
+        // A PE's own DOS header is not an embedded PE, and a ZIP's own local
+        // file header is not an embedded archive. The signal is a header inside
+        // a file that is not itself that format (D37 — calibration: the rule
+        // used to match every PE on its own MZ bytes).
+        ($mz and uint16(0) != 0x5A4D) or
+        ($pk and uint32(0) != 0x04034B50)
 }

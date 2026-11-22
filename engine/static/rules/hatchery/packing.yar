@@ -70,6 +70,7 @@ rule HATCHERY_Packing_MPRESS {
 }
 
 import "pe"
+import "math"
 
 rule HATCHERY_Packing_Generic_HighEntropy {
     meta:
@@ -84,8 +85,15 @@ rule HATCHERY_Packing_Generic_HighEntropy {
         // Legitimate PE files typically have 4+ sections (.text, .rdata, .data, .rsrc, .reloc).
         // `pe.number_of_sections` is deprecated in YARA-X; index into `pe.sections`
         // instead, which is undefined past the end of the array.
+        //
+        // A low section count alone is not packing: a hand-built, minimal PE has
+        // two sections and no payload at all. The rule's name promises entropy,
+        // so it must check it (D37) — the whole-file entropy of a packed binary
+        // is high because its payload is compressed or encrypted, while a small
+        // benign PE is mostly headers and padding.
         uint16(0) == 0x5A4D and
-        not defined pe.sections[2].name
+        not defined pe.sections[2].name and
+        math.entropy(0, filesize) >= 7.2
 }
 
 rule HATCHERY_Packing_NSISSFX {

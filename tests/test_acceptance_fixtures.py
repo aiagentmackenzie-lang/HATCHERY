@@ -1,10 +1,12 @@
 """Acceptance fixture tests: integrity and known outcomes.
 
 These tests are intentionally runnable from a clean checkout with no Docker,
-no network and no capa ruleset. Where today's behaviour is a recorded defect,
-the test is marked ``xfail(strict=True)`` and names the owning slice: when the
-slice is fixed the test fails loudly until the manifest and master plan are
-updated, so the baseline cannot drift silently.
+no network and no capa ruleset. The scorecard no longer carries a known defect
+(D36 fixed the ELF parser, D37 the PCAP error path and the two mis-calibrated
+YARA rules), so every fixture asserts its real outcome. If a new defect is
+recorded, mark its test ``xfail(strict=True)`` and name the owning slice: when
+the slice is fixed the test fails loudly until the manifest and this document
+are updated, so the baseline cannot drift silently.
 """
 
 from __future__ import annotations
@@ -64,14 +66,20 @@ class TestStaticExpectations:
         assert result.rules_loaded > 0
         assert result.matches == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="every PE matches the MZ-header rule and any PE with <=2 "
-               "sections matches the generic-packing rule",
-    )
     def test_benign_pe_has_no_unsupported_matches(self, yara_scanner: YARAScanner) -> None:
         result = yara_scanner.scan(fixture_path("benign_pe"))
+        assert result.error is None
+        assert result.rules_loaded > 0, "a clean result needs rules loaded"
         assert [m.rule for m in result.matches] == []
+
+    def test_an_embedded_pe_header_in_a_non_pe_is_still_detected(
+        self, yara_scanner: YARAScanner, tmp_path: Path
+    ) -> None:
+        """Calibration removes the false positive, not the signal (D37)."""
+        container = tmp_path / "container.txt"
+        container.write_bytes(b"report text " + b"MZ" + b" and an archive " + b"PK\x03\x04")
+        result = yara_scanner.scan(container)
+        assert "HATCHERY_Suspicious_HexStrings" in [m.rule for m in result.matches]
 
     def test_benign_pe_structure(self) -> None:
         result = PEAnalyzer().analyze(fixture_path("benign_pe"))
@@ -142,11 +150,6 @@ class TestReplayExpectations:
         result = NetworkCapture().analyze_pcap(fixture_path("pcap_empty"))
         assert result.total_packets == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="network_capture swallows tshark failures, so an unreadable "
-               "capture is indistinguishable from an empty one",
-    )
     def test_malformed_capture_is_reported(self) -> None:
         import shutil
 
@@ -154,6 +157,8 @@ class TestReplayExpectations:
             pytest.skip("tshark not installed")
         result = NetworkCapture().analyze_pcap(fixture_path("pcap_malformed"))
         assert result.errors, "unreadable PCAP must surface an error"
+        assert result.total_packets == 0, "a refused capture is not a parsed one"
+        assert "could not be read" in result.errors[0]
 
     def test_pid_first_trace_parses(self) -> None:
         expected = FIXTURES["trace_pid_first"]["expected"]["parse"]
@@ -161,10 +166,15 @@ class TestReplayExpectations:
         assert result.parsed_events == expected["parsed_events"]
         assert {str(k): v for k, v in result.process_tree.items()} == expected["process_tree"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ELFAnalyzer formats pyelftools enum strings with :x",
-    )
     def test_elf_analyzer_parses_valid_elf(self) -> None:
+        expected = FIXTURES["benign_elf"]["expected"]["elf"]
         result = ELFAnalyzer().analyze(fixture_path("benign_elf"))
         assert result.is_valid_elf, result.error
+        assert result.error is None
+        assert result.arch == expected["arch"]
+        assert result.bits == expected["bits"]
+        assert result.elf_type == expected["type"]
+        assert result.entry_point == 0x401000
+        assert [section.name for section in result.sections] == ["", ".text", ".shstrtab"]
+        assert result.security.is_pie is False
+        assert result.security.is_stripped is True

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -177,15 +178,16 @@ class NetworkCapture:
 
         start = time.monotonic()
 
-        try:
-            # Use tshark for PCAP parsing if available
+        # The tool decides whether the capture can be read at all. Before D37 a
+        # tshark failure was swallowed and the result was an empty capture, which
+        # is indistinguishable from a capture with no traffic (an unreadable PCAP
+        # must be an error, never a clean zero). tshark is authoritative when it
+        # is installed; the scapy fallback is only for a host that has no tshark,
+        # not for a capture tshark refused.
+        if shutil.which("tshark"):
             result = self._parse_with_tshark(pcap_path, result)
-        except Exception:
-            # Fallback to raw PCAP parsing
-            try:
-                result = self._parse_with_scapy(pcap_path, result)
-            except Exception as e:
-                result.errors.append(f"PCAP parsing failed: {e}")
+        else:
+            result = self._parse_with_scapy(pcap_path, result)
 
         # Run GHOSTWIRE C2 detection if available
         if HAS_GHOSTWIRE and pcap_path.exists():
@@ -220,15 +222,23 @@ class NetworkCapture:
         Returns:
             Updated NetworkCaptureResult.
         """
-        # Get total packet count
+        # Get total packet count. A non-zero exit is the tool saying it cannot
+        # read this file at all: record that and stop, rather than letting four
+        # empty stdout reads look like an empty capture.
         try:
             count_proc = subprocess.run(
                 ["tshark", "-r", str(pcap_path), "-T", "fields", "-e", "frame.number"],
                 capture_output=True, text=True, timeout=30,
             )
-            result.total_packets = len([line for line in count_proc.stdout.splitlines() if line.strip()])
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            result.errors.append(f"PCAP could not be read: tshark did not run ({exc})")
+            return result
+        if count_proc.returncode != 0:
+            detail = (count_proc.stderr or count_proc.stdout or "").strip().splitlines()
+            reason = detail[0] if detail else f"exit status {count_proc.returncode}"
+            result.errors.append(f"PCAP could not be read: {reason}")
+            return result
+        result.total_packets = len([line for line in count_proc.stdout.splitlines() if line.strip()])
 
         # Extract TCP connections
         try:

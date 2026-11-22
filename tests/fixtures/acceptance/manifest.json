@@ -54,14 +54,9 @@
           "subsystem": "Windows CUI"
         },
         "yara": {
-          "status": "match",
-          "rules": [
-            "HATCHERY_Packing_Generic_HighEntropy",
-            "HATCHERY_Suspicious_HexStrings"
-          ]
+          "status": "clean",
+          "rules": []
         },
-        "known_defect": "rule-calibration",
-        "known_defect_detail": "Every PE matches HATCHERY_Suspicious_HexStrings on its MZ header and any PE with <=2 sections matches HATCHERY_Packing_Generic_HighEntropy. Both rules are declared low severity; calibration is not part of this baseline.",
         "packer": "not_packed",
         "capa": "explicit_status"
       }
@@ -76,8 +71,10 @@
       "expected": {
         "uploader_file_type": "ELF",
         "elf": {
-          "valid": false,
-          "error_contains": "format code"
+          "valid": true,
+          "arch": "x86-64",
+          "bits": 64,
+          "type": "EXEC (executable)"
         },
         "elf_independent": {
           "arch": "EM_X86_64",
@@ -87,8 +84,6 @@
           "status": "clean",
           "rules": []
         },
-        "known_defect": "elf-enum",
-        "known_defect_detail": "ELFAnalyzer formats pyelftools 0.33 enum strings with :x and aborts before reporting any metadata.",
         "packer": "error_not_pe",
         "capa": "explicit_status"
       }
@@ -185,10 +180,9 @@
       "size": 93,
       "expected": {
         "parse": {
-          "total_packets": 0
+          "total_packets": 0,
+          "errors": true
         },
-        "known_defect": "pcap-error",
-        "known_defect_detail": "The tshark failure is swallowed; an unreadable capture is indistinguishable from an empty one and errors stays empty.",
         "backend_required": "tshark"
       }
     }

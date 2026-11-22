@@ -344,21 +344,10 @@ def fixture_entries() -> list[dict]:
             "expected": {
                 "uploader_file_type": "PE",
                 "pe": {"valid": True, "machine": "x64 (AMD64)", "subsystem": "Windows CUI"},
-                # A benign one-section PE is not clean under the shipped rules.
-                # Both matches are declared severity "low" (master plan 4.1).
-                "yara": {
-                    "status": "match",
-                    "rules": [
-                        "HATCHERY_Packing_Generic_HighEntropy",
-                        "HATCHERY_Suspicious_HexStrings",
-                    ],
-                },
-                "known_defect": "rule-calibration",
-                "known_defect_detail": (
-                    "Every PE matches HATCHERY_Suspicious_HexStrings on its MZ header "
-                    "and any PE with <=2 sections matches HATCHERY_Packing_Generic_HighEntropy. "
-                    "Both rules are declared low severity; calibration is not part of this baseline."
-                ),
+                # A benign minimal PE must score clean (D37): the hex-string
+                # rule no longer counts a PE's own MZ header as an embedded PE,
+                # and the packing rule checks the entropy its name promises.
+                "yara": {"status": "clean", "rules": []},
                 "packer": "not_packed",
                 "capa": "explicit_status",
             },
@@ -373,16 +362,17 @@ def fixture_entries() -> list[dict]:
             "expected": {
                 "uploader_file_type": "ELF",
                 # The fixture is a valid ELF (verified independently with
-                # pyelftools), but ELFAnalyzer still formats pyelftools enum
-                # strings as integers (master plan 1.5).
-                "elf": {"valid": False, "error_contains": "format code"},
+                # pyelftools) and ELFAnalyzer now reports its metadata; the
+                # header enums are normalised for pyelftools int and str forms
+                # (D36).
+                "elf": {
+                    "valid": True,
+                    "arch": "x86-64",
+                    "bits": 64,
+                    "type": "EXEC (executable)",
+                },
                 "elf_independent": {"arch": "EM_X86_64", "type": "ET_EXEC"},
                 "yara": {"status": "clean", "rules": []},
-                "known_defect": "elf-enum",
-                "known_defect_detail": (
-                    "ELFAnalyzer formats pyelftools 0.33 enum strings with :x and "
-                    "aborts before reporting any metadata."
-                ),
                 "packer": "error_not_pe",
                 "capa": "explicit_status",
             },
@@ -453,12 +443,8 @@ def fixture_entries() -> list[dict]:
             "sha256": _sha256(build_malformed_pcap()),
             "size": len(build_malformed_pcap()),
             "expected": {
-                "parse": {"total_packets": 0},
-                "known_defect": "pcap-error",
-                "known_defect_detail": (
-                    "The tshark failure is swallowed; an unreadable capture is "
-                    "indistinguishable from an empty one and errors stays empty."
-                ),
+                # An unreadable capture is an error, not an empty one (D37).
+                "parse": {"total_packets": 0, "errors": True},
                 "backend_required": "tshark",
             },
         },

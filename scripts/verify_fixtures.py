@@ -145,17 +145,19 @@ def check_static(report: Report, manifest: dict) -> None:
     pe_yara = yara(pe_path)
     expected_rules = sorted(by_id["benign_pe"]["expected"]["yara"]["rules"])
     actual_rules = sorted(m.rule for m in pe_yara.matches)
-    if actual_rules == expected_rules:
-        report.add("static/benign-pe-yara", "KNOWN-DEFECT",
-                   f"{', '.join(actual_rules)} on a benign PE (rule calibration)")
-    elif actual_rules == []:
-        report.add("static/benign-pe-yara", "CHANGED",
-                   "rules no longer flag the benign PE; update fixtures/manifest.json and the master plan")
+    if actual_rules == expected_rules == []:
+        report.add("static/benign-pe-yara", "PASS",
+                   f"0 matches with {pe_yara.rules_loaded} rule files loaded")
+    elif actual_rules == expected_rules:
+        report.add("static/benign-pe-yara", "FAIL",
+                   f"calibration regressed: {', '.join(actual_rules)} on a benign PE")
     else:
         report.add("static/benign-pe-yara", "FAIL",
                    f"expected {expected_rules}, got {actual_rules}")
 
-    # ELF: the fixture is valid even though HATCHERY's analyzer is not (1.5).
+    # ELF: the fixture is independently valid and the analyzer now reports its
+    # metadata (D36). Both pyelftools header forms are normalised, so the exact
+    # labels come from the manifest rather than from a version-dependent repr.
     elf_path = REPO_ROOT / by_id["benign_elf"]["path"]
     try:
         from elftools.elf.elffile import ELFFile
@@ -175,15 +177,18 @@ def check_static(report: Report, manifest: dict) -> None:
     elf_meta = uploader.upload(elf_path)
     elf_result = ELFAnalyzer().analyze(elf_path)
     expected_elf = by_id["benign_elf"]["expected"]["elf"]
-    if elf_result.is_valid_elf:
-        report.add("static/benign-elf-analyzer", "CHANGED",
-                   "ELFAnalyzer now parses the fixture; update the manifest and master plan (ELF parser)")
-    elif expected_elf["error_contains"] in (elf_result.error or "") and elf_meta.file_type == "ELF":
-        report.add("static/benign-elf-analyzer", "KNOWN-DEFECT",
-                   f"uploader=ELF, analyzer error: {elf_result.error} (ELF parser)")
-    else:
+    observed = (elf_result.arch, elf_result.bits, elf_result.elf_type)
+    wanted = (expected_elf["arch"], expected_elf["bits"], expected_elf["type"])
+    if not elf_result.is_valid_elf or elf_result.error:
         report.add("static/benign-elf-analyzer", "FAIL",
                    f"uploader={elf_meta.file_type} error={elf_result.error}")
+    elif elf_meta.file_type == "ELF" and observed == wanted:
+        report.add("static/benign-elf-analyzer", "PASS",
+                   f"{elf_result.arch}, {elf_result.bits}-bit, {elf_result.elf_type}, "
+                   f"{len(elf_result.sections)} sections")
+    else:
+        report.add("static/benign-elf-analyzer", "FAIL",
+                   f"uploader={elf_meta.file_type} observed={observed} expected={wanted}")
 
     # Packer analysis is PE-only; say so rather than reporting a clean result.
     packer = PackerDetector()
@@ -283,15 +288,16 @@ def check_replay(report: Report, manifest: dict) -> None:
         conns_ok = len(result.connections) == expect.get("connections", len(result.connections))
         known = entry["expected"].get("known_defect")
         if fixture_id == "pcap_malformed":
-            if packets_ok and not result.errors:
-                report.add(label, "KNOWN-DEFECT",
-                           "unreadable capture reported as an empty result (PCAP backend)")
-            elif result.errors:
-                report.add(label, "CHANGED",
-                           f"unreadable capture now reports: {result.errors[0][:90]}")
+            if result.errors and result.total_packets == 0:
+                report.add(label, "PASS",
+                           f"unreadable capture reported: {result.errors[0][:70]}")
+            elif not result.errors and packets_ok:
+                report.add(label, "FAIL",
+                           "unreadable capture was reported as an empty result")
             else:
                 report.add(label, "FAIL",
-                           f"expected {expect['total_packets']} packets, got {result.total_packets}")
+                           f"unexpected result: {result.total_packets} packets, "
+                           f"errors={result.errors[:1]}")
         elif packets_ok and conns_ok:
             detail = f"{result.total_packets} packets, {len(result.connections)} connections"
             if known:
