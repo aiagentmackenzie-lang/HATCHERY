@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The workflow was disabled manually once (2026-11-24) and every push went
+  # ungated without a word. A dispatch entry means an operator can re-run the
+  # gates on demand instead of pushing a dummy commit to find out.
+  workflow_dispatch:
 
 jobs:
   python-gate:
