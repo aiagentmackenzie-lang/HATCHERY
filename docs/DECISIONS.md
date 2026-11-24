@@ -1861,7 +1861,7 @@ bundle could not be read.
 | `tar_declared_size_lie` | `getmembers()` walks the whole archive, so a lying size field raised *inside* the iteration, outside the `try` | the member loop is wrapped; the container is named, siblings survive |
 | `rtf_group_depth` | the group stack had no depth cap: a 64 MiB file of `{` allocated tens of millions of group objects (bytes→objects ≈ 1:1) although `SECURITY.md` claimed "a depth cap" | `MAX_GROUP_DEPTH = 1024`, refused with a named error |
 | `ole_truncated` / `tar_member_traversal` / `zip_member_traversal` | confirmed bounded (named error, flattened members, no escape) | no change |
-| review of the extractors | five extractors called `read_bytes()` and truncated *after* the read, so the cap ran after the allocation it was meant to bound | one `_read_bounded()` helper reads `cap + 1` bytes and reports truncation |
+| review of the extractors | five `read_bytes()` call sites (ISO, PDF, OLE, RTF, LNK) loaded the whole file and truncated *after* the read, so the cap ran after the allocation it was meant to bound | one `_read_bounded()` helper reads `cap + 1` bytes and reports truncation |
 | `test_the_corpus_is_deterministic...` | the corpus itself was not deterministic: `zipfile.writestr` stamps "now" and `gzip.compress` embeds an mtime | fixed DOS timestamp and `mtime=0` |
 
 **The corpus** (`tests/hostile_corpus.py`, generated in-process — no committed
