@@ -9,7 +9,29 @@ import { pipeline } from 'stream/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
-const UPLOADS_DIR = path.join(ENGINE_ROOT, 'uploads');
+
+/**
+ * The largest sample the API accepts, in bytes.
+ *
+ * This is the engine's own intake limit (`DEFAULT_MAX_SAMPLE_BYTES` in
+ * `engine/store/store.py`: 256 MiB). The two numbers are asserted equal in
+ * `test/upload_limit.test.mjs`, because two limits that disagree is how a
+ * 100 MiB sample becomes "refused by the API, accepted by the engine" — and a
+ * limit nobody can state is not a limit.
+ */
+export const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Where multipart uploads land before the worker reads them.
+ *
+ * `HATCHERY_UPLOADS_DIR` exists so a test (and an operator with a separate
+ * volume) can move it without touching the checkout: a refused upload must be
+ * provably absent from the directory, and a test that writes into the repo
+ * cannot prove that.
+ */
+const UPLOADS_DIR = process.env.HATCHERY_UPLOADS_DIR
+  ? path.resolve(process.env.HATCHERY_UPLOADS_DIR)
+  : path.join(ENGINE_ROOT, 'uploads');
 
 /**
  * Roots a caller may point `filePath` at.
@@ -55,16 +77,32 @@ function isAllowedSamplePath(candidate: string): boolean {
   );
 }
 
+// Bytes, not characters: the filesystem limit is NAME_MAX bytes, and a name of
+// 120 emoji is 480 bytes. Well below 255 so the write can never be the thing
+// that fails a submission.
+export const MAX_FILENAME_BYTES = 200;
+
 /**
- * Reduce a client-supplied filename to a bare name.
+ * Reduce a client-supplied filename to a bare, bounded name.
  *
  * `path.join(dir, "../../etc/passwd")` escapes `dir`; busboy hands over the raw
- * client filename. Strip any directory component and any traversal segments.
+ * client filename. Strip any directory component and any traversal segments,
+ * then bound the length in bytes.
  */
-function safeFilename(name: string): string {
+
+export function safeFilename(name: string): string {
   const base = path.basename(name.replace(/\\/g, '/'));
   const cleaned = base.replace(/[^\w.\- ]+/g, '_').replace(/^\.+/, '');
-  return cleaned || `sample-${randomUUID().slice(0, 8)}`;
+  if (!cleaned) return `sample-${randomUUID().slice(0, 8)}`;
+  if (Buffer.byteLength(cleaned) <= MAX_FILENAME_BYTES) return cleaned;
+  // Keep the extension: the engine still uses it as a hint, and a name cut to
+  // the limit that happens to lose ".doc" is a worse lie than a shorter stem.
+  const extension = path.extname(cleaned).slice(0, 16);
+  let stem = cleaned.slice(0, cleaned.length - extension.length).replace(/\.+$/, '');
+  while (stem.length > 1 && Buffer.byteLength(stem + extension) > MAX_FILENAME_BYTES) {
+    stem = stem.slice(0, -1);
+  }
+  return `${stem || 'sample'}${extension}`;
 }
 
 export async function submitRoutes(app: FastifyInstance) {
@@ -83,34 +121,54 @@ export async function submitRoutes(app: FastifyInstance) {
       const parts = request.parts();
       let uploadedFile: any = null;
       const fields: Record<string, string> = {};
-
-      for await (const part of parts) {
-        if (part.type === 'file') {
-          uploadedFile = part;
-        } else if (part.value !== undefined) {
-          fields[part.fieldname] = String(part.value);
-        }
-      }
-
-      if (!uploadedFile || !uploadedFile.filename) {
-        return reply.code(400).send({ error: 'No file uploaded' });
-      }
-
-      if (fields.timeout) timeout = parseInt(fields.timeout, 10) || 120;
-      if (fields.noSandbox) noSandbox = fields.noSandbox === 'true';
-
-      // One task id, used for the upload directory AND the database row. The
-      // previous revision generated two, so the uploaded file lived in a
-      // directory named after a task that did not exist.
-      const safeName = safeFilename(String(uploadedFile.filename));
       const taskUploadDir = path.join(UPLOADS_DIR, taskId);
-      fs.mkdirSync(taskUploadDir, { recursive: true });
-      filePath = path.join(taskUploadDir, safeName);
 
-      await pipeline(uploadedFile.file, fs.createWriteStream(filePath));
-      const stats = fs.statSync(filePath);
-      fileName = safeName;
-      fileSize = stats.size;
+      // Any failure in here — the size limit, a client disconnect, a busboy
+      // error — must leave nothing behind. Before this, a refused upload left
+      // the partial file and its directory on disk for every request.
+      try {
+        for await (const part of parts) {
+          if (part.type === 'file') {
+            uploadedFile = part;
+          } else if (part.value !== undefined) {
+            fields[part.fieldname] = String(part.value);
+          }
+        }
+
+        if (!uploadedFile || !uploadedFile.filename) {
+          return reply.code(400).send({ error: 'No file uploaded' });
+        }
+
+        if (fields.timeout) timeout = parseInt(fields.timeout, 10) || 120;
+        if (fields.noSandbox) noSandbox = fields.noSandbox === 'true';
+
+        // One task id, used for the upload directory AND the database row. The
+        // previous revision generated two, so the uploaded file lived in a
+        // directory named after a task that did not exist.
+        const safeName = safeFilename(String(uploadedFile.filename));
+        fs.mkdirSync(taskUploadDir, { recursive: true });
+        filePath = path.join(taskUploadDir, safeName);
+
+        await pipeline(uploadedFile.file, fs.createWriteStream(filePath));
+
+        // Belt and braces: if the plugin is ever configured with
+        // `throwFileSizeLimit: false`, the stream ends truncated and the route
+        // must still refuse rather than store half a sample.
+        if (uploadedFile.file.truncated) {
+          fs.rmSync(taskUploadDir, { recursive: true, force: true });
+          return reply.code(413).send({
+            error: 'sample too large',
+            limit: MAX_UPLOAD_BYTES,
+          });
+        }
+
+        const stats = fs.statSync(filePath);
+        fileName = safeName;
+        fileSize = stats.size;
+      } catch (error) {
+        fs.rmSync(taskUploadDir, { recursive: true, force: true });
+        throw error;
+      }
     } else {
       const body = request.body ?? {};
       filePath = body.filePath;
@@ -140,6 +198,16 @@ export async function submitRoutes(app: FastifyInstance) {
       }
 
       const stats = fs.statSync(filePath);
+      // Refuse before enqueueing. The worker would refuse it too (D40), but a
+      // task that is queued only to fail is a worse answer than a 413: the
+      // caller learns the reason now, and nothing is written.
+      if (stats.size > MAX_UPLOAD_BYTES) {
+        return reply.code(413).send({
+          error: 'sample too large',
+          limit: MAX_UPLOAD_BYTES,
+          size: stats.size,
+        });
+      }
       fileName = path.basename(filePath);
       fileSize = stats.size;
     }

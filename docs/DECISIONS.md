@@ -1977,12 +1977,65 @@ before `put_file`, so a file swapped in between would be typed from different
 bytes than the stored hash — the pipeline already re-reads the sample path for
 hashing, YARA and strings, so this is the existing TOCTOU and it is not made
 worse here. `hatchery static` still scans a ≤256 MiB sample wholly in memory
-(bounded, not streamed). **The API's multipart route is not covered by this
-slice:** `POST /api/submit` streams the upload to `uploads/<task>/` with no
-size limit of its own and then enqueues; the worker's intake now refuses the
-file when it runs, but the bytes are already on disk. A `limits.fileSize` on
-`request.parts()` plus a 413 is the obvious next slice — it is a disk
-exhaustion surface, not a memory one, so it was not folded in here.
+(bounded, not streamed). **The API was left alone and D40 said so wrongly at
+first:** `POST /api/submit` did have a plugin limit (50 MiB), but nothing tied
+it to the engine's 256 MiB, the JSON `filePath` branch had none at all, and a
+refused upload left the partial file and its directory behind. **Corrected in
+D41**, which is the slice that actually closes the upload boundary.
+
+## D41 — The API's upload boundary is one number, and a refusal leaves nothing (2026-11-24)
+
+**What was wrong, precisely.** D40 recorded this gap from memory and got it half
+right: the multipart route **did** have a limit — `@fastify/multipart` was
+registered with `limits: { fileSize: 50 * 1024 * 1024 }` — but three things made
+it not a boundary:
+
+1. **Two numbers.** The API refused above 50 MiB; the engine accepts up to its
+   `DEFAULT_MAX_SAMPLE_BYTES` (256 MiB). A 100 MiB sample was refused by the API
+   and accepted by the engine, and nothing anywhere stated which was the limit.
+2. **The JSON branch had none.** `POST /api/submit {"filePath": …}` stat'ed the
+   file, inserted the task row and enqueued — the worker then refused it as
+   `too-large` (D40), so the caller learned about the limit from a task that
+   queued only to fail.
+3. **A refusal left residue.** The route created `uploads/<taskId>/`, streamed
+   into it, and on a 413 the partial file and its directory stayed on disk for
+   every refused request — bounded per request, unbounded across requests.
+
+**What changed** (`server/src/routes/submit.ts`, `server/src/index.ts`).
+
+| Layer | Change |
+| --- | --- |
+| One number | `MAX_UPLOAD_BYTES = 256 MiB` is exported from the route module, used by the multipart registration (`limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, parts: 8 }`) and by both branches. `test/upload_limit.test.mjs` reads `DEFAULT_MAX_SAMPLE_BYTES` out of `engine/store/store.py` and fails if the two numbers disagree — the same "one number, or it is not a limit" rule as D40. |
+| Cleanup | The whole multipart branch runs inside one `try`: any failure (size limit, client disconnect, busboy error) removes `uploads/<taskId>/` before rethrowing, so the 413 the plugin raises is also the state on disk. |
+| Belt and braces | If the plugin is ever configured with `throwFileSizeLimit: false`, `file.truncated` is checked after the pipeline and refused with the same 413. |
+| JSON branch | `stats.size > MAX_UPLOAD_BYTES` → **413** `{error: "sample too large", limit, size}` before the task row is inserted. Nothing is enqueued. |
+| Filenames | A client filename is bounded in **bytes** (200, below `NAME_MAX`) with the extension preserved; a dots-only name becomes `sample-<id>`. |
+| Testability | `HATCHERY_UPLOADS_DIR` moves the upload root (a test cannot prove cleanup in a directory it shares with the checkout; an operator can also put uploads on another volume). |
+
+**Evidence.** `server/test/upload_limit.test.mjs` (5 cases): the API limit equals
+the engine limit (read from the Python source); an 8 KiB upload against a 1 KiB
+plugin limit is **413** and the uploads directory is byte-for-byte unchanged; a
+second file part is refused (413) with no residue; a 300 MiB `filePath` is 413
+before any task row; a 400-character filename is bounded and keeps `.docm`.
+`npm test` **105 passed / 0 failed** (100 + 5), `npm run build` and `npm run
+typecheck` clean. `scripts/verify_setup.sh` gains `api/multipart-upload` (real
+`curl -F`, stored under a temp uploads root) and `api/oversized-filepath` (300
+MiB sparse `filePath` → 413, no task directory): **37 PASS, 0 FAIL**.
+
+**A test that hung, and why it matters.** The first version drove the refusal
+through `app.inject`, which never settles when the server refuses a request body
+mid-stream — the test hung instead of failing. The tests now start a real
+listener and use `fetch` with `AbortSignal.timeout`, and every test carries a
+`timeout`. "The suite hangs" is a failure mode a gate must not have: a hang
+consumes the operator's attention exactly like a false green.
+
+**Not done, deliberately.** No per-account upload quota or rate limit (a
+deployment concern; the audit log records every request); no streaming of the
+upload into the encrypted sample store (the route still writes a plaintext file
+to `uploads/`, which the worker then stores and the engine's intake deletes only
+via the sample store's lifecycle) — that is a D28-adjacent decision, not a limit
+one; `HATCHERY_UPLOADS_DIR` is not documented in the README's configuration
+table (it is a test seam first, an operator knob second).
 
 ## What was deliberately not done
 

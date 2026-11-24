@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
-import { submitRoutes } from './routes/submit.js';
+import { MAX_UPLOAD_BYTES, submitRoutes } from './routes/submit.js';
 import { statusRoutes } from './routes/status.js';
 import { reportRoutes } from './routes/report.js';
 import { iocRoutes } from './routes/iocs.js';
@@ -219,7 +219,12 @@ app.addHook('onResponse', async (request: any, reply: any) => {
 });
 
 // Multipart file uploads (e.g. PhishHawk attachment detonation)
-app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
+// The same number the engine enforces on intake (D40/D41). A request may
+// carry one sample and a handful of fields; more parts than that is not a
+// submission.
+app.register(multipart, {
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, parts: 8 },
+});
 
 // REST routes
 app.register(submitRoutes);

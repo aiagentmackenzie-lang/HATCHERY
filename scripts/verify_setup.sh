@@ -558,6 +558,7 @@ start_api() {
       HATCHERY_QUEUE_DB="$WORK/api/queue.db" \
       HATCHERY_RESULTS_ROOT="$WORK/api/results" \
       HATCHERY_ENGINE_PYTHON="$PY" \
+      HATCHERY_UPLOADS_DIR="$WORK/api/uploads" \
       node dist/index.js
   ) >>"$WORK/api.log" 2>&1 &
   API_PID=$!
@@ -650,6 +651,42 @@ then
 else
   fail "api/ingest-after-worker" "task did not reconcile to a published result"
 fi
+
+# D41: the API's upload boundary. One number (the engine's 256 MiB), applied on
+# both branches, with nothing left behind when it refuses. The multipart success
+# path is here because server-gate has no engine; the 413s are in
+# server/test/upload_limit.test.mjs with a lowered plugin limit.
+mkdir -p "$WORK/api/uploads"
+printf 'MZ\220\000hatchery-multipart-upload' > "$WORK/api/upload-sample.exe"
+MULTIPART_RESPONSE="$(curl -s -m 20 -X POST http://127.0.0.1:3002/api/submit \
+  -F "sample=@$WORK/api/upload-sample.exe" -F "noSandbox=true")"
+MULTIPART_ID="$(printf '%s' "$MULTIPART_RESPONSE" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null)"
+if [ -n "$MULTIPART_ID" ] && [ "$(ls "$WORK/api/uploads/$MULTIPART_ID" 2>/dev/null | wc -l | tr -d ' ')" = "1" ]; then
+  pass "api/multipart-upload" "small upload queued and stored under the temp uploads root"
+else
+  fail "api/multipart-upload" "multipart upload was not stored: $MULTIPART_RESPONSE"
+fi
+
+"$PY" - "$WORK/api/uploads/oversized.bin" <<'SPARSEUPLOAD'
+import sys
+with open(sys.argv[1], "wb") as handle:
+    handle.truncate(300 * 1024 * 1024)
+SPARSEUPLOAD
+OVERSIZED_STATUS="$(curl -s -o "$WORK/api/oversized.json" -w '%{http_code}' -m 20 \
+  -X POST http://127.0.0.1:3002/api/submit \
+  -H 'content-type: application/json' \
+  -d "{\"filePath\":\"$WORK/api/uploads/oversized.bin\",\"noSandbox\":true}")"
+if [ "$OVERSIZED_STATUS" = "413" ] && grep -q '"sample too large"' "$WORK/api/oversized.json"; then
+  UPLOAD_DIRS="$(find "$WORK/api/uploads" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
+  if [ "$UPLOAD_DIRS" = "1" ]; then
+    pass "api/oversized-filepath" "300 MiB filePath refused with 413 before enqueue; no residue"
+  else
+    fail "api/oversized-filepath" "a refused submission created a task upload directory"
+  fi
+else
+  fail "api/oversized-filepath" "expected 413 sample-too-large, got $OVERSIZED_STATUS: $(cat "$WORK/api/oversized.json" 2>/dev/null | head -c 200)"
+fi
+rm -f "$WORK/api/uploads/oversized.bin"
 
 # D31: the API's own database is a credential store and an audit record. It must not
 # be world-readable, and its audit chain must verify as a *keyed* chain (a chain that
