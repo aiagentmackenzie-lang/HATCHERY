@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from engine.store import SampleStore
+from engine.store import SampleStore, SampleStoreError
+from engine.store.limits import SampleSourceError, check_sample_source
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,17 @@ class SampleMetadata:
             "encryption": self.encryption,
             "blob": self.storage_path.name,
         }
+
+
+#: Classification reads the magic and at most 512 bytes of text. A bounded head
+#: is enough for both, and it is what keeps ``upload`` from materialising a
+#: multi-hundred-megabyte sample just to name its type (D40).
+HEAD_BYTES = 64 * 1024
+
+
+def _read_head(path: Path, limit: int = HEAD_BYTES) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(limit)
 
 
 class SampleUploader:
@@ -187,15 +199,22 @@ class SampleUploader:
         sha256: str,
         encryption: str,
         sample_id: Optional[str] = None,
+        file_size: Optional[int] = None,
     ) -> SampleMetadata:
-        """Classify bytes that are already in the store (used by --from-store)."""
+        """Classify a sample's head; ``file_size`` defaults to ``len(data)``.
+
+        ``data`` only needs to be the head (magic + first 512 bytes for script
+        detection). ``--from-store`` passes the whole decrypted sample, which
+        the store already bounded; ``upload`` passes a bounded head and the
+        real size from the store record (D40).
+        """
         magic_match = self._detect_file_type(data)
         is_script = self._detect_script(filename, data)
         file_type = "Script" if is_script else magic_match
         return SampleMetadata(
             sample_id=sample_id or sha256[:16],
             original_filename=filename,
-            file_size=len(data),
+            file_size=len(data) if file_size is None else file_size,
             file_type=file_type,
             magic_match=magic_match,
             is_script=is_script,
@@ -237,19 +256,30 @@ class SampleUploader:
         if not source_path.exists():
             raise FileNotFoundError(f"Sample file not found: {source_path}")
 
-        data = source_path.read_bytes()
-        if not data:
+        # D40: refuse before reading. This used to be ``read_bytes()`` followed
+        # by the store's size check, so the check ran after the allocation it
+        # was meant to prevent (474 MiB of RSS for a 400 MiB sample, measured).
+        try:
+            info = check_sample_source(source_path, limit=self.store.max_bytes)
+        except SampleSourceError as exc:
+            raise SampleStoreError(exc.reason, exc.message) from exc
+        if info.st_size == 0:
             raise ValueError("Cannot upload empty file")
 
+        # Classification needs the magic bytes and the first 512 bytes of text,
+        # never the whole file. The store's ``put_file`` does the single full
+        # read, under the same rule.
+        head = _read_head(source_path)
         filename = original_filename or source_path.name
-        record = self.store.put_bytes(data, source=str(source_path))
+        record = self.store.put_file(source_path)
         metadata = self.describe(
             filename,
-            data,
+            head,
             storage_path=self.store.blob_path(record.sha256),
             sha256=record.sha256,
             encryption="aes-256-gcm/v1" if record.encrypted else "plaintext-legacy",
             sample_id=sample_id,
+            file_size=record.size,
         )
 
         logger.info(

@@ -80,6 +80,7 @@ from engine.store.errors import (
     UNKNOWN_KEY_ID,
     SampleStoreError,
 )
+from engine.store.limits import SampleSourceError, check_sample_source
 from engine.store.index import (
     ACTIVE,
     DELETING,
@@ -448,20 +449,13 @@ class SampleStore:
         """Read a host file and store it. Refuses symlinks and oversized input."""
         self._require_writable("storing a sample")
         path = Path(source_path)
+        # D40: one rule, applied to the stat before any read. ``upload`` and
+        # ``hatchery static`` call the same function, so the direct path cannot
+        # disagree with the store about what a sample may be.
         try:
-            info = os.lstat(path)
-        except FileNotFoundError as exc:
-            raise SampleStoreError(NOT_FOUND, f"the sample file {path} does not exist") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise SampleStoreError(SYMLINK, f"{path} is a symlink; refusing to follow it")
-        if not stat.S_ISREG(info.st_mode):
-            raise SampleStoreError(NOT_A_FILE, f"{path} is not a regular file")
-        if info.st_size > self.max_bytes:
-            raise SampleStoreError(
-                TOO_LARGE,
-                f"{path} is {info.st_size} bytes, above the "
-                f"{self.max_bytes}-byte store limit",
-            )
+            check_sample_source(path, limit=self.max_bytes)
+        except SampleSourceError as exc:
+            raise SampleStoreError(exc.reason, exc.message) from exc
         flags = os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW

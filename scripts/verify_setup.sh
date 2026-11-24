@@ -225,6 +225,35 @@ else
   fail "hostile/named-not-crash" "could not build the hostile corpus"
 fi
 
+# D40: the sample limit is applied to the stat, before the read. A 64 GiB
+# *sparse* file costs no disk and no memory to create; the old path would have
+# tried to allocate it in full before the store could refuse it.
+"$PY" - "$WORK/huge.bin" <<'SPARSE'
+import sys
+with open(sys.argv[1], "wb") as handle:
+    handle.truncate(64 * 1024**3)
+SPARSE
+HUGE_LOG="$WORK/huge-sample.log"
+HUGE_START=$(date +%s)
+if HATCHERY_SAMPLE_STORE="$WORK/huge-samples" HATCHERY_RESULTS_ROOT="$WORK/results" \
+    "$PY" -m engine.cli submit "$WORK/huge.bin" --no-sandbox -o "$WORK/huge-run" \
+      >"$HUGE_LOG" 2>&1; then
+  fail "intake/oversized-before-read" "a 64 GiB sample was accepted"
+else
+  HUGE_ELAPSED=$(( $(date +%s) - HUGE_START ))
+  if grep -q "Traceback" "$HUGE_LOG"; then
+    fail "intake/oversized-before-read" "a traceback reached the operator"
+  elif ! grep -q "too-large" "$HUGE_LOG"; then
+    fail "intake/oversized-before-read" "the refusal did not name too-large"
+  elif [ "$HUGE_ELAPSED" -gt 20 ]; then
+    fail "intake/oversized-before-read" "the refusal took ${HUGE_ELAPSED}s (a read, not a stat)"
+  elif [ -e "$WORK/huge-run/bundle/analysis.json" ]; then
+    fail "intake/oversized-before-read" "a bundle was written for a refused sample"
+  else
+    pass "intake/oversized-before-read" "64 GiB refused in ${HUGE_ELAPSED}s from the stat; no bundle, no traceback"
+  fi
+fi
+
 # The sample reached the store encrypted, content-addressed, and with no
 # plaintext left anywhere in the store directory (D28).
 STORE_STATUS="$WORK/store-status.json"

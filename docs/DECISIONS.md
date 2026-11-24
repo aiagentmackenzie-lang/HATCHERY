@@ -1911,6 +1911,75 @@ the exit-6 backstop, which is the honest place for "the tool broke". No C
 fuzzing of YARA-X, pefile or pyelftools themselves; those remain third-party
 attack surface, now contained rather than trusted.
 
+## D40 — The sample limit is applied before the read (2026-11-24)
+
+**What was wrong.** D39 bounded every parser behind the sample and left one
+unbounded read in front of them. `SampleUploader.upload` did
+`Path.read_bytes()` and only then called the store, which refused anything above
+`DEFAULT_MAX_SAMPLE_BYTES` (256 MiB). The check existed — it just ran after the
+allocation it was meant to prevent. Measured on the defect: `submit` of a
+400 MiB sample cost **474,464,256 bytes of peak RSS (452 MiB) and 0.27 s** to
+print `too-large`, and the same command on a 64 GiB file would have tried to
+allocate 64 GiB before refusing. Two more inputs were worse than slow: a FIFO
+blocks a read forever, and a device can be endless.
+
+It is the same shape D39 fixed one layer down (five `read_bytes()` sites that
+truncated after the read), and it was the only unbounded read left in the
+intake path.
+
+**What changed.**
+
+| Layer | File | Change |
+| --- | --- | --- |
+| One rule | `engine/store/limits.py` | `check_sample_source(path, limit=…)` does `lstat` and refuses a symlink, a non-regular file (FIFO, device) or a file above the limit, returning the `stat` result. `SampleSourceError` carries the store's existing reason codes (`symlink`, `not-a-file`, `too-large`), so there is one vocabulary. |
+| Store | `engine/store/store.py` | `put_file` calls that function instead of its own copy and translates to `SampleStoreError` with the same reasons and messages. No behaviour change; one implementation. |
+| Upload | `engine/intake/uploader.py` | `upload` checks the stat, refuses an empty file with the existing `ValueError`, reads a **64 KiB head** for classification, and lets `store.put_file` do the single full read under the same rule. `describe` takes `file_size` from the store record instead of `len(data)`. |
+| CLI | `engine/cli.py` | `hatchery static` writes nothing and never touches the store, so it applies the same rule itself before the string extractor reads the file: a named refusal, one line, exit 1. `submit` gets it from the store's intake path; `emulate` delegates to `submit`; `--enqueue` already used `put_file`. |
+
+The direct `submit` path now refuses a **symlink** exactly as `submit --enqueue`
+already did. That is a behaviour change and it is the point: two entry points
+that disagree about what a sample may be is the "claims more than it checks"
+shape D30–D39 exist to prevent. A FIFO or device is refused for the same reason
+it cannot be sized: the read would never end.
+
+**Evidence** (same machine, CPython 3.12.14). The defect, before → after, on the
+same file:
+
+```text
+submit 400 MiB sample   474,464,256 B peak RSS / 0.27 s  ->  55,050,240 B / 0.13 s
+submit 64 GiB sparse    (would allocate 64 GiB)           ->  55,017,472 B / 0.12 s
+                                                             refused from the stat
+```
+
+Both now print one line naming `too-large` and the limit, exit 1, and write no
+bundle. `tests/test_sample_limit.py` (7 cases) pins: the oversized refusal
+happens with `Path.read_bytes` monkeypatched to fail (so no full read is
+possible); a symlink is refused with `symlink`; a FIFO is refused without
+blocking (subprocess with a 30 s timeout, so a regression fails instead of
+hanging); `submit` and `static` both refuse a 64 GiB sparse file in under 20 s
+with exit 1 and no bundle; classification still types by a bounded head and
+reports the real size; and an empty file still raises `ValueError("empty")`.
+`scripts/verify_setup.sh` gains `intake/oversized-before-read` (64 GiB sparse,
+refused in 1 s, no bundle, no traceback) — **35 checks, 0 failed**. Full suite
+**963 passed / 17 skipped** (was 956/17; +7).
+
+**Not done, deliberately.** The store still encrypts in memory, so a sample *at*
+the 256 MiB limit costs ~256 MiB to store and again to string-scan; streaming
+encryption/scanning is its own slice and the cap is what makes the cost a
+constant rather than a function of the file. The limit is not configurable
+(`DEFAULT_MAX_SAMPLE_BYTES` is fixed and documented); an operator who needs a
+larger sample needs a decision, not an environment variable. The head is read
+before `put_file`, so a file swapped in between would be typed from different
+bytes than the stored hash — the pipeline already re-reads the sample path for
+hashing, YARA and strings, so this is the existing TOCTOU and it is not made
+worse here. `hatchery static` still scans a ≤256 MiB sample wholly in memory
+(bounded, not streamed). **The API's multipart route is not covered by this
+slice:** `POST /api/submit` streams the upload to `uploads/<task>/` with no
+size limit of its own and then enqueues; the worker's intake now refuses the
+file when it runs, but the bytes are already on disk. A `limits.fileSize` on
+`request.parts()` plus a 413 is the obvious next slice — it is a disk
+exhaustion surface, not a memory one, so it was not folded in here.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.

@@ -3200,6 +3200,21 @@ def mcp(root: Path) -> None:
 @internal_error_backstop
 def static(file: Path) -> None:
     """Run static analysis only (no sandbox execution)."""
+    # D40: this command writes nothing and never touches the sample store, so it
+    # applies the same sample rule itself — on the stat, before the string
+    # extractor reads the file. `submit` gets the same refusal from the store's
+    # intake path (`put_file`).
+    from engine.store import DEFAULT_MAX_SAMPLE_BYTES
+    from engine.store.limits import SampleSourceError, check_sample_source
+
+    try:
+        check_sample_source(file, limit=DEFAULT_MAX_SAMPLE_BYTES)
+    except SampleSourceError as exc:
+        console.print(
+            f"[red]Cannot analyse the sample: {exc.reason}: {exc.message}[/red]"
+        )
+        raise SystemExit(1) from exc
+
     # Delegate to submit with --no-sandbox
     console.print("[dim]Running static analysis only (no sandbox)[/dim]")
     # We invoke the submit logic directly
