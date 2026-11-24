@@ -45,6 +45,34 @@ jobs:
           python tests/fixtures/acceptance/tools/generate_fixtures.py --check
           python scripts/verify_fixtures.py
 
+  # D39: hostile input is incomplete work, not a traceback. A job of its own so
+  # the corpus, the stage isolation rows and the parser properties are a gate
+  # rather than a line in a 900-test suite: the first step proves hypothesis is
+  # installed, so the property module's `importorskip` cannot turn the gate into
+  # a green skip when someone edits the extra.
+  hostile-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: The property-test dependency is installed (a skip is not a pass)
+        run: python -c "import hypothesis; print('hypothesis', hypothesis.__version__)"
+
+      - name: Hostile corpus, stage isolation and parser properties
+        run: |
+          pytest tests/test_hostile_inputs.py tests/test_stage_isolation.py \
+                 tests/test_parser_properties.py -q -o addopts=""
+
   # Opt-in and non-required until it has proven stable. It installs the beta
   # emulator extra (which the pinned python-gate deliberately never installs) and
   # runs the emulation tests. It does NOT build the emulation image or run the

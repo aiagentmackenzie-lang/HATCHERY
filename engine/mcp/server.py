@@ -24,13 +24,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, TextIO
 
+from engine import __version__
 from engine.mcp.tools import DEFAULT_RESULTS_ROOT, Tool, ToolError, build_tools
 
 logger = logging.getLogger(__name__)
 
 JSONRPC_VERSION = "2.0"
 SERVER_NAME = "hatchery"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = __version__
 # Newest first. We echo the client's version when we speak it, else we answer
 # with our newest so the client can decide whether to continue.
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")

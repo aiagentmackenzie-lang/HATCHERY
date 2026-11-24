@@ -512,7 +512,9 @@ def _extract_zip(path: Path, state: _State, depth: int, context: str) -> None:
             try:
                 with archive.open(info) as handle:
                     data = handle.read(MAX_ENTRY_BYTES + 1)
-            except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            except (zipfile.BadZipFile, RuntimeError, OSError, zlib.error) as exc:
+                # zipfile does not wrap a zlib failure in ``BadZipFile``; see
+                # the same note in ``_extract_stream`` (D39).
                 state.errors.append(f"{context}!/{safe}: read failed: {exc}")
                 continue
             if len(data) > MAX_ENTRY_BYTES:
@@ -590,7 +592,10 @@ def _extract_stream(path: Path, state: _State, depth: int, context: str, kind: s
     opener = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}[kind]
     try:
         data = _decompress_stream(path, opener)
-    except (OSError, EOFError, lzma.LZMAError) as exc:
+    except (OSError, EOFError, lzma.LZMAError, zlib.error) as exc:
+        # ``zlib.error`` is not an ``OSError``: a corrupt gzip/bzip2 body raises
+        # it straight through ``gzip.open``. Missing it here meant the exception
+        # escaped the extractor and aborted every sibling container (D39).
         state.errors.append(f"{context}: {kind} decompression failed: {exc}")
         return
     if len(data) > MAX_ENTRY_BYTES:
@@ -625,47 +630,53 @@ def _extract_tar(path: Path, state: _State, depth: int, context: str) -> None:
         return
 
     index = len(state.children)
-    with archive:
-        for member in archive.getmembers():
-            if not state.budget_left():
-                state.truncated = True
-                state.add_flag("child-limit-reached")
-                break
-            if not member.isfile():
-                if member.issym() or member.islnk() or member.isdev():
+    # ``getmembers()`` walks the whole archive, so a lying size field is a read
+    # failure *inside* the iteration, not at open time. Without this wrapper it
+    # escaped the extractor and aborted every sibling container (D39).
+    try:
+        with archive:
+            for member in archive.getmembers():
+                if not state.budget_left():
+                    state.truncated = True
+                    state.add_flag("child-limit-reached")
+                    break
+                if not member.isfile():
+                    if member.issym() or member.islnk() or member.isdev():
+                        state.unsupported.append({
+                            "path": f"{context}!/{member.name}",
+                            "format": "special-member",
+                            "reason": f"tar member is {member.type!r}; refused",
+                        })
+                    continue
+                safe = _safe_member_name(member.name)
+                if safe is None:
+                    continue
+                if member.size > MAX_ENTRY_BYTES:
                     state.unsupported.append({
-                        "path": f"{context}!/{member.name}",
-                        "format": "special-member",
-                        "reason": f"tar member is {member.type!r}; refused",
+                        "path": f"{context}!/{safe}",
+                        "format": "oversize",
+                        "reason": f"declared size {member.size} exceeds the cap",
                     })
-                continue
-            safe = _safe_member_name(member.name)
-            if safe is None:
-                continue
-            if member.size > MAX_ENTRY_BYTES:
-                state.unsupported.append({
-                    "path": f"{context}!/{safe}",
-                    "format": "oversize",
-                    "reason": f"declared size {member.size} exceeds the cap",
-                })
-                continue
-            try:
-                extracted = archive.extractfile(member)
-                data = extracted.read(MAX_ENTRY_BYTES + 1) if extracted else b""
-            except (tarfile.TarError, OSError) as exc:
-                state.errors.append(f"{context}!/{safe}: read failed: {exc}")
-                continue
-            if len(data) > MAX_ENTRY_BYTES:
-                state.truncated = True
-                continue
-            child = _write_child(
-                state, index, safe, data,
-                extractor="tar", reason="tar member", depth=depth,
-                flags=_member_flags(safe),
-            )
-            index += 1
-            if depth < state.max_depth and state.budget_left():
-                _recurse(child, state, depth)
+                    continue
+                try:
+                    extracted = archive.extractfile(member)
+                    data = extracted.read(MAX_ENTRY_BYTES + 1) if extracted else b""
+                except (tarfile.TarError, OSError) as exc:
+                    state.errors.append(f"{context}!/{safe}: read failed: {exc}")
+                    continue
+                if len(data) > MAX_ENTRY_BYTES:
+                    state.truncated = True
+                    continue
+                child = _write_child(
+                    state, index, safe, data,
+                    extractor="tar", reason="tar member", depth=depth,
+                    flags=_member_flags(safe),
+                )
+                index += 1
+                if depth < state.max_depth and state.budget_left():
+                    _recurse(child, state, depth)
+    except (tarfile.TarError, OSError) as exc:
+        state.errors.append(f"{context}: tar read failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +892,7 @@ def _lnk_link_info(data: bytes, pos: int) -> tuple[dict, int]:
 
 def parse_lnk(path: Path) -> dict:
     """Parse a Windows shell link into its meaningful fields (best effort)."""
-    data = path.read_bytes()
+    data, _ = _read_bounded(path)
     if len(data) < 0x4C or data[0:4] != b"L\x00\x00\x00":
         raise ValueError("not a shell link")
     flags = _u32le(data, 20)
@@ -1023,14 +1034,30 @@ def _iso_entries(data: bytes, extent_lba: int, length: int, joliet: bool) -> lis
     return entries
 
 
+def _read_bounded(path: Path, limit: Optional[int] = None) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes, reporting whether the file was larger.
+
+    The cap is applied *while reading*. ``read_bytes()`` followed by a length
+    check allocates the whole file first, so the check that was supposed to
+    bound memory ran after the allocation it was meant to prevent (D39).
+    ``limit`` is resolved from ``MAX_ENTRY_BYTES`` at call time, not bound as a
+    default, so a caller (or a test) can tighten the cap for one run.
+    """
+    cap = MAX_ENTRY_BYTES if limit is None else limit
+    with path.open("rb") as handle:
+        data = handle.read(cap + 1)
+    if len(data) > cap:
+        return data[:cap], True
+    return data, False
+
+
 def _extract_iso(path: Path, state: _State, depth: int, context: str) -> None:
     try:
-        data = path.read_bytes()
+        data, truncated = _read_bounded(path)
     except OSError as exc:
         state.errors.append(f"{context}: read failed: {exc}")
         return
-    if len(data) > MAX_ENTRY_BYTES:
-        data = data[:MAX_ENTRY_BYTES]
+    if truncated:
         state.truncated = True
         state.add_flag("iso-truncated-read")
 
@@ -1190,12 +1217,11 @@ def _pdf_decode_stream(
 
 def _extract_pdf(path: Path, state: _State, depth: int, context: str) -> None:
     try:
-        data = path.read_bytes()
+        data, truncated = _read_bounded(path)
     except OSError as exc:
         state.errors.append(f"{context}: read failed: {exc}")
         return
-    if len(data) > MAX_ENTRY_BYTES:
-        data = data[:MAX_ENTRY_BYTES]
+    if truncated:
         state.truncated = True
         state.add_flag("pdf-truncated-read")
 
@@ -1336,12 +1362,11 @@ def _extract_ole(path: Path, state: _State, depth: int, context: str) -> None:
     """
 
     try:
-        data = path.read_bytes()
+        data, truncated = _read_bounded(path)
     except OSError as exc:
         state.errors.append(f"{context}: read failed: {exc}")
         return
-    if len(data) > MAX_ENTRY_BYTES:
-        data = data[:MAX_ENTRY_BYTES]
+    if truncated:
         state.truncated = True
         state.add_flag("ole-truncated-read")
     try:
@@ -1458,12 +1483,11 @@ def _extract_rtf(path: Path, state: _State, depth: int, context: str) -> None:
     """
 
     try:
-        data = path.read_bytes()
+        data, truncated = _read_bounded(path)
     except OSError as exc:
         state.errors.append(f"{context}: read failed: {exc}")
         return
-    if len(data) > MAX_ENTRY_BYTES:
-        data = data[:MAX_ENTRY_BYTES]
+    if truncated:
         state.truncated = True
         state.add_flag("rtf-truncated-read")
     try:

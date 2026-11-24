@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ from engine.bundle import (
     write_bundle,
 )
 from engine.export.ocsf_export import OCSF_SCHEMA_VERSION
+from engine.guard import guarded, internal_error_backstop
 from engine.static.yara_scanner import lint_rules
 
 console = Console()
@@ -236,6 +238,86 @@ def _print_delivery(result: Any) -> None:
         console.print(f"  RTF embedded objects: [cyan]{rtf_count}[/cyan]{suffix}")
 
 
+def _inotify_line_count(path: Path) -> int:
+    return len(path.read_text(errors="replace").splitlines())
+
+
+def _inotify_events(path: Path) -> dict:
+    from engine.bundle import events_from_inotify
+
+    return {"events": events_from_inotify(path)}
+
+
+def _child_static(
+    hasher: Any,
+    string_extractor: Any,
+    yara_scanner: Any,
+    packer_detector: Any,
+    child: Any,
+) -> dict:
+    return {
+        "hashes": hasher.hash_file(child.path).to_dict(),
+        "strings": string_extractor.extract(child.path).to_dict(),
+        "yara": yara_scanner.scan(child.path).to_dict(),
+        "packer": packer_detector.detect(child.path).to_dict(),
+    }
+
+
+def _parse_syscall_log(
+    sandbox_result: Any, stage_errors: list[str]
+) -> tuple[Any, Any]:
+    """Parse the syscall source this tier's collector produced (D39).
+
+    Tier 2 uses gVisor's Sentry trace; tier 1 uses in-guest strace. Both are
+    parsed in-process from a file the guest wrote, so both go through the same
+    funnel: a parser bug names the stage and leaves ``syscall_result`` as
+    ``None`` (the evasion and ATT&CK stages then simply do not run) instead of
+    throwing away the sandbox result that *did* succeed.
+
+    Returns ``(syscall_result, gvisor_result)``.
+    """
+    gvisor_result: Any = None
+    syscall_result: Any = None
+    if sandbox_result.gvisor_trace_log:
+        from engine.monitor.gvisor_strace import GvisorStraceParser
+
+        console.print("\n  [bold]Parsing gVisor Sentry trace...[/bold]")
+        gvisor_path = Path(sandbox_result.gvisor_trace_log)
+        if gvisor_path.exists():
+            gvisor_result = guarded(
+                "gVisor Sentry trace parse",
+                stage_errors,
+                functools.partial(GvisorStraceParser().parse_file, gvisor_path),
+            )
+            syscall_result = gvisor_result
+            if gvisor_result is not None:
+                console.print(
+                    f"  Events parsed: [cyan]{gvisor_result.parsed_events}[/cyan] "
+                    f"(source: gvisor-sentry)"
+                )
+    elif sandbox_result.strace_log:
+        from engine.monitor.strace_parser import StraceParser
+
+        console.print("\n  [bold]Parsing syscall log...[/bold]")
+        strace_path = Path(sandbox_result.strace_log)
+        if strace_path.exists():
+            syscall_result = guarded(
+                "strace parse",
+                stage_errors,
+                functools.partial(StraceParser().parse_file, strace_path),
+            )
+            if syscall_result is not None:
+                console.print(
+                    f"  Events parsed: [cyan]{syscall_result.parsed_events}[/cyan]"
+                )
+    elif sandbox_result.gvisor_trace_error:
+        console.print(
+            f"  [yellow]gVisor Sentry trace unavailable: "
+            f"{sandbox_result.gvisor_trace_error}[/yellow]"
+        )
+    return syscall_result, gvisor_result
+
+
 def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:
     """Open a delivery container and statically analyse everything inside.
 
@@ -244,28 +326,53 @@ def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:
     strings, packer detection) so its own IOCs reach the IOC extractor. The
     children are **not** detonated, and the run says so in its limitations.
     """
-    from engine.intake.delivery import extract_delivery
+    from engine.intake.delivery import (
+        DeliveryClassification,
+        DeliveryFormat,
+        DeliveryIntakeResult,
+        extract_delivery,
+    )
     from engine.intake.hasher import MultiHasher
     from engine.intake.strings import StringExtractor
     from engine.static.yara_scanner import YARAScanner
     from engine.static.packer_detect import PackerDetector
 
-    result = extract_delivery(file, results_dir / "delivery")
+    # D39: a defect in classification or extractor dispatch is this stage's
+    # named failure, not a traceback. ``extract_delivery`` already catches per
+    # container; this covers the module-level work around it (output root,
+    # mkdir) and keeps the funnel in one place.
+    errors: list[str] = []
+    result = guarded(
+        "delivery intake",
+        errors,
+        lambda: extract_delivery(file, results_dir / "delivery"),
+        fallback_factory=lambda: DeliveryIntakeResult(
+            classification=DeliveryClassification(DeliveryFormat.UNKNOWN)
+        ),
+    )
+    assert result is not None, "the fallback above is never None"
+    result.errors.extend(errors)
 
     hasher = MultiHasher()
     string_extractor = StringExtractor()
     yara_scanner = YARAScanner()
     packer_detector = PackerDetector()
     for child in result.children:
-        try:
-            child.static = {
-                "hashes": hasher.hash_file(child.path).to_dict(),
-                "strings": string_extractor.extract(child.path).to_dict(),
-                "yara": yara_scanner.scan(child.path).to_dict(),
-                "packer": packer_detector.detect(child.path).to_dict(),
-            }
-        except Exception as exc:  # a child must never abort the run
-            result.errors.append(f"{child.name}: static analysis failed: {exc}")
+        child_errors: list[str] = []
+        child.static = guarded(
+            f"{child.name}: static analysis",
+            child_errors,
+            functools.partial(
+                _child_static,
+                hasher,
+                string_extractor,
+                yara_scanner,
+                packer_detector,
+                child,
+            ),
+            fallback_factory=dict,
+        ) or {}
+        result.errors.extend(child_errors)
 
     return result, result.to_dict()
 
@@ -299,6 +406,7 @@ def cli(verbose: bool) -> None:
 @click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
 @click.option("--job-id", default=None, help="Job id to enqueue under (default: a fresh id)")
 @click.option("--requeue", is_flag=True, help="Re-queue an existing terminal job instead of refusing")
+@internal_error_backstop
 def submit(
     file: Optional[Path],
     from_store: Optional[str],
@@ -469,17 +577,23 @@ def submit(
     results_dir = output or Path(f"results/{task_id}")
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    # D39: every in-process parse below reads bytes the sample controls. The
+    # guard turns an unexpected parser exception into that stage's named
+    # failure in ``bundle.errors`` and keeps the run alive; the bundle is still
+    # written and sealed. Documented parser errors are not flattened.
+    stage_errors: list[str] = []
+
     # Initialize all analysis modules
     from engine.intake.uploader import SampleUploader
     from engine.intake.hasher import MultiHasher
-    from engine.intake.strings import StringExtractor
+    from engine.intake.strings import StringClassification, StringExtractor
     from engine.intake.pe_analyzer import PEAnalyzer
     from engine.intake.elf_analyzer import ELFAnalyzer
     from engine.intake.delivery import DeliveryFormat
-    from engine.static.yara_scanner import YARAScanner
-    from engine.static.capa_scanner import CapaScanner
-    from engine.static.packer_detect import PackerDetector
-    from engine.ioc.extractor import IOCExtractor
+    from engine.static.yara_scanner import YARAResult, YARAScanner
+    from engine.static.capa_scanner import CapaResult, CapaScanner
+    from engine.static.packer_detect import PackerResult, PackerDetector
+    from engine.ioc.extractor import IOCExtractor, IOCReport
     from engine.export.report import ReportGenerator
     from engine.export.stix import STIXExporter
     from engine.export.mitre_map import MITREMapper
@@ -516,7 +630,13 @@ def submit(
     # String extraction
     console.print("\n[bold]▸ String Extraction[/bold]")
     string_extractor = StringExtractor()
-    strings = string_extractor.extract(file)
+    strings = guarded(
+        "string extraction",
+        stage_errors,
+        lambda: string_extractor.extract(file),
+        fallback_factory=StringClassification,
+    )
+    assert strings is not None, "the fallback above is never None"
     console.print(f"  URLs: [red]{len(strings.urls)}[/red]")
     console.print(f"  IPs: [red]{len(strings.ips)}[/red]")
     console.print(f"  Domains: [red]{len(strings.domains)}[/red]")
@@ -534,8 +654,10 @@ def submit(
     if metadata.file_type == "PE":
         console.print("\n[bold]▸ PE Analysis[/bold]")
         pe_analyzer = PEAnalyzer()
-        pe_result = pe_analyzer.analyze(file)
-        if pe_result.is_valid_pe:
+        pe_result = guarded(
+            "PE analysis", stage_errors, lambda: pe_analyzer.analyze(file)
+        )
+        if pe_result is not None and pe_result.is_valid_pe:
             console.print(f"  Machine: [cyan]{pe_result.machine_type}[/cyan]")
             console.print(f"  Subsystem: [cyan]{pe_result.subsystem}[/cyan]")
             console.print(f"  Sections: [cyan]{len(pe_result.sections)}[/cyan]")
@@ -549,8 +671,10 @@ def submit(
     elif metadata.file_type == "ELF":
         console.print("\n[bold]▸ ELF Analysis[/bold]")
         elf_analyzer = ELFAnalyzer()
-        elf_result = elf_analyzer.analyze(file)
-        if elf_result.is_valid_elf:
+        elf_result = guarded(
+            "ELF analysis", stage_errors, lambda: elf_analyzer.analyze(file)
+        )
+        if elf_result is not None and elf_result.is_valid_elf:
             console.print(f"  Architecture: [cyan]{elf_result.arch}[/cyan]")
             console.print(f"  Type: [cyan]{elf_result.elf_type}[/cyan]")
             console.print(f"  Sections: [cyan]{len(elf_result.sections)}[/cyan]")
@@ -562,7 +686,15 @@ def submit(
     # YARA scanning
     console.print("\n  [bold]YARA Scanning...[/bold]")
     yara_scanner = YARAScanner()
-    yara_result = yara_scanner.scan(file)
+    yara_result = guarded(
+        "YARA scan",
+        stage_errors,
+        lambda: yara_scanner.scan(file),
+        fallback_factory=lambda: YARAResult(
+            rules_loaded=0, error="scan failed unexpectedly; see bundle errors"
+        ),
+    )
+    assert yara_result is not None, "the fallback above is never None"
     console.print(f"  Rules loaded: [cyan]{yara_result.rules_loaded}[/cyan]")
     console.print(f"  Matches: [red]{len(yara_result.matches)}[/red]")
     _print_yara_results(yara_result.to_dict())
@@ -570,7 +702,15 @@ def submit(
     # capa analysis
     console.print("\n  [bold]capa Analysis...[/bold]")
     capa_scanner = CapaScanner()
-    capa_result = capa_scanner.scan(file)
+    capa_result = guarded(
+        "capa analysis",
+        stage_errors,
+        lambda: capa_scanner.scan(file),
+        fallback_factory=lambda: CapaResult(
+            error="analysis failed unexpectedly; see bundle errors"
+        ),
+    )
+    assert capa_result is not None, "the fallback above is never None"
     console.print(f"  Available: [cyan]{capa_result.is_available}[/cyan]")
     if capa_result.is_available:
         console.print(f"  Capabilities: [red]{len(capa_result.capabilities)}[/red]")
@@ -579,7 +719,15 @@ def submit(
     # Packer detection
     console.print("\n  [bold]Packer Detection...[/bold]")
     packer_detector = PackerDetector()
-    packer_result = packer_detector.detect(file)
+    packer_result = guarded(
+        "packer detection",
+        stage_errors,
+        lambda: packer_detector.detect(file),
+        fallback_factory=lambda: PackerResult(
+            error="detection failed unexpectedly; see bundle errors"
+        ),
+    )
+    assert packer_result is not None, "the fallback above is never None"
     console.print(f"  Packed: [red]{packer_result.is_packed}[/red]")
     console.print(f"  Suspicion: [yellow]{packer_result.suspicion_score:.2f}[/yellow]")
     _print_packer_results(packer_result.to_dict())
@@ -631,33 +779,9 @@ def submit(
                 if sandbox_result.error:
                     console.print(f"  [red]Error: {sandbox_result.error}[/red]")
 
-                # Parse the syscall source that this tier's collector produced.
-                # Tier 2 uses gVisor's Sentry trace; tier 1 uses in-guest strace.
-                syscall_result = None
-                if sandbox_result.gvisor_trace_log:
-                    from engine.monitor.gvisor_strace import GvisorStraceParser
-                    console.print("\n  [bold]Parsing gVisor Sentry trace...[/bold]")
-                    gvisor_path = Path(sandbox_result.gvisor_trace_log)
-                    if gvisor_path.exists():
-                        gvisor_result = GvisorStraceParser().parse_file(gvisor_path)
-                        syscall_result = gvisor_result
-                        console.print(
-                            f"  Events parsed: [cyan]{gvisor_result.parsed_events}[/cyan] "
-                            f"(source: gvisor-sentry)"
-                        )
-                elif sandbox_result.strace_log:
-                    from engine.monitor.strace_parser import StraceParser
-                    console.print("\n  [bold]Parsing syscall log...[/bold]")
-                    strace_path = Path(sandbox_result.strace_log)
-                    if strace_path.exists():
-                        strace_result = StraceParser().parse_file(strace_path)
-                        syscall_result = strace_result
-                        console.print(f"  Events parsed: [cyan]{strace_result.parsed_events}[/cyan]")
-                elif sandbox_result.gvisor_trace_error:
-                    console.print(
-                        f"  [yellow]gVisor Sentry trace unavailable: "
-                        f"{sandbox_result.gvisor_trace_error}[/yellow]"
-                    )
+                syscall_result, gvisor_result = _parse_syscall_log(
+                    sandbox_result, stage_errors
+                )
 
                 if syscall_result is not None:
                     console.print(f"  Network connections: [red]{len(syscall_result.network_connections)}[/red]")
@@ -717,11 +841,20 @@ def submit(
 
                 # Filesystem events recorded by inotifywait
                 if sandbox_result.artifacts and sandbox_result.artifacts.inotify_log:
-                    inotify_log_path = sandbox_result.artifacts.inotify_log
-                    line_count = len(
-                        inotify_log_path.read_text(errors="replace").splitlines()
+                    inotify_path = sandbox_result.artifacts.inotify_log
+                    line_count = guarded(
+                        "inotify log read",
+                        stage_errors,
+                        functools.partial(_inotify_line_count, inotify_path),
                     )
-                    console.print(f"  Filesystem events: [red]{line_count}[/red]")
+                    if line_count is None:
+                        # Do not hand the same unreadable log to the event
+                        # normaliser: it would re-read it and fail again, this
+                        # time outside any stage.
+                        inotify_log_path = None
+                    else:
+                        inotify_log_path = inotify_path
+                        console.print(f"  Filesystem events: [red]{line_count}[/red]")
 
                 # Analyze network capture if available
                 if sandbox_result.tcpdump_pcap:
@@ -730,10 +863,21 @@ def submit(
                     net_capture = NetworkCapture()
                     pcap_path = Path(sandbox_result.tcpdump_pcap)
                     if pcap_path.exists():
-                        net_result = net_capture.analyze_pcap(pcap_path)
-                        console.print(f"  Connections: [cyan]{len(net_result.connections)}[/cyan]")
-                        console.print(f"  DNS queries: [cyan]{len(net_result.dns_queries)}[/cyan]")
-                        console.print(f"  C2 detections: [red]{len(net_result.c2_detections)}[/red]")
+                        net_result = guarded(
+                            "PCAP analysis",
+                            stage_errors,
+                            functools.partial(net_capture.analyze_pcap, pcap_path),
+                        )
+                        if net_result is not None:
+                            console.print(
+                                f"  Connections: [cyan]{len(net_result.connections)}[/cyan]"
+                            )
+                            console.print(
+                                f"  DNS queries: [cyan]{len(net_result.dns_queries)}[/cyan]"
+                            )
+                            console.print(
+                                f"  C2 detections: [red]{len(net_result.c2_detections)}[/red]"
+                            )
 
                 if sandbox_result.error:
                     sandbox_error = sandbox_result.error
@@ -836,20 +980,29 @@ def submit(
     }
 
     binary_errors: list[str] = []
-    if metadata.file_type == "PE" and static_data["pe"] is None:
+    # A guard failure already put a precise "<stage>: unexpected <Type>: ..."
+    # entry in ``stage_errors``; the generic line is only for an analyzer that
+    # returned an invalid result on its own terms.
+    if metadata.file_type == "PE" and pe_result is not None and static_data["pe"] is None:
         binary_errors.append(
             "PE analysis produced no metadata: "
             f"{getattr(pe_result, 'error', None) or 'analyzer did not run'}"
         )
-    if metadata.file_type == "ELF" and static_data["elf"] is None:
+    if metadata.file_type == "ELF" and elf_result is not None and static_data["elf"] is None:
         binary_errors.append(
             "ELF analysis produced no metadata: "
             f"{getattr(elf_result, 'error', None) or 'analyzer did not run'}"
         )
 
-    ioc_report = extractor.extract(
-        static_data=static_data, emulation_data=emulation_result_dict
+    ioc_report = guarded(
+        "IOC extraction",
+        stage_errors,
+        lambda: extractor.extract(
+            static_data=static_data, emulation_data=emulation_result_dict
+        ),
+        fallback_factory=IOCReport,
     )
+    assert ioc_report is not None, "the fallback above is never None"
     _print_iocs(ioc_report.to_dict())
 
     # MITRE ATT&CK mapping
@@ -860,9 +1013,11 @@ def submit(
         mapped_events = syscall_result
     file_watch_data = None
     if inotify_log_path is not None:
-        from engine.bundle import events_from_inotify
-
-        file_watch_data = {"events": events_from_inotify(inotify_log_path)}
+        file_watch_data = guarded(
+            "filesystem event parse",
+            stage_errors,
+            functools.partial(_inotify_events, inotify_log_path),
+        )
     mitre_result = mapper.map_all(
         capa_data=capa_result.to_dict(),
         yara_data=yara_result.to_dict(),
@@ -931,7 +1086,12 @@ def submit(
         events=events,
         emulation_events=emulation_events,
         limitations=limitations,
-        errors=[e for e in (sandbox_error, emulation_error, *binary_errors) if e],
+        # D39: a stage that hit an unexpected exception is named here, in the
+        # one list every reader already treats as "this run did not establish
+        # that". A guarded failure never silently becomes an empty section.
+        errors=[
+            e for e in (sandbox_error, emulation_error, *stage_errors, *binary_errors) if e
+        ],
     )
 
     # Local LLM triage (D22). Opt-in, because it costs a model call and needs
@@ -1259,6 +1419,7 @@ def iocs(task_id: str, fmt: str) -> None:
 @click.option("--token", default=None, help="API token (else the environment)")
 @click.option("--collection", default=None, help="OpenCTI TAXII collection id")
 @click.option("--insecure", is_flag=True, help="Skip TLS verification (warns loudly)")
+@internal_error_backstop
 def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[str],
          collection: Optional[str], insecure: bool) -> None:
     """Push a run's STIX bundle to MISP or OpenCTI.
@@ -1330,6 +1491,7 @@ def push(run_dir: Path, target_kind: str, url: Optional[str], token: Optional[st
 @click.option("--model", default=None, help="Ollama model to use (else HATCHERY_TRIAGE_MODEL or auto-pick)")
 @click.option("--allow-remote-model", is_flag=True, help="Escape hatch: allow a remote endpoint or a `:cloud` model to see sample text")
 @click.option("--timeout", default=180.0, help="Per-request timeout in seconds")
+@internal_error_backstop
 def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeout: float) -> None:
     """Run local LLM triage over an existing run's bundle.
 
@@ -1340,7 +1502,7 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
     only: every claim must cite evidence that exists in the run, and a triage
     that cannot be grounded is INCONCLUSIVE, not clean.
     """
-    from engine.bundle import attach_triage, load_bundle, load_events
+    from engine.bundle import BundleReadError, attach_triage, load_bundle, load_events
     from engine.results import ManifestError, resolve_run_root
     from engine.triage.triage import TriageConfig, run_triage
 
@@ -1357,10 +1519,10 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
     _require_verifiable_stage(run_root)
     try:
         bundle = load_bundle(bundle_dir)
-    except FileNotFoundError as exc:
+        events = load_events(bundle_dir)
+    except (FileNotFoundError, BundleReadError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from exc
-    events = load_events(bundle_dir)
 
     config = TriageConfig.from_env()
     if model:
@@ -1423,6 +1585,7 @@ def triage(run_dir: Path, model: Optional[str], allow_remote_model: bool, timeou
 @click.option("--limit", default=None, type=int, help="Cap the number of runs scanned")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
 @click.option("--output", "-o", type=click.Path(path_type=Path), help="Write clusters.json to this path")
+@internal_error_backstop
 def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
             as_json: bool, output: Optional[Path]) -> None:
     """Group analysed runs that look like the same campaign.
@@ -1532,6 +1695,7 @@ def cluster(path: Path, threshold: float, min_size: int, limit: Optional[int],
     help="Treat an unsealed source run as INCONCLUSIVE (off by default: a legacy run still replays)",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit the replay section as JSON")
+@internal_error_backstop
 def replay(
     run_dir: Path,
     output: Optional[Path],
@@ -3033,6 +3197,7 @@ def mcp(root: Path) -> None:
 
 @cli.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
+@internal_error_backstop
 def static(file: Path) -> None:
     """Run static analysis only (no sandbox execution)."""
     # Delegate to submit with --no-sandbox
@@ -3063,9 +3228,20 @@ def static(file: Path) -> None:
     hash_result = hasher.hash_file(file)
     _print_hashes(hash_result.to_dict())
 
-    # Strings
+    # D39: the same funnel `submit` uses. `static` reads the same hostile bytes
+    # and must not answer a parser bug with a traceback either.
+    from engine.guard import guarded
+    from engine.intake.strings import StringClassification
+
+    stage_errors: list[str] = []
     string_extractor = StringExtractor()
-    strings = string_extractor.extract(file)
+    strings = guarded(
+        "string extraction",
+        stage_errors,
+        lambda: string_extractor.extract(file),
+        fallback_factory=StringClassification,
+    )
+    assert strings is not None, "the fallback above is never None"
     console.print(f"\n[bold]Strings:[/bold] {len(strings.all_strings)} total")
     if strings.urls:
         console.print(f"  [red]URLs ({len(strings.urls)}):[/red]")
@@ -3082,21 +3258,56 @@ def static(file: Path) -> None:
 
     # YARA
     console.print("\n[bold]YARA Scan[/bold]")
+    from engine.static.yara_scanner import YARAResult
+
     yara_scanner = YARAScanner()
-    yara_result = yara_scanner.scan(file)
+    yara_result = guarded(
+        "YARA scan",
+        stage_errors,
+        lambda: yara_scanner.scan(file),
+        fallback_factory=lambda: YARAResult(
+            rules_loaded=0, error="scan failed unexpectedly; see the stage error above"
+        ),
+    )
+    assert yara_result is not None, "the fallback above is never None"
     _print_yara_results(yara_result.to_dict())
 
     # capa
     console.print("\n[bold]capa Analysis[/bold]")
+    from engine.static.capa_scanner import CapaResult
+
     capa_scanner = CapaScanner()
-    capa_result = capa_scanner.scan(file)
+    capa_result = guarded(
+        "capa analysis",
+        stage_errors,
+        lambda: capa_scanner.scan(file),
+        fallback_factory=lambda: CapaResult(
+            error="analysis failed unexpectedly; see the stage error above"
+        ),
+    )
+    assert capa_result is not None, "the fallback above is never None"
     _print_capa_results(capa_result.to_dict())
 
     # Packer
     console.print("\n[bold]Packer Detection[/bold]")
+    from engine.static.packer_detect import PackerResult
+
     packer_detector = PackerDetector()
-    packer_result = packer_detector.detect(file)
+    packer_result = guarded(
+        "packer detection",
+        stage_errors,
+        lambda: packer_detector.detect(file),
+        fallback_factory=lambda: PackerResult(
+            error="detection failed unexpectedly; see the stage error above"
+        ),
+    )
+    assert packer_result is not None, "the fallback above is never None"
     _print_packer_results(packer_result.to_dict())
+    if stage_errors:
+        console.print(
+            f"\n[yellow]{len(stage_errors)} stage(s) failed unexpectedly; "
+            "each is named above and nothing is claimed for them.[/yellow]"
+        )
 
 
 @cli.command()

@@ -18,7 +18,20 @@ A delivery container is untrusted input that HATCHERY deliberately parses. `engi
 
 The OLE/CFB parser (`engine/intake/ole.py`) is bounded in the same spirit: FAT and mini-FAT chains are followed with a visited set and a hop cap, directory entries are read up to a fixed ceiling, stream reads are capped, and MS-OVBA decompression stops and raises rather than allocating without limit. It never executes the compound file's contents; VBA macro streams are only decompressed to text for scanning, and `\x01Ole10Native` payloads are carved as data.
 
-The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scanner is a single pass with a depth cap and an object-count cap, embedded objects are size-capped, and `\bin` raw regions are skipped so binary data cannot confuse group tracking — a `\bin` length that overruns the file or is negative raises instead of being silently dropped. A decoded `Package` object is an OLE compound file and is handed to the OLE parser; nothing is executed.
+**A parser bug is not a traceback (D39).** Every one of those readers runs
+in-process on bytes a sample controls, so `engine/guard.py` wraps every call: an
+unexpected exception becomes that stage's named failure (`<stage>: unexpected
+<Type>: <message>`) in `bundle.errors` — or in the delivery section's own
+`errors` — the bundle is still written and sealed, and the traceback goes only
+to the log. A documented parser error (`OleError`, `RtfError`) passes through
+untouched rather than being flattened. A defect outside every guarded stage (a
+pipeline driver or a renderer) exits **6** with one line and claims no bundle;
+`1` stays INCONCLUSIVE and `2` stays mismatch/usage. `tests/hostile_corpus.py`
+(29 fixtures, one lie each) and `tests/test_parser_properties.py` (hypothesis,
+dev-only) are the gate, and `scripts/verify_setup.sh` submits three corpus
+containers for real to prove the named/bounded/sealed contract end to end.
+
+The RTF parser (`engine/intake/rtf.py`) is bounded the same way: the group scanner is a single pass with a group-depth cap (`MAX_GROUP_DEPTH = 1024`, because one small object per open group otherwise makes bytes-to-objects roughly 1:1) and an object-count cap, embedded objects are size-capped, and `\bin` raw regions are skipped so binary data cannot confuse group tracking — a `\bin` length that overruns the file or is negative raises instead of being silently dropped. A decoded `Package` object is an OLE compound file and is handed to the OLE parser; nothing is executed.
 
 ## Sample store (encryption at rest and retention)
 

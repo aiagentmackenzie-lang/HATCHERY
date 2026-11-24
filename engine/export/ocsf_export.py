@@ -24,13 +24,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from engine import __version__
+
 logger = logging.getLogger(__name__)
 
 OCSF_SCHEMA_VERSION = "1.9.0"
 DETECTION_FINDING_CLASS_UID = 2004
 FINDINGS_CATEGORY_UID = 2
 DETECTION_FINDING_ACTIVITY_ID = 1  # Create
-HATCHERY_VERSION = "0.1.0"
+HATCHERY_VERSION = __version__
 
 SCHEMA_PATH = Path(__file__).parent / "ocsf" / f"schema-{OCSF_SCHEMA_VERSION}.json"
 

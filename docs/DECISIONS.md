@@ -1801,6 +1801,116 @@ change makes their output more consequential, not less. The section is
 best-effort metadata, not a verdict: `is_valid_pe`/`is_valid_elf` means the
 container parsed, not that the binary is safe.
 
+## D39 — Hostile input is incomplete work, never a traceback (2026-11-22)
+
+**What was wrong.** D19 bounded the *extraction path* — depth 3, 64 children,
+64 MiB per entry, 256 MiB per run, a 200:1 ratio and symlink/device refusal —
+and D38 wired the binary structure into the bundle. Neither bounded the
+*parsers*. `PEAnalyzer`, `ELFAnalyzer`, `StraceParser`, the OLE/CFB and RTF
+readers, `zipfile`/`tarfile`, the PCAP reader and the JSON document loaders all
+consumed attacker-controlled bytes **in this process**, and only the sandbox,
+emulation and delivery-child calls were wrapped in `submit`. A `struct.error`
+from an odd CFB sector, a `zlib.error` from a corrupt gzip body, an
+`AttributeError` inside a YARA-X match object — any of them escaped as a Python
+traceback: no bundle, no manifest, no named failure, and an exit status chosen
+by the interpreter. That is a denial of service and a broken claim at the same
+time, and it is the same lesson the IOT-Hardware-Scanner 2.5.0 slice recorded:
+**hostile input is incomplete work, not a traceback.** The suite had no fuzz
+test, no property test and no committed adversarial corpus — only fixtures for
+cases someone had thought of.
+
+**The rule, in two layers.** `engine/guard.py` is the single funnel.
+
+1. **Inside a stage.** `guarded(stage, errors, parse, ...)` runs one in-process
+   parse. An unexpected exception becomes that stage's named failure —
+   `<stage>: unexpected <Type>: <message>` — printed once, recorded in
+   `bundle.errors` (or the stage's own `errors`, for delivery and its children),
+   with the traceback only in the log. The caller supplies an empty-result
+   fallback so the bundle keeps its shape, the rest of the run continues, and
+   the bundle is still written **and sealed**. A *documented* parser error
+   (`OleError`, `RtfError`) is re-raised untouched: it already has a caller that
+   reports it, and flattening it would hide a real refusal.
+2. **Outside every stage.** `internal_error_backstop` wraps the commands that
+   read samples or run directories (`submit`, `static`, `replay`, `triage`,
+   `cluster`, `push`). A defect in the pipeline driver or a renderer prints one
+   line and exits **6** — a new, documented status, distinct from 1
+   (INCONCLUSIVE), 2 (mismatch/usage). No bundle is claimed for a run that did
+   not reach the bundle writer, and a non-zero exit means automation cannot
+   mistake it for a verdict.
+
+The stage boundaries that are now guarded in `submit`: delivery intake (and each
+extracted child), string extraction, PE, ELF, YARA, capa, packer detection,
+IOC extraction, the gVisor/strace syscall parse (extracted to
+`_parse_syscall_log` so it is testable and so a crash no longer discards the
+sandbox result that *did* succeed), the inotify log read and event parse, and
+PCAP analysis. `hatchery static` uses the same funnel.
+
+**A saved document is hostile input too.** `load_bundle`/`load_events`/
+`attach_triage` now raise one documented `BundleReadError` (a `ValueError`, so
+existing `except (OSError, ValueError)` callers keep working) for a truncated
+document, a JSON array where an object belongs, undecodable bytes, or a nesting
+depth that exhausts the reader. `hatchery triage` turns that into exit 1 with
+one line instead of an internal error; `replay` records it as the reason a
+bundle could not be read.
+
+**Findings the corpus produced — each one is fixed, not papered over.**
+
+| Found by | Defect | Fix |
+| --- | --- | --- |
+| `gzip_corrupt_deflate` | `zlib.error` is not an `OSError`, so a corrupt gzip/bzip2 body escaped `_extract_stream` (and `zipfile` does not wrap zlib failures either, so the same hole existed in `_extract_zip`) and aborted every sibling container through the outer catch-all | `zlib.error` added to both read sites; the failure is now named per member |
+| `tar_declared_size_lie` | `getmembers()` walks the whole archive, so a lying size field raised *inside* the iteration, outside the `try` | the member loop is wrapped; the container is named, siblings survive |
+| `rtf_group_depth` | the group stack had no depth cap: a 64 MiB file of `{` allocated tens of millions of group objects (bytes→objects ≈ 1:1) although `SECURITY.md` claimed "a depth cap" | `MAX_GROUP_DEPTH = 1024`, refused with a named error |
+| `ole_truncated` / `tar_member_traversal` / `zip_member_traversal` | confirmed bounded (named error, flattened members, no escape) | no change |
+| review of the extractors | five extractors called `read_bytes()` and truncated *after* the read, so the cap ran after the allocation it was meant to bound | one `_read_bounded()` helper reads `cap + 1` bytes and reports truncation |
+| `test_the_corpus_is_deterministic...` | the corpus itself was not deterministic: `zipfile.writestr` stamps "now" and `gzip.compress` embeds an mtime | fixed DOS timestamp and `mtime=0` |
+
+**The corpus** (`tests/hostile_corpus.py`, generated in-process — no committed
+binaries, no manifest to drift) is 29 fixtures, one lie each: truncated/lying
+ZIP and tar, a 1000:1 zip bomb, traversal and symlink members, corrupt deflate
+in a ZIP and in a gzip stream, an ISIZE lie, a truncated CFB, an impossible
+sector shift, an out-of-range directory sector, a FAT cycle, RTF group-depth /
+`\bin`-past-end / over-cap objects, `MZ`-only and `e_lfanew`-past-EOF and
+65,535-section PEs, truncated / lying / impossible-class ELFs, 21-digit PIDs,
+50,000-deep nesting and an 8 MiB line in strace, and a 100,000-deep JSON
+document. Every row asserts **named, bounded and fast** (child count, total
+bytes, depth, output root, < 5 s) — "does not crash" proves nothing. Six rows
+also run through the installed CLI and assert exit 0, a bundle, a sealed
+manifest and no `Traceback` on either stream.
+
+**The properties** (`tests/test_parser_properties.py`, hypothesis, **dev extra
+only**) pin the contract the funnel relies on: only the parser's own error
+escapes the PE/ELF/OLE/RTF readers; a ZIP member can never escape the output
+root or the caps; `_safe_member_name` is always below the root; the RTF reader
+refuses deeper nesting than its cap; the string extractor and one strace line
+never raise; a saved bundle raises only `BundleReadError`; and `guarded` records
+exactly one named entry and never flattens a documented error. `hypothesis` is a
+dev dependency — the runtime never imports it, and the module `importorskip`s so
+a pinned gate that lacks it still runs the suite.
+
+**Evidence** (clean run, this machine, CPython 3.12.14, pytest 9.2.0): full
+suite **956 passed / 17 skipped / 0 failed** (was 893/17 at D38; +63), `ruff`
+clean, `mypy` 87 files clean, `scripts/verify_setup.sh` **34 passed / 0 failed**
+(+`hostile/named-not-crash`: three corpus containers submitted for real, each
+named, bounded, sealed and traceback-free), and the new CI job
+`hostile-inputs` runs the corpus, the isolation rows and the properties with a
+step that fails if `hypothesis` is absent, so a green skip cannot hide.
+
+**Not done, deliberately.** No mutational fuzzer, no AFL/libFuzzer and no
+long-running corpus: hypothesis + a curated corpus is the shape that catches
+regressions in a 45-second suite, not the shape that finds new bugs overnight.
+The sandbox-derived parsers are guarded and property-tested at the parser level,
+but the *CLI wiring* for gVisor/strace is only covered where it can be reached
+without a container (`_parse_syscall_log` is unit-tested, the rest is the same
+single call pattern). `read_bytes()` still loads a whole top-level sample in the
+string extractor and in `SampleUploader`; the extraction path is bounded, the
+top-level sample has no size cap — a `--max-sample-bytes` refusal is a product
+decision, not a parser fix. No memory ceiling is asserted in-process (only the
+documented caps); a 64 MiB gzip bomb is still decompressed to the cap before it
+is refused. The report/renderers are not guarded individually — they are behind
+the exit-6 backstop, which is the honest place for "the tool broke". No C
+fuzzing of YARA-X, pefile or pyelftools themselves; those remain third-party
+attack surface, now contained rather than trusted.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hatchery"
-version = "0.1.0"
+version = "0.2.0"
 description = "Docker-based malware sandbox engine — watch it hatch, watch it burn."
 readme = "README.md"
 # 3.15 is excluded until every runtime dependency has a wheel: capa pulls in
@@ -45,6 +45,10 @@ emulation = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    # D39: property tests over the in-process parsers. Dev-only on purpose — the
+    # runtime never imports hypothesis, and a pinned python gate that cannot
+    # install it still runs the whole suite (the property module importorskips).
+    "hypothesis>=6.100",
     "ruff>=0.15",
     "mypy>=1.10",
     # Test-only fixture builders and cross-checks: real LNK / ISO9660 / PDF bytes

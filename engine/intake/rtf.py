@@ -26,6 +26,13 @@ from typing import Optional
 _DESTINATIONS = {b"objdata", b"objclass", b"objname"}
 
 
+#: Group nesting cap. The parser keeps one small object per open group, so a
+#: hostile RTF made of ``{`` characters would otherwise turn bytes into objects
+#: at roughly 1:1 — a 64 MiB document costing gigabytes. Real documents nest a
+#: few dozen deep; 1024 is far above that and still a constant.
+MAX_GROUP_DEPTH = 1024
+
+
 class RtfError(ValueError):
     """Raised when an RTF document cannot be parsed within the bounds."""
 
@@ -210,6 +217,10 @@ def parse_rtf(
     while pos < length:
         byte = data[pos]
         if byte == 0x7B:  # '{'
+            if len(stack) >= MAX_GROUP_DEPTH:
+                raise RtfError(
+                    f"group nesting deeper than {MAX_GROUP_DEPTH}; refused"
+                )
             stack.append(_Group(content_start=pos + 1))
             pos += 1
             continue

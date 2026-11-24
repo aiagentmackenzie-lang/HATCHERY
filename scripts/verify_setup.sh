@@ -168,6 +168,63 @@ else
   fail "bundle/binary-metadata" "submission of the PE fixture failed; see $WORK/bin-meta.log"
 fi
 
+# D39: a hostile sample is named, bounded work — not a traceback, and not a run
+# that cannot be delivered. Three containers from the corpus the test suite uses
+# (one source of truth: tests/hostile_corpus.py), each submitted for real.
+HOSTILE_DIR="$WORK/hostile"
+mkdir -p "$HOSTILE_DIR"
+if (cd "$ROOT" && "$PY" - "$HOSTILE_DIR" <<'BUILDHOSTILE'
+import pathlib, sys
+sys.path.insert(0, "tests")
+import hostile_corpus as hc
+
+out = pathlib.Path(sys.argv[1])
+for name in ("ole_truncated", "zip_ratio_bomb", "gzip_corrupt_deflate"):
+    (out / name).write_bytes(hc.corpus()[name].data)
+BUILDHOSTILE
+); then
+  HOSTILE_OK=1
+  for name in ole_truncated zip_ratio_bomb gzip_corrupt_deflate; do
+    HOSTILE_RUN="$WORK/hostile-runs/$name"
+    HOSTILE_LOG="$WORK/hostile-$name.log"
+    if ! HATCHERY_SAMPLE_STORE="$WORK/hostile-samples" HATCHERY_RESULTS_ROOT="$WORK/results" \
+        HATCHERY_QUEUE_DB="$WORK/hostile-queue.db" \
+        "$PY" -m engine.cli submit "$HOSTILE_DIR/$name" --no-sandbox -o "$HOSTILE_RUN" \
+          >"$HOSTILE_LOG" 2>&1; then
+      HOSTILE_OK=0; note "hostile/$name" "submit exited non-zero; see $HOSTILE_LOG"; continue
+    fi
+    if grep -q "Traceback" "$HOSTILE_LOG"; then
+      HOSTILE_OK=0; note "hostile/$name" "a traceback reached the operator"; continue
+    fi
+    if ! "$PY" - "$HOSTILE_RUN" <<'CHECKHOSTILE'
+import json, sys
+from pathlib import Path
+from engine.results import verify_run
+
+run = Path(sys.argv[1])
+analysis = json.loads((run / "bundle" / "analysis.json").read_text(encoding="utf-8"))
+delivery = analysis["static"]["delivery"]
+recorded = delivery["errors"] + [u["reason"] for u in delivery["unsupported"]] + delivery["flags"]
+assert recorded, "the hostile container was not named anywhere in the bundle"
+assert len(delivery["children"]) <= 64, delivery["children"]
+assert sum(c["size"] for c in delivery["children"]) <= 256 * 1024 * 1024
+report = verify_run(run, _depth=1)
+assert report["ok"] is True, report
+assert (run / "manifest.json").is_file()
+CHECKHOSTILE
+    then
+      HOSTILE_OK=0; note "hostile/$name" "bundle/manifest did not match the claim"
+    fi
+  done
+  if [ "$HOSTILE_OK" = 1 ]; then
+    pass "hostile/named-not-crash" "3 containers: named, bounded, sealed, no traceback"
+  else
+    fail "hostile/named-not-crash" "a hostile container escaped the contract (see notes)"
+  fi
+else
+  fail "hostile/named-not-crash" "could not build the hostile corpus"
+fi
+
 # The sample reached the store encrypted, content-addressed, and with no
 # plaintext left anywhere in the store directory (D28).
 STORE_STATUS="$WORK/store-status.json"

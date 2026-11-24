@@ -122,7 +122,7 @@ class TestReportGenerator:
 
         data = json.loads(report_json)
         assert data["generator"] == "HATCHERY"
-        assert data["version"] == "0.1.0"
+        assert data["version"] == "0.2.0"
         assert data["sample"]["name"] == "test.bin"
         assert data["limitations"] is not None
 

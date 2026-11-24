@@ -720,12 +720,33 @@ def write_bundle(run_dir: Path, bundle: AnalysisBundle) -> tuple[Path, Path]:
     return analysis_path, events_path
 
 
+class BundleReadError(ValueError):
+    """A saved document is not readable as the thing it claims to be.
+
+    A run directory is untrusted input once it leaves this machine: it is a
+    directory someone can hand back, edit or generate. A truncated document, a
+    JSON array where an object belongs, or a nesting depth that exhausts the
+    reader's stack is *invalid input* — a named refusal (exit 1), never an
+    internal error and never a traceback (D39).
+    """
+
+
+def _read_json_object(path: Path, what: str) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+        raise BundleReadError(f"{what} at {path} is not readable: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BundleReadError(f"{what} at {path} is not a JSON object")
+    return data
+
+
 def load_bundle(run_dir: Path) -> dict:
     """Read ``analysis.json`` back, raising a clear error when absent."""
     path = run_dir / ANALYSIS_FILENAME
     if not path.exists():
         raise FileNotFoundError(f"No analysis bundle at {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _read_json_object(path, "analysis bundle")
 
 
 def load_events(run_dir: Path) -> list[dict]:
@@ -733,14 +754,18 @@ def load_events(run_dir: Path) -> list[dict]:
     path = run_dir / EVENTS_FILENAME
     if not path.exists():
         return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BundleReadError(f"event stream at {path} is not readable: {exc}") from exc
     rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             rows.append(json.loads(line))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             logger.warning("Skipping malformed event line in %s", path)
     return rows
 
@@ -773,7 +798,7 @@ def attach_triage(run_dir: Path, section: dict) -> Path:
     path = run_dir / ANALYSIS_FILENAME
     if not path.exists():
         raise FileNotFoundError(f"No analysis bundle at {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json_object(path, "analysis bundle")
     data["triage"] = section
     summary = data.get("summary")
     if isinstance(summary, dict):

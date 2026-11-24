@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from engine.bundle import ANALYSIS_FILENAME, load_bundle
+from engine.bundle import ANALYSIS_FILENAME, BundleReadError, load_bundle
 from engine.replay.compare import (
     Comparison,
     SettingsComparison,
@@ -829,7 +829,7 @@ def run_replay(
             original = loaded
         else:
             bundle_error = "the bundle is not a JSON object"
-    except (json.JSONDecodeError, FileNotFoundError, OSError) as exc:
+    except (json.JSONDecodeError, BundleReadError, FileNotFoundError, OSError) as exc:
         bundle_error = str(exc)
 
     if manifest["state"] == "broken" or (

@@ -7,6 +7,8 @@ and IOC extraction.
 
 from __future__ import annotations
 
+from engine import __version__
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -84,7 +86,7 @@ class ReportGenerator:
             "",
             f"**Sample:** `{sample_name}`  ",
             f"**Date:** {now}  ",
-            "**Engine:** HATCHERY v0.1.0  ",
+            f"**Engine:** HATCHERY v{__version__}  ",
             "",
         ]
         if attack_version or ocsf_schema_version:
@@ -726,7 +728,7 @@ class ReportGenerator:
         """
         report = {
             "generator": "HATCHERY",
-            "version": "0.1.0",
+            "version": __version__,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "sample": {
                 "name": sample_name,
