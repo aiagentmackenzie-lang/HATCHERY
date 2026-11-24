@@ -298,6 +298,54 @@ python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
 
+## Captured transcript (D41, `ccb2955`)
+
+Server-only slice: no Python module changed, so the Python numbers are the D40
+baseline and are restated here so the pair can be read together.
+
+```text
+$ python -m pytest -q
+963 passed, 17 skipped            # unchanged by D41
+
+$ cd server && npm run typecheck && npm run build    # clean
+$ cd server && npm test
+105 passed, 0 failed              # was 100; +5 upload-limit cases
+
+$ PYTHON=$PWD/.venv/bin/python scripts/verify_setup.sh
+PASS  api/enqueue                        task ... queued (no subprocess held open)
+PASS  api/multipart-upload               small upload queued and stored under the temp uploads root
+PASS  api/oversized-filepath             300 MiB filePath refused with 413 before enqueue; no residue
+PASS  api/ingest-after-worker            completed task has the expected hash and static results
+PASS  data/repository-untouched          databases, results, uploads and EICAR unchanged
+RESULT: baseline verified
+# 37 PASS, 0 FAIL
+```
+
+The upload boundary, observed rather than asserted:
+
+```text
+POST /api/submit (multipart, 8 KiB body, plugin limit lowered to 1 KiB)
+  -> 413 {"statusCode":413,"error":"Payload Too Large","message":"request file too large"}
+  -> uploads/ unchanged (no partial file, no task directory)
+
+POST /api/submit (multipart, two file parts, files: 1)
+  -> 413 "reach files limit", uploads/ unchanged
+
+POST /api/submit {"filePath": "<300 MiB sparse>"}
+  -> 413 {"error":"sample too large","limit":268435456,"size":314572800}
+  -> no tasks row, no uploads/<task>/ directory
+
+MAX_UPLOAD_BYTES (server) == DEFAULT_MAX_SAMPLE_BYTES (engine/store/store.py) == 268435456
+```
+
+### What is deliberately not in this baseline
+
+No per-account quota or rate limit, no streaming of the upload into the encrypted
+sample store (the route still writes a plaintext file that the worker later
+stores), and `HATCHERY_UPLOADS_DIR` is a test seam before it is an operator knob.
+The `app.inject` refusal test was replaced with a real listener after it hung:
+"the gate hangs" is a failure mode a gate must not have.
+
 ## Captured transcript (D40, `6603de4`)
 
 Same clean-copy procedure as the D39 transcript. The intake numbers are measured
