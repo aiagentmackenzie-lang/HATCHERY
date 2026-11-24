@@ -1961,7 +1961,11 @@ with exit 1 and no bundle; classification still types by a bounded head and
 reports the real size; and an empty file still raises `ValueError("empty")`.
 `scripts/verify_setup.sh` gains `intake/oversized-before-read` (64 GiB sparse,
 refused in 1 s, no bundle, no traceback) — **35 checks, 0 failed**. Full suite
-**963 passed / 17 skipped** (was 956/17; +7).
+**963 passed / 17 skipped** (was 956/17; +7). CI then found a **pre-existing
+flaky gate**: the D32-era concurrency test waited for one fewer row than its
+own assertion required (`BURST` vs `BURST + 1`), so a busy runner failed it
+roughly one run in ten. The wait now targets the assertion's condition; the
+assertion itself is unchanged, so a real lost append still fails.
 
 **Not done, deliberately.** The store still encrypts in memory, so a sample *at*
 the 256 MiB limit costs ~256 MiB to store and again to string-scan; streaming

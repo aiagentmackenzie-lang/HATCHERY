@@ -336,18 +336,27 @@ test('a concurrent append burst during a compaction produces one valid chain and
     for (const response of responses) assert.equal(response.status, 200);
 
     // Every request was answered; wait for the last onResponse appends to land.
+    // The target is the *assertion's* target (BURST appends + the compaction's
+    // own `audit.compacted` row), not BURST: waiting for one fewer row than the
+    // assertion requires is a race that fails roughly one run in ten on a busy
+    // runner, and a flaky gate teaches people to re-run instead of to look.
+    const target = BURST + 1;
     const deadline = Date.now() + 15000;
-    let after = meta(dbPath);
-    while (
-      Number(after.chained_rows_total) - beforeTotal < BURST &&
-      Date.now() < deadline
-    ) {
+    const settle = () => {
+      const now = meta(dbPath);
+      return {
+        after: now,
+        gained: Number(now.chained_rows_total) - beforeTotal,
+        failures: Number(now.append_failure_total ?? '0') - beforeFailures,
+      };
+    };
+    let state = settle();
+    while (state.gained + state.failures < target && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
-      after = meta(dbPath);
+      state = settle();
     }
 
-    const gained = Number(after.chained_rows_total) - beforeTotal;
-    const failuresGained = Number(after.append_failure_total ?? '0') - beforeFailures;
+    const { after, gained, failures: failuresGained } = state;
     // One row per answered request, plus the `audit.compacted` row. If any append was
     // lost it is in the failure count, never silently missing.
     assert.equal(gained + failuresGained, BURST + 1, `gained=${gained} failures=${failuresGained}`);
