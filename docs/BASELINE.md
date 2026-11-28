@@ -66,12 +66,19 @@ and `hostile-inputs` installs hypothesis and reports **63 passed** (the dependen
 fails the job if it is missing, so that is a real run).
 
 CI's Python counts differ from this checkout in the honest direction: **966 passed, 21
-skipped** on the runner against **970 / 17** here. Three of those four extra skips are
-the tshark-gated acceptance rows — verified by re-running with `/opt/homebrew/bin`
-removed from `PATH`, which adds exactly `test_acceptance_fixtures.py:139/149/157:
-tshark not installed`. The fourth was unnamed, because `pytest -q` does not print skip
-reasons; the workflow now runs `pytest -q -rs` so the next transcript can name it
-instead of counting it.
+skipped** on the runner against **970 / 17** here. The four extra skips are now named
+rather than counted — run `46090753866` (same head plus `pytest -q -rs`) reports:
+
+```text
+SKIPPED tests/test_acceptance_fixtures.py:139, :149, :157   tshark not installed
+SKIPPED tests/test_delivery_intake.py:595                  no real PDF on this host
+```
+
+Three are tshark-gated acceptance rows (independently reproduced by re-running here with
+`/opt/homebrew/bin` off `PATH`, which adds exactly those three); the fourth is a sample
+PDF the runner does not have. So four rows that assert something real do nothing on CI.
+That was invisible before `-rs`, which is why the workflow now asks for the reasons: a
+skip nobody can see is halfway to a green skip.
 
 ## What is verified (D38 clean copy, `b389c94`)
 
