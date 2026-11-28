@@ -2037,6 +2037,123 @@ via the sample store's lifecycle) — that is a D28-adjacent decision, not a lim
 one; `HATCHERY_UPLOADS_DIR` is not documented in the README's configuration
 table (it is a test seam first, an operator knob second).
 
+## D42 — An upload is never written down, and the multipart path is not a dead end (2026-11-27)
+
+**Two defects, and D41 could only see one of them.** D41 made the API's upload
+limit one number, applied it on both branches, and removed the residue a refused
+request left behind. It recorded, correctly, that an *accepted* upload was still
+staged as a **plaintext** file under `uploads/<taskId>/` — up to 256 MiB of live
+malware on disk, deleted only after the worker had encrypted it into the store.
+That was the one place D28's encryption-at-rest claim was not true. It was also
+not the worst thing on that path.
+
+**The multipart route deadlocked above roughly 100 KiB.** It collected the file
+part inside the `for await` loop and piped the stream *after* the loop. busboy
+applies backpressure to a part nobody is reading, so the parser never reaches
+`end`, the iterator's next `parts()` never resolves, and the request hangs with
+no response at all. Measured against the compiled server with a real `curl`:
+
+| Upload | Before |
+| --- | --- |
+| 64 KiB | `200` in 149 ms |
+| 96 KiB | `200` |
+| 128 KiB, 160 KiB, 192 KiB | **no response** (5 s cap) |
+| 256 KiB, 512 KiB, 1 MiB | **no response** (6 s cap) |
+| 40 MiB | `HTTP 100` (continue) and then nothing (20 s cap) |
+
+`scripts/verify_setup.sh` uploaded **13 bytes**, so the gate was green on a path
+that could not carry a real sample. That is the D35 lesson a second time: a
+passing check is evidence of a passing run, not of the absence of a defect. The
+fixture is now above the old boundary (2 MiB) and the check names the threshold
+it crossed.
+
+**The fix is two calls, one rule each.** A stream cannot be held until the form's
+last field arrives without being written down, so the intake is split at the point
+where the engine already has a durable artifact: the content address.
+
+| Step | Command | What it guarantees |
+| --- | --- | --- |
+| Take the bytes | `hatchery store put --stdin --json` | Reads under `max_bytes` **while reading**, encrypts from memory, writes only ciphertext, prints `{sha256, size}`. Nothing lands on a filesystem, at the limit or any other size. |
+| Queue the address | `hatchery submit --from-store <sha> --enqueue --name <name>` | Queues an address with **no path**. Existence is checked cheaply (`SampleStore.has`); the worker authenticates the blob before the run (D28), so a lying index fails there rather than being trusted here. |
+
+The API consumes the file part **as it arrives** and pipes it into the first call,
+collects the form's fields before or after it (they are applied once the body is
+read), and then makes the second call. A truncated body is refused with **413** and
+**nothing is queued** — the stored (truncated) blob becomes an unreferenced orphan
+that `store prune` reclaims, which is strictly better than a job that claims a
+sample nobody saw in full. The two-call split is what makes that possible: a
+single call would have inserted the job row before the truncation could be seen.
+
+**Consequences recorded rather than glossed.**
+
+- `queue.sample_path` is `NOT NULL` and a stream-supplied job has no path. It now
+  records `store:<sha256>` — the marker the engine already uses for a sample read
+  from the store — instead of a plausible-looking path that does not exist. The
+  queue schema moves to **3** with one additive nullable column, `sample_name`,
+  because the bundle's sample name came from the path's basename and there is no
+  path. `JobStore.enqueue` takes `sample_path=None` only when a store reference is
+  given; neither is a job that can run.
+- **A retry no longer needs a path** (D42 also fixes a silent defect here). The
+  route used to re-enqueue from `task.file_path` with a fresh `timeout: 120,
+  noSandbox: false`, so retrying an emulated or static-only submission quietly ran
+  a *different* job. `hatchery queue <id> --requeue` re-queues from the row —
+  store reference, name, output directory and original arguments — and refuses a
+  job under a live lease.
+- **Refusals have one machine-readable shape.** `submit --enqueue` prints
+  `{"ok": false, "reason": …}` on stdout and exits 1 (the `store` group prints its
+  refusal on stderr, by its own contract); the route parses either and maps
+  `too-large` → **413**, `empty` → **400**, `not-found` → **410**, anything else
+  → **503**. Before this, an empty upload was answered **503** — a client error
+  reported as the server's fault — and every other refusal was a coloured sentence
+  the server could only quote.
+- `tasks` gains an additive nullable `sample_store_ref`; `file_path` records the
+  same `store:` marker rather than a path that does not exist. The column is what
+  a dashboard or an operator can read to answer "where is the sample?" without
+  guessing.
+
+**Evidence.** `tests/test_stream_intake.py` (7 cases): the stream reader stops at
+the limit and holds at most one chunk of slack (proved with a stream that would
+deliver forever); `store put --stdin` stores the bytes, decrypts back to them, and
+leaves **no file under the work tree containing the plaintext** (the test greps
+every file it created); an empty stream is `empty` and stores nothing; a job queues
+from an address with `sample_path == "store:<sha>"`, its name and its arguments
+intact; an address that is not stored is `not-found` and creates no queue database;
+a requeue keeps the address, the name and `timeout: 300` / `no_sandbox: true`.
+`server/test/upload_limit.test.mjs` (**6 cases**, was 5): a real multipart upload
+is stored through the engine with `sample_store_ref` in the response and in the
+task row, `uploads/` byte-for-byte unchanged; a **field after the file** still
+applies (`no_sandbox: true`); an oversized body is 413 **and creates no task**;
+the second-file, oversized-`filePath` and filename cases are unchanged. The server
+suite now runs against `server/test/fixtures/fake-engine.mjs` — a stand-in that
+implements only this contract — because `server-gate` has no Python: without it the
+tests would have been green locally (a `.venv` exists) and red in CI.
+
+**Measured on the defect and the fix, with a real `curl` and a real store.** A
+40 MiB upload: **`200` in 326 ms** (before: no response within 20 s); the stored
+blob is 41,943,101 bytes — 61 bytes of envelope around 40 MiB — and starts
+`HATCHERY-SAMPLE\x00`, not `MZ`; `uploads/` is empty; the task row carries the
+address; `hatchery worker --once` completed the job **from the store** in 4.5 s and
+the bundle records `file_name: big.bin` (the client's name, not the marker), the
+right SHA-256, and `encryption: aes-256-gcm/v1`.
+
+Full suite **970 passed / 17 skipped** (was 963/17; +7), ruff clean, mypy 88 files,
+server **106 passed / 0 failed**, `scripts/verify_setup.sh` **39 PASS / 0 FAIL**
+(was 37; `api/multipart-large` at 2 MiB and `intake/stdin-limit` at 300 MiB on a
+pipe, refused with nothing stored).
+
+**Not done, deliberately.** The bytes are held **in memory**, not streamed to
+ciphertext: the v1 envelope authenticates the plaintext length in its AAD, so a
+writer must know the size before it can write the header, and a stream does not.
+A segmented v2 envelope (per-chunk nonces, length from the ciphertext) is the fix
+and is its own slice with its own migration — the 256 MiB cap is what makes the
+cost a constant rather than a function of the file. There is **no per-token quota,
+rate limit or concurrency cap** (D43): an authenticated caller can still fill the
+disk with accepted samples, and a stored-then-abandoned upload is reclaimed only by
+`store prune`. There is no cancellation API, so an abandoned blob has no owner to
+ask. `filePath` submissions are untouched — that is the operator's own file, and
+D40 already bounds it. `uploads/` remains an allowed sample root for an operator
+who keeps samples there on purpose; the API simply never writes to it.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -2048,7 +2165,7 @@ table (it is a test seam first, an operator knob second).
 - **Live MISP/OpenCTI testing.** D20's wire format is tested against a local server; a live instance was not available, so live-instance compatibility is untested.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
-- **Sample-store TTL and encryption at rest.** ✅ Now built (D28): one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. **D35** completes the store's own first-write path: the auto-generated key is published atomically (a fully written `0600` temporary is linked to `.sample-key`), so concurrent first openers never observe an empty key — the D34 concurrency gate was a green sample of a real race, now covered by a 4-process setup check and a 2 s bounded reader wait for older writers. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
+- **Sample-store TTL and encryption at rest.** ✅ Now built (D28) — and since **D42** there is no plaintext staging path left in front of it: an HTTP upload is streamed into the envelope and never written to a filesystem: one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. **D35** completes the store's own first-write path: the auto-generated key is published atomically (a fully written `0600` temporary is linked to `.sample-key`), so concurrent first openers never observe an empty key — the D34 concurrency gate was a green sample of a real race, now covered by a 4-process setup check and a 2 s bounded reader wait for older writers. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
 - **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 

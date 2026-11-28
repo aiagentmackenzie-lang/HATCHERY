@@ -1,8 +1,13 @@
 # Baseline verification
 
-Verified **22 November 2026** on top of revision `b389c94` (D38: PE/ELF structure
-in the bundle, schema 1.1) with D36/D37 (ELF metadata, PCAP error path, rule
-calibration) and D35 (atomic key publication) on `2d60c69`.
+Verified **27 November 2026** on top of revision `bc4fa59` (D42: a streamed upload
+is never written to a filesystem, and the multipart path no longer deadlocks above
+~128 KiB). This was a working-tree baseline: the numbers below were measured
+before the `feat` commit, which changes no runtime behaviour beyond the files it
+adds.
+The D38 baseline was `b389c94` (PE/ELF structure in the bundle, schema 1.1) with
+D36/D37 (ELF metadata, PCAP error path, rule calibration) and D35 (atomic key
+publication) on `2d60c69`.
 The D34 baseline was `2d60c69` (Phase 4f: nested-unit verification, corpus seal,
 client verifier and the store-busy fix). The
 D33 baseline was `e64ca71`. The D28
@@ -30,7 +35,24 @@ decisions live in [`DECISIONS.md`](DECISIONS.md).
 | Detectors | yara-x 1.24.0, pyelftools 0.33, flare-capa 10.0.0 CLI (no ruleset installed) |
 | Replay tools | tshark 4.6.9 |
 
-## What is verified
+## Current state (D42)
+
+Measured in the checkout at `bc4fa59`, **not** from a fresh `git archive` copy: the
+clean-copy protocol below was not repeated for this slice, so these numbers describe
+a developer machine with a populated `.venv` and `node_modules`. What that changes:
+nothing in the counts, and everything in the reproducibility claim — a clean copy is
+the *stronger* form and is due again at the next slice that touches packaging.
+
+```text
+python -m pytest -q                    970 passed, 17 skipped
+python -m ruff check .                 clean
+python -m mypy engine/                 88 files, no issues
+cd server && npm test                 106 passed, 0 failed
+scripts/verify_setup.sh               39 PASS, 0 FAIL
+fixture scorecard                     16 passed, 0 failed, 0 known defects (unchanged)
+```
+
+## What is verified (D38 clean copy, `b389c94`)
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`
   or caches installs with `pip install -e ".[dev]"`, builds the server and
@@ -298,6 +320,73 @@ python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
 
+## Captured transcript (D42, `bc4fa59`)
+
+```text
+$ python -m pytest -q
+970 passed, 17 skipped            # was 963/17; +7 stream-intake cases
+
+$ python -m ruff check .          # clean
+$ python -m mypy engine/          # 88 files, no issues
+
+$ cd server && npm run typecheck && npm run build    # clean
+$ cd server && npm test
+106 passed, 0 failed              # was 105; +1 (a real multipart upload, against a stub engine)
+
+$ PYTHON=$PWD/.venv/bin/python scripts/verify_setup.sh
+PASS  api/multipart-upload              streamed into the encrypted store; uploads/ left empty
+PASS  api/multipart-large               2 MiB streamed in 0s (128 KiB used to deadlock); no file staged
+PASS  api/oversized-filepath            300 MiB filePath refused with 413 before enqueue; no residue
+PASS  intake/stdin-limit                300 MiB on a pipe refused while reading; nothing stored
+PASS  worker/store-backed-job           job records a content address and completed from it
+RESULT: baseline verified
+# 39 PASS, 0 FAIL (was 37)
+```
+
+The upload boundary, measured against the compiled server with a real `curl` and a
+real store. The left column is the defect; the right is this revision.
+
+```text
+                        BEFORE (4276042)                  AFTER (bc4fa59)
+64 KiB multipart        200 in 149 ms                     200
+96 KiB multipart        200                              200
+128 KiB multipart       no response (5 s cap)            200
+1 MiB multipart         no response (6 s cap)            200
+2 MiB multipart         no response                     200 in <1 s
+40 MiB multipart        HTTP 100, then nothing (20 s)     200 in 326 ms
+uploads/ after upload   <taskId>/<name>, plaintext        empty (nothing is written)
+blob on disk            41,943,101 B (ciphertext)         41,943,101 B (ciphertext)
+task row file_path      uploads/<taskId>/big.bin          store:<sha256>
+worker                  reads the staged file             reads the store; exit 0 in 4.5 s
+bundle sample name      big.bin                           big.bin (the client's name, not the marker)
+```
+
+A `store put --stdin` at 300 MiB is refused as `too-large` with **no new blob**
+(before/after `.sample` count unchanged): the reader stops at 256 MiB + one chunk
+instead of draining the pipe.
+
+### What is deliberately not in this baseline
+
+Streaming **ciphertext**: the v1 envelope authenticates the plaintext length in its
+AAD, so the writer must know the size before writing the header, and a stream does
+not. The bytes are encrypted from memory, bounded by the same 256 MiB cap — a
+segmented v2 envelope is the fix and is its own migration. Also absent: a per-token
+quota, rate limit or concurrency cap (D43) — an accepted upload can still fill the
+disk, and a stored-then-abandoned upload is reclaimed only by `store prune`; a
+cancellation API; and any change to the JSON `filePath` branch, which reads an
+operator's own file and is bounded by D40.
+
+### Known gaps introduced or inherited by D42
+
+| Gap | What it means |
+|:--|:--|
+| The sample is held in memory, not streamed to ciphertext | At the 256 MiB cap a stored upload costs ~256 MiB of RSS in the engine (and again to string-scan). The cap makes it constant, not small. The v1 header is why: the length is in the authenticated AAD, so a writer must know it up front. |
+| A stored-then-abandoned upload is an orphan blob | If the client disconnects after the store call but before the enqueue, a complete encrypted blob has no job. `store prune` reclaims it; nothing else will, because there is no cancellation API. It is never a job pointing at nothing, which is the property that matters. |
+| No admission control | A token can still fill the disk with accepted 256 MiB samples, and a stalled body pins a Python process until the route's 300 s cap. D43 is the slice. |
+| The engine's limit is applied while reading, not before it | A pipe has no `lstat`. The API keeps its own earlier refusal (`limits.fileSize`), so a caller learns at the boundary, but bytes already on the wire cannot be un-sent. This is the one guarantee a file gets and a stream cannot. |
+| `uploads/` is still an allowed `filePath` root | Nothing writes to it any more, but an operator who keeps samples there deliberately can still submit by path. The API itself never creates a file in it. |
+| The server suite now depends on a stub engine | `server/test/fixtures/fake-engine.mjs` implements only the store/queue contract, because `server-gate` has no Python. The real path is covered by `verify_setup.sh` and the engine's suite; a divergence between the stub and the engine would be caught there, not here. |
+
 ## Captured transcript (D41, `ccb2955`)
 
 Server-only slice: no Python module changed, so the Python numbers are the D40
@@ -343,6 +432,8 @@ MAX_UPLOAD_BYTES (server) == DEFAULT_MAX_SAMPLE_BYTES (engine/store/store.py) ==
 No per-account quota or rate limit, no streaming of the upload into the encrypted
 sample store (the route still writes a plaintext file that the worker later
 stores), and `HATCHERY_UPLOADS_DIR` is a test seam before it is an operator knob.
+**The plaintext staging was removed by D42 (see above); the quota is still absent
+and is D43.**
 The `app.inject` refusal test was replaced with a real listener after it hung:
 "the gate hangs" is a failure mode a gate must not have.
 
@@ -392,9 +483,9 @@ Both refusals are one line naming `too-large` and the limit, exit 1, no bundle.
 
 Streaming encryption/scanning (a sample *at* the 256 MiB limit still costs
 ~256 MiB to store and again to string-scan; the cap makes it a constant, not a
-function of the file), a configurable limit, and the API's multipart route
-(`POST /api/submit` streams the upload to `uploads/<task>/` before any limit and
-then enqueues — a disk-exhaustion surface recorded in D40 for its own slice).
+function of the file), a configurable limit, and the API's multipart route. **The
+route was closed by D41 (one limit, clean refusal) and D42 (no plaintext file at
+all, and the >128 KiB deadlock fixed); this paragraph is the state at D40.**
 
 ## Captured transcript (D39, `09de636`)
 

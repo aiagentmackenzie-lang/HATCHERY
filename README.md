@@ -372,8 +372,8 @@ cd dashboard && npm install && npm run dev                # http://localhost:517
 
 | Method | Endpoint | Description |
 |:--|:--|:--|
-| POST | `/api/submit` | Submit a sample (JSON `filePath`, or multipart upload). **Enqueues** the job and returns `status: "queued"` |
-| POST | `/api/submit/:id/retry` | Re-analyze an existing task |
+| POST | `/api/submit` | Submit a sample (JSON `filePath`, or multipart upload). **Enqueues** the job and returns `status: "queued"`. A multipart body is streamed into the encrypted sample store — never written to a file — and the response names its address in `sample_store_ref` |
+| POST | `/api/submit/:id/retry` | Re-analyze an existing task: re-queues the job from what it already records (store address, name, output, arguments), so it works with no sample path on disk |
 | GET | `/api/tasks` | List tasks |
 | GET | `/api/tasks/:id` | Task + static + sandbox results + IOC/event summaries |
 | GET | `/api/tasks/:id/events` | Behavioral events (paginated, filterable) |
@@ -454,9 +454,9 @@ no longer forgets it. See [`docs/AUDIT-RETENTION.md`](docs/AUDIT-RETENTION.md).
 
 **CORS.** An explicit allow-list, not a reflection: the documented dashboard origin on `5173` (`localhost`, `127.0.0.1`, `[::1]`) plus comma-separated `HATCHERY_ALLOWED_ORIGINS`, matched exactly (`scheme://host[:port]`, no wildcards, no paths — invalid entries are named and ignored at startup). Credentials are never allowed, `Vary: Origin` is always sent, and a request with no `Origin` header (curl, the worker, the CLI) is unaffected. CORS is **not** authentication: an unlisted origin still reaches the API and still needs a token.
 
-**Queue.** `POST /api/submit` writes the job through `hatchery submit --enqueue` and returns `status: "queued"`; nothing is spawned and the request does not wait. `POST /api/submit/:id/retry` re-queues. `GET /api/tasks/:id` reports the live job in a `queue` object and reconciles the job's terminal state onto the task row on read (ingesting the bundle when the job completed, recording the job's error when it failed). A **worker must be running** for jobs to execute: `hatchery worker`. The queue database is `data/queue.db` (override with `HATCHERY_QUEUE_DB`); the results root accepts `HATCHERY_RESULTS_ROOT`.
+**Queue.** `POST /api/submit` writes the job through `hatchery submit --enqueue` and returns `status: "queued"`; nothing is spawned and the request does not wait. A multipart upload does it in two calls (D42): `hatchery store put --stdin` takes the bytes into the encrypted store, then `hatchery submit --from-store <sha> --enqueue` queues the address — so the form's `timeout` and `noSandbox` can arrive before *or* after the file, and no plaintext sample is ever staged. `POST /api/submit/:id/retry` re-queues by job id (`hatchery queue <id> --requeue`) and keeps the job's original arguments. `GET /api/tasks/:id` reports the live job in a `queue` object and reconciles the job's terminal state onto the task row on read (ingesting the bundle when the job completed, recording the job's error when it failed). A **worker must be running** for jobs to execute: `hatchery worker`. The queue database is `data/queue.db` (override with `HATCHERY_QUEUE_DB`); the results root accepts `HATCHERY_RESULTS_ROOT`.
 
-**Other defaults.** Binds `127.0.0.1`. `filePath` submissions are restricted to `samples/` and `uploads/` (override with `HATCHERY_ALLOWED_SAMPLE_ROOTS`), and uploaded filenames are reduced to a bare name. The CORS allow-list is extended with `HATCHERY_ALLOWED_ORIGINS`. The API database (`HATCHERY_DB_PATH`, default `data/hatchery.db`) holds the token store and the audit chain — treat it as a credential store, which is why it is created `0600` in a `0700` directory. Its audit key lives in `HATCHERY_AUDIT_KEY` / `HATCHERY_AUDIT_KEY_FILE` or the generated `<db dir>/.audit-keyring`; an unusable key stops the API from starting rather than downgrading the chain. Compaction archives land in `<db dir>/audit-archives/` (override with `--out`), and the growth warning thresholds are `HATCHERY_AUDIT_WARN_ROWS` (default 500000) and `HATCHERY_AUDIT_WARN_BYTES` (default 256 MiB). When the API needs a token, the dashboard's dev server can carry one: `HATCHERY_DASHBOARD_TOKEN=<token> npm run dev`. See [`SECURITY.md`](SECURITY.md), [`docs/API-SECURITY.md`](docs/API-SECURITY.md) and [`docs/AUDIT-RETENTION.md`](docs/AUDIT-RETENTION.md).
+**Other defaults.** Binds `127.0.0.1`. `filePath` submissions are restricted to `samples/` and `uploads/` (override with `HATCHERY_ALLOWED_SAMPLE_ROOTS`), and uploaded filenames are reduced to a bare name. **A multipart upload is never written to a file (D42)**: the body is streamed into the encrypted sample store, so `uploads/` stays empty unless an operator submits a path from it, and `HATCHERY_UPLOADS_DIR` only moves that allowed root (a test uses it to prove nothing is staged). The CORS allow-list is extended with `HATCHERY_ALLOWED_ORIGINS`. The API database (`HATCHERY_DB_PATH`, default `data/hatchery.db`) holds the token store and the audit chain — treat it as a credential store, which is why it is created `0600` in a `0700` directory. Its audit key lives in `HATCHERY_AUDIT_KEY` / `HATCHERY_AUDIT_KEY_FILE` or the generated `<db dir>/.audit-keyring`; an unusable key stops the API from starting rather than downgrading the chain. Compaction archives land in `<db dir>/audit-archives/` (override with `--out`), and the growth warning thresholds are `HATCHERY_AUDIT_WARN_ROWS` (default 500000) and `HATCHERY_AUDIT_WARN_BYTES` (default 256 MiB). When the API needs a token, the dashboard's dev server can carry one: `HATCHERY_DASHBOARD_TOKEN=<token> npm run dev`. See [`SECURITY.md`](SECURITY.md), [`docs/API-SECURITY.md`](docs/API-SECURITY.md) and [`docs/AUDIT-RETENTION.md`](docs/AUDIT-RETENTION.md).
 
 ---
 
@@ -512,6 +512,15 @@ When a submission is queued, `engine/queue/` writes one row to a stdlib-SQLite `
 ---
 
 ## Roadmap
+
+**The order of work is [`docs/ROUTE.md`](docs/ROUTE.md)** (agreed 27 Nov 2026, decisions D42–D48):
+no new analysis capability — make the claim portable. D42/D43 close the upload boundary and add
+admission control; D44 binds a triage verdict to the model artifact and the evidence the model saw;
+**D45 (the flagship)** binds every run's manifest into a keyed, append-only, anchored witness log so a
+delivered report can be proved offline with Python and nothing else; D46 aggregates what a run could
+not see into one rendered header; D47 publishes one quality number with its denominator; D48 is a
+bounded, seeded mutation run over the parser corpus. The phases below are history and intent; the
+route is what is being built.
 
 **Phase 0 — make it true.** ✅ *done in this revision.* Ten ship-blockers fixed (network never created, artifact paths wrong, seccomp blocking its own tracer, unbound name masking errors, exit code always zero, fake services never started, no ingest path so the dashboard was permanently empty, and more), the README rewritten to match reality, and the security defaults tightened.
 
