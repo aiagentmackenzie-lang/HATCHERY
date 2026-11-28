@@ -80,7 +80,7 @@ own migration. The 256 MiB cap is what keeps the cost a constant. Stated in
 
 ---
 
-## D43 — Admission control: auth is not availability (week 1)
+## D43 — Admission control: a credential is a budget ✅ *delivered 27 Nov 2026*
 
 **Now:** `server/src/` has no rate limit, no per-token quota and no cap on
 concurrent jobs. D41 stopped *residue* from refused requests. Nothing stops an
@@ -96,9 +96,20 @@ existing SQLite database; refusals go into the audit chain with the token id
 the audit chain carries the refusal; the counters survive a restart; the
 existing 105 server tests unchanged.
 
-**Caveat to state:** this is single-host, in-process accounting. It stops
-accident and casual abuse, not a determined attacker holding a valid admin
-token — that attacker already owns the tool's input path. Say so.
+**Caveat to state:** this is single-host, in-process accounting with a **fixed
+window** (a burst across a window edge can pass ~2× the rate). It stops accident and
+casual abuse, not a determined attacker holding a valid admin token — that attacker
+already owns the tool's input path. Say so.
+
+**Delivered as:** `admission_counters` in the API database, three per-caller limits
+(60 requests / 10 min, 2 GiB accepted / 10 min, 8 queued+running jobs; `0` disables),
+counted in the database so a restart does not forget them. A submission **reserves the
+upload limit before the body is read** and settles to what was stored — the byte quota
+runs ahead of the write, not after it. The job cap reads `jobs.owner` (queue schema 4)
+rather than keeping a second tally. `429` with `Retry-After`, a body naming the limit,
+and an audit row as `request.throttled`. A real restart test, and a second real API on
+3003 in the setup gate. See `DECISIONS.md` D43; limits in `README.md`, posture in
+`SECURITY.md`, transcript and seven gaps in `BASELINE.md`.
 
 ---
 
@@ -269,8 +280,8 @@ Each refusal is a decision, not an omission. One line each in the log.
 
 | When | Slice | Why here |
 |---|---|---|
-| Week 1 | **D42** ✅, **D43** | — D42 closed the plaintext boundary and a 128 KiB deadlock on the same path; D43 is the remaining hole |
-| Week 1 | **D44** | Small; every triage verdict becomes auditable before D45 puts it on the record |
+| Week 1 | **D42** ✅, **D43** ✅ | D42 closed the plaintext boundary and a 128 KiB deadlock on the same path; D43 bounded what a credential may spend |
+| Week 1 | **D44** | Next. Small; every triage verdict becomes auditable before D45 puts it on the record |
 | Weeks 2–3 | **D45** | The flagship. Needs the most care and the D32-shaped test set |
 | Week 4 | **D46**, **D47** | Depend on D45: the quality claim should itself be witnessed |
 | Ongoing | **D48** | Cheap insurance; runs itself in CI |

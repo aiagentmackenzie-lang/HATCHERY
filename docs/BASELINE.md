@@ -1,10 +1,10 @@
 # Baseline verification
 
-Verified **27 November 2026** on top of revision `bc4fa59` (D42: a streamed upload
-is never written to a filesystem, and the multipart path no longer deadlocks above
-~128 KiB). This was a working-tree baseline: the numbers below were measured
-before the `feat` commit, which changes no runtime behaviour beyond the files it
-adds.
+Verified **27 November 2026**, D43 (admission control). This was a working-tree
+baseline again: the numbers were measured before the `feat` commit, which changes no
+runtime behaviour beyond the files it adds.
+The D42 baseline was `bc4fa59` (a streamed upload is never written to a filesystem,
+and the multipart path no longer deadlocks above ~128 KiB).
 The D38 baseline was `b389c94` (PE/ELF structure in the bundle, schema 1.1) with
 D36/D37 (ELF metadata, PCAP error path, rule calibration) and D35 (atomic key
 publication) on `2d60c69`.
@@ -47,8 +47,8 @@ the *stronger* form and is due again at the next slice that touches packaging.
 python -m pytest -q                    970 passed, 17 skipped
 python -m ruff check .                 clean
 python -m mypy engine/                 88 files, no issues
-cd server && npm test                 106 passed, 0 failed
-scripts/verify_setup.sh               39 PASS, 0 FAIL
+cd server && npm test                 111 passed, 0 failed
+scripts/verify_setup.sh               42 PASS, 0 FAIL
 fixture scorecard                     16 passed, 0 failed, 0 known defects (unchanged)
 ```
 
@@ -319,6 +319,78 @@ python -m engine.cli results prune --older-than 0s --keep-last 1 --results /tmp/
 3. Update an expectation only for an intentional behaviour change. When a
    recorded defect is fixed, remove its strict `xfail`, update the manifest and
    this document.
+
+## Captured transcript (D43, working tree on `361c58e`)
+
+```text
+$ python -m pytest -q
+970 passed, 17 skipped            # unchanged; the only addition is an --owner assertion
+
+$ python -m ruff check .          # clean
+$ python -m mypy engine/          # 88 files, no issues
+
+$ cd server && npm run typecheck && npm run build    # clean
+$ cd server && npm test
+111 passed, 0 failed              # was 106; +5 admission cases, one a real restart
+
+$ PYTHON=$PWD/.venv/bin/python scripts/verify_setup.sh
+PASS  api/admission-rate         second submission in the window is 429 with Retry-After
+PASS  api/admission-audited      the refusal is in the chain as request.throttled, naming the limit
+PASS  api/admission-owner        the queued job records its owner (anonymous)
+RESULT: baseline verified
+# 42 PASS, 0 FAIL (was 39)
+```
+
+The control, observed on a real server with the real engine (port 3003, `rate=1`):
+
+```text
+POST /api/submit #1 (multipart, tiny)      -> 200, sample stored, job queued with owner
+POST /api/submit #2 (same window)          -> 429
+   retry-after: 396                        (seconds to the window edge)
+   x-hatchery-admission: rate 1/1
+   {"error":"submission refused: too many submissions in this window",
+    "reason":"admission-rate","limit":1,"used":1,"window_seconds":600,"retry_after":396}
+audit_log (last row)                       -> 429 | request.throttled | rate 1/1 | anonymous
+jobs.owner                                 -> anonymous
+```
+
+And the ordering, which is the point of the slice:
+
+```text
+HATCHERY_ADMIT_BYTES=1024, one 64 KiB multipart body
+  -> 429 admission-bytes, limit 1024
+  -> the stand-in engine was never invoked (invocation log unchanged)
+  -> no tasks row, uploads/ unchanged
+```
+
+A real restart, not a second object in one process:
+
+```text
+server (rate=1) -> POST #1 -> 200
+SIGKILL, start again, same database
+                -> POST #2 -> 429 admission-rate   (the window survived)
+```
+
+### What is deliberately not in this baseline
+
+A **sliding** window (a fixed window can pass ~2x the rate across a boundary), per-token
+limits (every caller gets the same numbers), admission on token create/retire/expire or
+the WebSocket, alerting or metrics beyond the audit row and the server log, and any
+claim to stop a determined holder of a valid **admin** token — the claim is *bounded*,
+not *safe*.
+
+### Known gaps introduced or inherited by D43
+
+| Gap | What it means |
+|:--|:--|
+| Fixed window | A caller can spend the whole rate at the end of one window and again at the start of the next, so a burst can pass roughly twice the limit. A sliding window needs a per-request ledger; a token bucket in SQLite is the cheaper fix and is its own slice. |
+| Limits are global, not per credential | Every caller gets the same numbers. A stored token cannot be given its own budget, and an operator with a noisy integration cannot raise it for one caller without raising it for all. |
+| The byte quota reserves the upload limit | A submission reserves 256 MiB and settles to the real size, so concurrent submissions can refuse each other earlier than the true byte total requires. That is deliberate — the alternative is charging after the write — but it makes the limit tighter than it reads under concurrency. |
+| The job cap depends on `jobs.owner` | A job queued by a build before D43 has a NULL owner and is invisible to every caller's count. It still occupies a worker; it just does not count against anyone. |
+| An unreadable queue skips the job cap | `countActiveJobs` returns `null` and the cap is not applied, because a missing queue file on a fresh install is "no jobs". A corrupt queue therefore loses the job cap (and the log says nothing) rather than blocking every submission. |
+| `Retry-After` for jobs is a guess | 30 s, because the API cannot know when a worker will finish. A client that honours it exactly may be refused again. |
+| Counters are not tamper-evident | `admission_counters` is ordinary API state, covered by the database's `0600` posture, not by the audit chain. Deleting a row resets a budget; the audit rows that recorded the refusals would still show the pressure. |
+| Only submissions are controlled | Token create/retire/expire, the WebSocket and every read are not admission-controlled. A read does not fill a disk or a queue, but it is not free either, and it is unbounded. |
 
 ## Captured transcript (D42, `bc4fa59`)
 

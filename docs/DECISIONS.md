@@ -2154,6 +2154,104 @@ ask. `filePath` submissions are untouched — that is the operator's own file, a
 D40 already bounds it. `uploads/` remains an allowed sample root for an operator
 who keeps samples there on purpose; the API simply never writes to it.
 
+## D43 — A credential is not an unlimited budget (2026-11-27)
+
+**What was true before this.** D25/D30 answer *may this caller act?* and D41/D42
+answer *what may a sample be?* Nothing answered **how much**. An authenticated token
+could submit accepted 256 MiB samples until the disk was full, and queue jobs without
+bound, and the only cost was patience. Authentication is not availability, and a
+localhost tool that assumes one trusted operator still hands that operator's token —
+which may leak, be shared, or be used by a script with a loop in it — an unbounded
+budget.
+
+**Three limits, per caller, counted in the API's own database.**
+
+| Limit | Default | Env | Notes |
+| --- | --- | --- | --- |
+| Requests per window | 60 / 600 s | `HATCHERY_ADMIT_RATE`, `HATCHERY_ADMIT_WINDOW` | every submission, refused or not |
+| Accepted bytes per window | 2 GiB / 600 s | `HATCHERY_ADMIT_BYTES` | the size that actually reached the store |
+| Queued + running jobs | 8 | `HATCHERY_ADMIT_JOBS` | per owner, read from the queue |
+
+`0` disables a dimension, which is documented as a deliberate operator choice — a
+limit nobody can turn off is a limit somebody works around by patching the source. The
+counters live in `admission_counters` beside the token store and the audit chain, so a
+restart does not forget a budget the caller already spent; rows older than the
+previous window are swept on the next reservation, so the table is finite without a
+timer (the same shape as D32's growth guard, applied to a table nobody has to compact).
+
+**The ordering is the substance of the slice.** A submission **reserves the largest
+sample it could send, before the body is read**, and settles to the real size when it
+is known. A byte quota checked after the bytes have been written protects nothing —
+that is D40's defect one layer up, where a limit applied after the allocation it was
+meant to prevent looked like a control. A 300 MiB upload that would break the quota is
+refused before a byte is staged, which is the only version of this control worth
+having.
+
+Settling is what keeps it honest in the other direction: a refusal or a disconnect
+settles to **0**, because an intent that never became a stored sample must not be
+charged to the caller for the rest of the window. A long upload that crosses a window
+boundary settles into nothing, and says so — the new window's budget is about the new
+window.
+
+**The job cap is a reader, not a tally.** Job state belongs to the engine (D27), so
+the cap counts `queued` + `running` rows for the owner rather than keeping a second
+counter that could drift from the queue. That needs the queue to know whose job it is:
+`jobs` gains an additive nullable **`owner`** column and the queue schema moves to
+**4**. The API passes the resolved actor (`token:<id>`, `admin`, or `anonymous` in open
+mode) with `--owner`; the engine records it; the API reads it. The token *id* is
+already in the audit chain and is not a secret — the secret half never appears
+anywhere. An **unreadable queue returns null and the cap does not apply**: "I could
+not look" is not evidence of a full queue, and refusing every submission because the
+queue file does not exist yet would be the kind of control an operator switches off.
+
+**A refusal is a recorded fact.** `429` carries `Retry-After` (seconds until the
+window rolls over) and a body a client can act on — `reason`, `limit`, `used`,
+`window_seconds`, `retry_after` — plus `x-hatchery-admission: rate 1/1`, which the
+audit row quotes. The audit chain needed one change for this: a 429 would have been
+written as **`request.allowed`**, because the existing rule is "below 500 means
+allowed". A trail that records a refusal as a permission granted is worse than no
+trail, so 429 is now **`request.throttled`** with the limit in `detail`. The `Retry-After`
+for a full job queue is **30 s** and is a polling hint, not a promise: the API cannot
+know when a worker will finish.
+
+**Evidence.** `server/test/admission.test.mjs` (5 cases): the rate refuses a third
+submission in a 2-request window with `Retry-After` between 1 and 600 and a body naming
+`admission-rate`, `2/2`; a **1 KiB byte budget refuses the very first submission and
+the engine is never invoked** — proved by the stand-in engine's invocation log not
+growing, plus no task row and an unchanged `uploads/`, because a fast response is not
+evidence that nothing was read; a queued job for the owner trips `admission-jobs` with
+the 30 s hint; `0` disables and writes no counters; and a **real `dist/index.js` is
+started, `SIGKILL`ed and started again**, after which the second submission is still
+`429` — the budget is per caller, not per process, and the last audit row is
+`429 / request.throttled / rate 1/1` with actor `anonymous`. That last assertion is
+polled, because the audit row is appended from `onResponse`: the caller sees the 429
+*before* the chain is written, and a verifier reading the log in the same millisecond
+would conclude, wrongly, that the refusal went unrecorded.
+
+`scripts/verify_setup.sh` gains a second real API on **3003** with limits tight enough
+to refuse (`rate=1`, own database and queue, the same store and the real engine):
+`api/admission-rate` (200 then 429 with the header and the reason), `api/admission-audited`
+(the chain names it `request.throttled`) and `api/admission-owner` (the queued job
+records `anonymous`) — the last one is the cross-language contract between the API,
+`hatchery submit --owner`, and the `jobs` table, verified end to end rather than
+against a hand-built table. **42 PASS / 0 FAIL** (was 39). Server **111 passed / 0
+failed** (was 106). Python **970 passed / 17 skipped** (unchanged — only an `--owner`
+round-trip assertion was added to the D42 intake test). ruff clean, mypy 88 files.
+
+**Not done, deliberately.** It is **single-host, per-process accounting with a fixed
+window**: a caller can spend the whole rate at the end of one window and again at the
+start of the next, so a burst can pass ~2× the limit in a moment. A sliding window
+needs a per-request ledger that grows; a token bucket in SQLite is the cheaper fix and
+is its own slice. The limits are **global, not per-token-configurable** — every caller
+gets the same numbers, and a stored token cannot be given its own budget. Only
+`POST /api/submit` and its retry are controlled: token create/retire/expire are not
+rate limited, the WebSocket is not counted, and reads are unlimited (a read does not
+fill a disk or a queue, but it is not free either). There is **no alerting or metric**
+for a refusal beyond the audit row and the server log, and a determined attacker
+holding a valid **admin** token still works comfortably inside any budget an operator
+would set — the honest claim is *bounded*, not *safe*. The `Retry-After` for jobs is a
+guess because the drain time is unknown.
+
 ## What was deliberately not done
 
 - **A curated ATT&CK mapping.** The mapping is now data-driven and validated (D15), but the observation→technique associations are still authored. Validating an ID is not the same as proving the association is the best one; that remains analyst work.
@@ -2166,7 +2264,7 @@ who keeps samples there on purpose; the API simply never writes to it.
 - **AI triage.** ✅ Now built (D22): a local, contract-bound, grounded, fail-closed triage layer. What remains undone inside it: literally function-level attribution (needs CFG reconstruction), proof (rather than id-validation) of model-proposed technique associations, and campaign clustering.
 - **A distributed job queue.** ✅ Now built (D27): a durable, single-host SQLite queue and workers with atomic claims, leases, bounded concurrency and fail-closed recovery, with the API enqueuing instead of spawning and reconciling the outcome on read. What remains undone inside it: no broker (Redis/Celery/RabbitMQ), no remote workers, no priority or fairness scheduling, no cancellation API, and a lost lease does not kill an in-flight child process.
 - **Sample-store TTL and encryption at rest.** ✅ Now built (D28) — and since **D42** there is no plaintext staging path left in front of it: an HTTP upload is streamed into the envelope and never written to a filesystem: one content-addressed store with AES-256-GCM envelopes, a versioned key id, a SQLite index, reference-aware pruning and ``hatchery store status|verify|migrate|prune``. ✅ **Key lifecycle and recovery are now built (D29)**: a versioned key ring with per-blob key-id resolution, resumable atomic rotation, explicit retirement, SQLite-backup-API backups with a last-written manifest, and fail-closed restore with per-blob verification. ✅ **Result bundles are now self-describing and finite (D33)**: a deterministic SHA-256 manifest at the run root written last by every mutating stage, `hatchery results verify|seal|status|prune`, an operator-recorded anchor (`--expect-manifest`) that catches a rewrite of an artifact together with its manifest, an off-by-default retention policy that refuses to delete a run it cannot verify, rename-then-remove deletion with crash-resume, and a growth guard that warns and never deletes. ✅ **The directory is now the claim, and the recipient can check it (D34)**: a nested replay with no manifest makes the parent `nested-unsealed` (`ok: false`, exit 1) and blocks retention by name; `results seal <root> --all` brings a whole legacy corpus into the verifiable state depth-first and idempotently, refuses tamper, refuses `--replace` in batch and leaves intact parent manifests byte-identical; `scripts/verify_manifest.py` is a stdlib-only verifier that runs the same code path, so the recipient needs Python 3 and nothing else; `triage` accepts a run directory or its `bundle/`; and a contended sample store reports `store-busy` and exit 1 instead of a traceback. **D35** completes the store's own first-write path: the auto-generated key is published atomically (a fully written `0600` temporary is linked to `.sample-key`), so concurrent first openers never observe an empty key — the D34 concurrency gate was a green sample of a real race, now covered by a 4-process setup check and a 2 s bounded reader wait for older writers. What remains undone inside these: KMS/HSM or escrow, multi-host stores/rotation/retention, scheduled rotation/pruning/sealing, secure erase, Windows ACL verification, removing the single-use replay staging file, **signing or MAC'ing the result manifest** (a local attacker who rewrites an artifact *and* its manifest is caught only by an anchor), **encrypting `results/` at rest**, and off-host storage or a remote anchor service.
-- **API credentials with a lifecycle.** ✅ Now built (D30): named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
+- **API credentials with a lifecycle.** ✅ Now built (D30), and since **D43** a credential is also a *budget*: per-caller requests, accepted bytes and queued jobs, counted in the API database, reserved before an upload is read and settled to what was stored. Named tokens with ids, roles, expiry and revocation stored as hashes in SQLite: named tokens with ids, roles, expiry and revocation stored as hashes in SQLite, rotation without a restart, an explicit CORS allow-list, and an append-only audit chain with a bounded verifier. ✅ **The chain is keyed and its completeness can be anchored (D31)**: per-row HMACs from a local rotatable key ring, a 0600 database, and `verify --expect-head` against a head recorded outside the database. ✅ **The log is finite without being rewritten (D32)**: a documented, off-by-default retention policy; `npm run audit -- compact` archives the oldest segment to a 0600 JSONL file plus a last-written manifest and hands the chain off (`prev_hash` = the archived tail); the verifier reads the archives, reports the segments, the archived rows, the manifest hash and the join, and treats a missing/tampered/non-linking archive as a break; archives verify offline; and the growth guard warns in `audit status`, the verify response and the startup banner without ever deleting. What remains undone: no create endpoint (a secret is minted by the local CLI and shown once), no per-user accounts or OIDC/SSO, no KMS/HSM or remote anchor, no multi-host token database, no automatic rotation or compaction schedule, no encryption of the audit log or its archives — they are owner-readable, not encrypted at rest — and no archiving of pre-D30 rows, which are never tampered-evident by construction.
 - **Making tier 1 safe.** It cannot be. The honest response is to label it, not to pretend.
 
 ---
