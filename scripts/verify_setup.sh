@@ -652,19 +652,40 @@ else
   fail "api/ingest-after-worker" "task did not reconcile to a published result"
 fi
 
-# D41: the API's upload boundary. One number (the engine's 256 MiB), applied on
-# both branches, with nothing left behind when it refuses. The multipart success
-# path is here because server-gate has no engine; the 413s are in
-# server/test/upload_limit.test.mjs with a lowered plugin limit.
+# D41/D42: the API's upload boundary. One number (the engine's 256 MiB), applied
+# on both branches, with nothing left behind when it refuses — and since D42, no
+# plaintext file at any instant. The route streams the body into the encrypted
+# store and queues the address; `uploads/` must stay empty.
+#
+# The 2 MiB upload is the regression gate for a defect D41 could not see from a
+# 13-byte fixture: the route collected the file part and consumed it after the
+# loop, so busboy's backpressure deadlocked every upload above ~128 KiB (96 KiB
+# answered, 128 KiB never did). A small fixture answers either way.
 mkdir -p "$WORK/api/uploads"
 printf 'MZ\220\000hatchery-multipart-upload' > "$WORK/api/upload-sample.exe"
 MULTIPART_RESPONSE="$(curl -s -m 20 -X POST http://127.0.0.1:3002/api/submit \
   -F "sample=@$WORK/api/upload-sample.exe" -F "noSandbox=true")"
 MULTIPART_ID="$(printf '%s' "$MULTIPART_RESPONSE" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null)"
-if [ -n "$MULTIPART_ID" ] && [ "$(ls "$WORK/api/uploads/$MULTIPART_ID" 2>/dev/null | wc -l | tr -d ' ')" = "1" ]; then
-  pass "api/multipart-upload" "small upload queued and stored under the temp uploads root"
+MULTIPART_REF="$(printf '%s' "$MULTIPART_RESPONSE" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('sample_store_ref',''))" 2>/dev/null)"
+UPLOADS_LEFTOVERS="$(find "$WORK/api/uploads" -mindepth 1 | wc -l | tr -d ' ')"
+if [ -n "$MULTIPART_ID" ] && [ -n "$MULTIPART_REF" ] && [ "$UPLOADS_LEFTOVERS" = "0" ] \
+   && [ -f "$WORK/samples/$MULTIPART_REF.sample" ]; then
+  pass "api/multipart-upload" "streamed into the encrypted store; uploads/ left empty"
 else
-  fail "api/multipart-upload" "multipart upload was not stored: $MULTIPART_RESPONSE"
+  fail "api/multipart-upload" "upload did not reach the store, or it was staged as a file: $MULTIPART_RESPONSE"
+fi
+
+"$PY" -c "import sys; f=open(sys.argv[1],'wb'); f.truncate(2*1024*1024); f.close()" "$WORK/api/large.bin"
+LARGE_STARTED="$(date +%s)"
+LARGE_RESPONSE="$(curl -s -m 30 -X POST http://127.0.0.1:3002/api/submit \
+  -F "sample=@$WORK/api/large.bin" -F "noSandbox=true")"
+LARGE_ELAPSED=$(( $(date +%s) - LARGE_STARTED ))
+LARGE_REF="$(printf '%s' "$LARGE_RESPONSE" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('sample_store_ref',''))" 2>/dev/null)"
+if [ -n "$LARGE_REF" ] && [ "$LARGE_ELAPSED" -lt 30 ] \
+   && [ "$(find "$WORK/api/uploads" -mindepth 1 | wc -l | tr -d ' ')" = "0" ]; then
+  pass "api/multipart-large" "2 MiB streamed in ${LARGE_ELAPSED}s (128 KiB used to deadlock); no file staged"
+else
+  fail "api/multipart-large" "a 2 MiB upload did not complete cleanly: ${LARGE_RESPONSE:0:200}"
 fi
 
 "$PY" - "$WORK/api/uploads/oversized.bin" <<'SPARSEUPLOAD'
@@ -677,14 +698,31 @@ OVERSIZED_STATUS="$(curl -s -o "$WORK/api/oversized.json" -w '%{http_code}' -m 2
   -H 'content-type: application/json' \
   -d "{\"filePath\":\"$WORK/api/uploads/oversized.bin\",\"noSandbox\":true}")"
 if [ "$OVERSIZED_STATUS" = "413" ] && grep -q '"sample too large"' "$WORK/api/oversized.json"; then
-  UPLOAD_DIRS="$(find "$WORK/api/uploads" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
-  if [ "$UPLOAD_DIRS" = "1" ]; then
+  # The sparse file itself lives in `uploads/` on purpose: that is an allowed
+  # sample root, so the JSON branch can be exercised at all. What must not exist
+  # is a task *directory* — which is what the old route created per request.
+  UPLOAD_DIRS="$(find "$WORK/api/uploads" -mindepth 1 -type d | wc -l | tr -d ' ')"
+  if [ "$UPLOAD_DIRS" = "0" ]; then
     pass "api/oversized-filepath" "300 MiB filePath refused with 413 before enqueue; no residue"
   else
-    fail "api/oversized-filepath" "a refused submission created a task upload directory"
+    fail "api/oversized-filepath" "a refused submission created an upload directory"
   fi
 else
   fail "api/oversized-filepath" "expected 413 sample-too-large, got $OVERSIZED_STATUS: $(cat "$WORK/api/oversized.json" 2>/dev/null | head -c 200)"
+fi
+
+# D42: the stream refusal. A pipe has no `lstat`, so the limit is applied while
+# reading — and a refusal must store nothing. 300 MiB through a pipe is refused at
+# the 256 MiB limit; the producer's SIGPIPE is expected and not an error.
+SAMPLES_BEFORE="$(find "$WORK/samples" -maxdepth 1 -name '*.sample' 2>/dev/null | wc -l | tr -d ' ')"
+STDIN_RESPONSE="$("$PY" -c "import sys; sys.stdout.buffer.write(b'A'*(300*1024*1024))" 2>/dev/null \
+  | "$PY" -m engine.cli store put --stdin --json 2>&1)"
+STDIN_REASON="$(printf '%s' "$STDIN_RESPONSE" | grep -o '"reason": "[a-z-]*"' | head -1)"
+SAMPLES_AFTER="$(find "$WORK/samples" -maxdepth 1 -name '*.sample' 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$STDIN_REASON" = '"reason": "too-large"' ] && [ "$SAMPLES_AFTER" = "$SAMPLES_BEFORE" ]; then
+  pass "intake/stdin-limit" "300 MiB on a pipe refused while reading; nothing stored"
+else
+  fail "intake/stdin-limit" "expected a too-large refusal and no new blob (${SAMPLES_BEFORE} -> ${SAMPLES_AFTER}): ${STDIN_RESPONSE:0:200}"
 fi
 rm -f "$WORK/api/uploads/oversized.bin"
 

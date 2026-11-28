@@ -75,11 +75,15 @@ def build_job_command(
     # A job that carries a store reference always runs from the store: that is
     # what makes deleting the original path safe.
     ref = store_ref if store_ref is not None else job.sample_store_ref
+    # D42: a job whose sample arrived on a stream has a ``store:`` marker instead
+    # of a path, and the client's filename is the honest hint — passing the
+    # marker would name the bundle's sample "store:<sha>".
+    hint = job.sample_name or job.sample_path
     if ref:
         command = [
             executable, "-m", "engine.cli", "submit",
             "--from-store", ref,
-            "--sample-hint", job.sample_path,
+            "--sample-hint", hint,
             "-o", job.output_dir,
         ]
     else:

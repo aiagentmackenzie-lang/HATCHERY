@@ -1,11 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
-import { enqueueJob, RESULTS_ROOT } from '../db/queue.js';
+import { enqueueJob, enqueueStored, requeueJob, RESULTS_ROOT } from '../db/queue.js';
+import { storeSampleFromStream, type EnqueueResult } from '../db/queue.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
-import { pipeline } from 'stream/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
@@ -22,16 +22,38 @@ const ENGINE_ROOT = path.join(__dirname, '..', '..', '..');
 export const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 /**
- * Where multipart uploads land before the worker reads them.
+ * Where a `filePath` submission may point.
  *
- * `HATCHERY_UPLOADS_DIR` exists so a test (and an operator with a separate
- * volume) can move it without touching the checkout: a refused upload must be
- * provably absent from the directory, and a test that writes into the repo
- * cannot prove that.
+ * `HATCHERY_UPLOADS_DIR` still moves this root, but since D42 **nothing is written
+ * to it by the API**: a multipart upload is streamed into the encrypted sample
+ * store and never touches a filesystem. The variable survives because a deployment
+ * may still keep samples it wants to submit by path on a separate volume, and
+ * because the setup gate points it at a temporary root to prove nothing appears
+ * there.
  */
 const UPLOADS_DIR = process.env.HATCHERY_UPLOADS_DIR
   ? path.resolve(process.env.HATCHERY_UPLOADS_DIR)
   : path.join(ENGINE_ROOT, 'uploads');
+
+/**
+ * The status code for an engine refusal, by the engine's own reason code (D42).
+ *
+ * `too-large` and `empty` are the caller's mistake; `not-found` means the address
+ * vanished between storing and queueing; anything else is the engine's state and
+ * is a 503. The route never pattern-matches a sentence to decide this.
+ */
+function refusalStatus(result: EnqueueResult): number {
+  switch (result.reason) {
+    case 'too-large':
+      return 413;
+    case 'empty':
+      return 400;
+    case 'not-found':
+      return 410;
+    default:
+      return 503;
+  }
+}
 
 /**
  * Roots a caller may point `filePath` at.
@@ -113,62 +135,95 @@ export async function submitRoutes(app: FastifyInstance) {
     let fileSize: number | undefined;
     let timeout = 120;
     let noSandbox = false;
+    /** D42: the content address of a sample that arrived on the wire. */
+    let storedSha: string | undefined;
 
     const taskId = randomUUID().slice(0, 12);
 
     if (request.isMultipart()) {
-      // PhishHawk-style multipart upload: iterate parts to find file + fields
+      // D42: the body is consumed **as it arrives** and piped straight into the
+      // encrypted store. Two defects are fixed by that one change:
+      //
+      //   1. The API used to stream up to 256 MiB of live malware into
+      //      `uploads/<taskId>/` as a PLAINTEXT file — the one place the store's
+      //      encryption-at-rest claim was not true.
+      //   2. The route collected the file part and piped it *after* the loop, so
+      //      busboy's backpressure to an unread part deadlocked the request: a
+      //      96 KiB upload answered, 128 KiB never did. Small fixtures answered,
+      //      which is exactly how a gate can be green and the feature broken.
+      //
+      // Nothing here can leave residue: the store writes a blob before any job
+      // row exists, so a refusal or a disconnect leaves either a complete blob or
+      // nothing — never a partial file under a task directory.
       const parts = request.parts();
-      let uploadedFile: any = null;
       const fields: Record<string, string> = {};
-      const taskUploadDir = path.join(UPLOADS_DIR, taskId);
+      let truncated = false;
 
-      // Any failure in here — the size limit, a client disconnect, a busboy
-      // error — must leave nothing behind. Before this, a refused upload left
-      // the partial file and its directory on disk for every request.
-      try {
-        for await (const part of parts) {
-          if (part.type === 'file') {
-            uploadedFile = part;
-          } else if (part.value !== undefined) {
-            fields[part.fieldname] = String(part.value);
+      for await (const part of parts) {
+        if (part.type === 'file') {
+          if (storedSha !== undefined) {
+            // `files: 1` already refuses this; if the plugin is ever reconfigured
+            // the route must still not store two samples under one task id.
+            return reply.code(413).send({ error: 'files limit reached' });
           }
-        }
+          if (!part.filename) {
+            return reply.code(400).send({ error: 'No file uploaded' });
+          }
 
-        if (!uploadedFile || !uploadedFile.filename) {
-          return reply.code(400).send({ error: 'No file uploaded' });
-        }
-
-        if (fields.timeout) timeout = parseInt(fields.timeout, 10) || 120;
-        if (fields.noSandbox) noSandbox = fields.noSandbox === 'true';
-
-        // One task id, used for the upload directory AND the database row. The
-        // previous revision generated two, so the uploaded file lived in a
-        // directory named after a task that did not exist.
-        const safeName = safeFilename(String(uploadedFile.filename));
-        fs.mkdirSync(taskUploadDir, { recursive: true });
-        filePath = path.join(taskUploadDir, safeName);
-
-        await pipeline(uploadedFile.file, fs.createWriteStream(filePath));
-
-        // Belt and braces: if the plugin is ever configured with
-        // `throwFileSizeLimit: false`, the stream ends truncated and the route
-        // must still refuse rather than store half a sample.
-        if (uploadedFile.file.truncated) {
-          fs.rmSync(taskUploadDir, { recursive: true, force: true });
-          return reply.code(413).send({
-            error: 'sample too large',
-            limit: MAX_UPLOAD_BYTES,
+          const safeName = safeFilename(String(part.filename));
+          const stored = await storeSampleFromStream(part.file, {
+            jobId: taskId,
+            fileName: safeName,
           });
-        }
 
-        const stats = fs.statSync(filePath);
-        fileName = safeName;
-        fileSize = stats.size;
-      } catch (error) {
-        fs.rmSync(taskUploadDir, { recursive: true, force: true });
-        throw error;
+          if (!stored.ok) {
+            // Belt and braces: if the plugin is ever configured with
+            // `throwFileSizeLimit: false`, the stream ends truncated and the
+            // route must still refuse rather than store half a sample.
+            if (part.file.truncated) {
+              return reply.code(413).send({
+                error: 'sample too large',
+                limit: MAX_UPLOAD_BYTES,
+              });
+            }
+            const status = refusalStatus(stored);
+            return reply.code(status).send({
+              error: stored.error ?? 'the sample could not be stored',
+              reason: stored.reason,
+              ...(stored.limit !== undefined ? { limit: stored.limit } : {}),
+            });
+          }
+
+          storedSha = stored.sha256!;
+          fileName = safeName;
+          fileSize = stored.size!;
+          truncated = Boolean(part.file.truncated);
+        } else if (part.value !== undefined) {
+          fields[part.fieldname] = String(part.value);
+        }
       }
+
+      if (!storedSha) {
+        return reply.code(400).send({ error: 'No file uploaded' });
+      }
+
+      // A truncated stream must never become a job. The engine stored the bytes
+      // it received, so a blob may exist — a prunable orphan — but the address is
+      // not queued, because queueing it would claim a sample HATCHERY never saw in
+      // full. This is why the store and the enqueue are two calls: a refusal here
+      // cannot leave a job behind.
+      if (truncated) {
+        return reply.code(413).send({
+          error: 'sample too large',
+          limit: MAX_UPLOAD_BYTES,
+        });
+      }
+
+      // The form's options are applied *after* the whole body has been read, so
+      // a client may send them before or after the file. That is the other
+      // reason the store and the enqueue are two calls.
+      if (fields.timeout) timeout = parseInt(fields.timeout, 10) || 120;
+      if (fields.noSandbox) noSandbox = fields.noSandbox === 'true';
     } else {
       const body = request.body ?? {};
       filePath = body.filePath;
@@ -212,7 +267,7 @@ export async function submitRoutes(app: FastifyInstance) {
       fileSize = stats.size;
     }
 
-    if (!filePath || !fileName || fileSize === undefined) {
+    if (!fileName || fileSize === undefined || (!filePath && !storedSha)) {
       return reply.code(400).send({ error: 'Unable to determine sample file' });
     }
 
@@ -220,28 +275,44 @@ export async function submitRoutes(app: FastifyInstance) {
     // The task row is the API's projection; the queue is the source of job
     // state. The job id is aligned with the task id so GET /api/tasks/:id can
     // map one to the other directly.
+    //
+    // D42: a stream-supplied sample has no path. `file_path` records the store
+    // marker (`store:<sha256>`) rather than a plausible-looking path that does
+    // not exist, and `sample_store_ref` names the address the worker runs.
+    const recordedPath = filePath ?? `store:${storedSha}`;
     db.prepare(`
-      INSERT INTO tasks (task_id, file_name, file_path, file_size, status, queue_job_id)
-      VALUES (?, ?, ?, ?, 'queued', ?)
-    `).run(taskId, fileName, filePath, fileSize, taskId);
+      INSERT INTO tasks (task_id, file_name, file_path, file_size, status, queue_job_id, sample_store_ref)
+      VALUES (?, ?, ?, ?, 'queued', ?, ?)
+    `).run(taskId, fileName, recordedPath, fileSize, taskId, storedSha ?? null);
 
-    const enqueued = enqueueJob({
-      jobId: taskId,
-      filePath,
-      outputDir: path.join(RESULTS_ROOT, taskId),
-      timeout,
-      noSandbox,
-    });
+    const outputDir = path.join(RESULTS_ROOT, taskId);
+    const enqueued = storedSha
+      ? enqueueStored({
+          jobId: taskId,
+          sha256: storedSha,
+          fileName,
+          outputDir,
+          timeout,
+          noSandbox,
+        })
+      : enqueueJob({
+          jobId: taskId,
+          filePath: filePath!,
+          outputDir,
+          timeout,
+          noSandbox,
+        });
     if (!enqueued.ok) {
       // Fail loudly: a task that was not queued is not "running".
       db.prepare(
         `UPDATE tasks SET status = 'failed', error_message = ?, updated_at = datetime('now')
          WHERE task_id = ?`,
       ).run(enqueued.error ?? 'could not enqueue the job', taskId);
-      return reply.code(503).send({
+      return reply.code(refusalStatus(enqueued)).send({
         task_id: taskId,
         status: 'failed',
         error: enqueued.error ?? 'could not enqueue the job',
+        ...(enqueued.reason ? { reason: enqueued.reason } : {}),
       });
     }
 
@@ -251,6 +322,7 @@ export async function submitRoutes(app: FastifyInstance) {
       status: 'queued',
       file_name: fileName,
       file_size: fileSize,
+      ...(storedSha ? { sample_store_ref: storedSha } : {}),
       timeout,
       no_sandbox: noSandbox,
     });
@@ -267,17 +339,16 @@ export async function submitRoutes(app: FastifyInstance) {
     }
 
     // Re-queue rather than spawn: the queue refuses to touch a job that is
-    // still running under a live lease.
-    const enqueued = enqueueJob({
-      jobId: taskId,
-      filePath: task.file_path,
-      outputDir: path.join(RESULTS_ROOT, taskId),
-      timeout: 120,
-      noSandbox: false,
-      requeue: true,
-    });
+    // still running under a live lease. D42: the re-queue runs from what the job
+    // already records — its store reference, name, output directory and
+    // arguments — rather than from `task.file_path`, which a stream-supplied
+    // sample does not have and an operator may have deleted. It also stops a
+    // retry from silently replacing an emulated or static-only job with a plain
+    // one, which the old route did by passing a fresh timeout and noSandbox.
+    const enqueued = requeueJob(String(task.queue_job_id ?? taskId));
     if (!enqueued.ok) {
-      return reply.code(409).send({ error: enqueued.error ?? 'could not re-queue the job' });
+      const status = enqueued.reason === 'not-found' ? 404 : 409;
+      return reply.code(status).send({ error: enqueued.error ?? 'could not re-queue the job' });
     }
 
     db.prepare(

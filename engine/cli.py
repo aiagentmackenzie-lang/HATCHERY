@@ -377,6 +377,25 @@ def _run_delivery_intake(file: Path, results_dir: Path) -> tuple[Any, dict]:
     return result, result.to_dict()
 
 
+def _enqueue_refusal(
+    reason: str, message: str, *, limit: Optional[int] = None
+) -> NoReturn:
+    """Refuse a queued submission in the one shape a caller can parse (D42).
+
+    ``submit --enqueue`` prints exactly one JSON object on stdout, and the API
+    reads it. A refusal used to be a human line of coloured text, so a server
+    could only quote it back and guess at a status code. It is now
+    ``{"ok": false, "reason": ...}`` on stdout with exit 1: stdout stays
+    machine-readable, stderr stays for humans, and ``reason`` is the store's own
+    vocabulary rather than a sentence a caller has to pattern-match.
+    """
+    payload: dict[str, Any] = {"ok": False, "reason": reason, "message": message}
+    if limit is not None:
+        payload["limit"] = limit
+    print(json.dumps(payload))
+    raise SystemExit(1)
+
+
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose/debug logging")
 def cli(verbose: bool) -> None:
@@ -406,6 +425,7 @@ def cli(verbose: bool) -> None:
 @click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
 @click.option("--job-id", default=None, help="Job id to enqueue under (default: a fresh id)")
 @click.option("--requeue", is_flag=True, help="Re-queue an existing terminal job instead of refusing")
+@click.option("--name", "sample_name", default=None, help="Filename to record for a sample that has no path (a stored sample)")
 @internal_error_backstop
 def submit(
     file: Optional[Path],
@@ -426,6 +446,7 @@ def submit(
     queue_db: Optional[Path],
     job_id: Optional[str],
     requeue: bool,
+    sample_name: Optional[str],
 ) -> None:
     """Submit a sample for full analysis.
 
@@ -445,15 +466,21 @@ def submit(
     record whose original path is gone; the plaintext is decrypted in memory and
     handed to the path-based pipeline through a single-use staging file that is
     removed when the run ends.
+
+    With ``--enqueue`` as well, ``--from-store`` queues an **already stored**
+    sample (D42): nothing is read, decrypted or copied, and the job records the
+    content address instead of a path. That is the second half of the HTTP
+    boundary — `hatchery store put --stdin` takes the bytes, this queues the
+    address it returned (see ``store put``).
     """
     from engine.intake.uploader import SampleUploader
     from engine.store import SampleStore, SampleStoreError
     from engine.store.staging import StagedPlaintext
 
-    if from_store and enqueue:
-        raise click.UsageError("--enqueue takes a sample file; --from-store is for replay/worker execution")
+    if from_store and file is not None:
+        raise click.UsageError("--from-store takes a content address, not a FILE")
     if not from_store and file is None:
-        raise click.UsageError("submit needs a sample FILE (or --from-store SHA256)")
+        raise click.UsageError("submit needs a sample FILE or --from-store SHA256")
 
     job_args = {
         "timeout": timeout,
@@ -472,37 +499,72 @@ def submit(
         # read the job id without parsing human-facing output.
         from engine.queue import JobError, JobStore, resolve_queue_db
 
-        assert file is not None
         # D28: the accepted bytes enter the encrypted store *before* the job row
         # exists. A queued job can therefore be executed after the original path
         # is deleted, and the job records the content address it will run.
         # D34: construction can lose a race with another opener; that is a named
         # store-busy failure and exit 1, never a traceback.
-        try:
-            sample_store = SampleStore()
-        except SampleStoreError as exc:
-            console.print(
-                f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]"
-            )
-            raise SystemExit(1) from exc
-        try:
-            record = sample_store.put_file(file)
-        except SampleStoreError as exc:
-            console.print(f"[red]Cannot store the sample: {exc.reason}: {exc.message}[/red]")
-            raise SystemExit(1)
-        finally:
-            sample_store.close()
-        if sample_store.generated_key_notice:
-            click.echo(f"WARNING: {sample_store.generated_key_notice}", err=True)
+        source_path: Optional[Path] = None
+        if from_store:
+            # D42: queue an address that is already stored. Nothing is read or
+            # decrypted here — the blob's existence is checked cheaply and the
+            # worker authenticates it before the run (D28), so a lying index
+            # fails there rather than being trusted here.
+            try:
+                sample_store = SampleStore()
+            except SampleStoreError as exc:
+                _enqueue_refusal(exc.reason, exc.message)
+            try:
+                if not sample_store.has(from_store):
+                    _enqueue_refusal(
+                        "not-found",
+                        f"no stored sample {from_store}; store the bytes first "
+                        "(`hatchery store put`)",
+                    )
+            finally:
+                sample_store.close()
+            sample_sha256 = from_store
+        else:
+            try:
+                sample_store = SampleStore()
+            except SampleStoreError as exc:
+                _enqueue_refusal(exc.reason, exc.message)
+            try:
+                assert file is not None
+                record = sample_store.put_file(file)
+                source_path = file
+                sample_sha256 = record.sha256
+            except SampleStoreError as exc:
+                _enqueue_refusal(
+                    exc.reason,
+                    exc.message,
+                    limit=sample_store.max_bytes
+                    if exc.reason == "too-large"
+                    else None,
+                )
+            finally:
+                sample_store.close()
+            if sample_store.generated_key_notice:
+                click.echo(
+                    f"WARNING: {sample_store.generated_key_notice}", err=True
+                )
+
+        if sample_name:
+            recorded_name = Path(sample_name).name
+        elif source_path is not None:
+            recorded_name = source_path.name
+        else:
+            recorded_name = f"{sample_sha256[:12]}.sample"
 
         store = JobStore(resolve_queue_db(queue_db))
         try:
             job = store.enqueue(
-                file,
+                source_path,
                 output_dir=output,
                 args=job_args,
-                sample_sha256=record.sha256,
-                sample_store_ref=record.sha256,
+                sample_sha256=sample_sha256,
+                sample_store_ref=sample_sha256,
+                sample_name=recorded_name,
                 job_id=job_id,
                 requeue=requeue,
             )
@@ -512,9 +574,11 @@ def submit(
         finally:
             store.close()
         print(json.dumps({
+            "ok": True,
             "job_id": job.job_id,
             "status": job.status,
             "sample_path": job.sample_path,
+            "sample_name": job.sample_name,
             "sample_sha256": job.sample_sha256,
             "sample_store_ref": job.sample_store_ref,
             "output_dir": job.output_dir,
@@ -1911,6 +1975,7 @@ def worker(
 @click.option("--status", type=click.Choice(["queued", "running", "completed", "failed"]), default=None, help="Only show jobs in this state")
 @click.option("--limit", default=50, type=int, help="Maximum rows to list")
 @click.option("--recover", is_flag=True, help="Requeue or fail jobs whose worker lease expired")
+@click.option("--requeue", "requeue_job", is_flag=True, help="Re-queue JOB_ID as it is (sample reference, name, output and args kept)")
 @click.option("--queue", "queue_db", type=click.Path(path_type=Path), default=None, help="Queue database (default: data/queue.db or HATCHERY_QUEUE_DB)")
 def queue_command(
     job_id: Optional[str],
@@ -1918,6 +1983,7 @@ def queue_command(
     status: Optional[str],
     limit: int,
     recover: bool,
+    requeue_job: bool,
     queue_db: Optional[Path],
 ) -> None:
     """Show the durable job queue, or one job.
@@ -1925,12 +1991,33 @@ def queue_command(
     With no argument, lists jobs (most recent first) and the state counts. With
     a JOB_ID, prints that job. ``--recover`` first requeues (or fails) any job
     whose worker died holding the lease.
+
+    ``--requeue`` re-queues JOB_ID from what the row already records (D42). It is
+    how a retry works when the sample never had a path, or when its original path
+    has since been deleted — and it keeps the original arguments, so a retry
+    cannot silently turn an emulated or static-only job into a different one.
     """
-    from engine.queue import JobStore, resolve_queue_db
+    from engine.queue import JobError, JobStore, resolve_queue_db
 
     store = JobStore(resolve_queue_db(queue_db))
     try:
         recovered = store.recover_expired() if recover else []
+        if requeue_job:
+            if not job_id:
+                raise click.UsageError("--requeue needs a JOB_ID")
+            try:
+                requeued = store.requeue(job_id)
+            except JobError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise SystemExit(1) from exc
+            if as_json:
+                print(json.dumps(requeued.to_dict(), default=str))
+                return
+            console.print(
+                f"[green]Re-queued[/green] {requeued.job_id} "
+                f"(attempts reset, sample {requeued.sample_store_ref or requeued.sample_path})"
+            )
+            return
         if job_id:
             job = store.get(job_id)
             if job is None:
@@ -2110,18 +2197,103 @@ def _resolved_queue_db(queue_db: Optional[Path]) -> Optional[Path]:
 
 @cli.group()
 def store() -> None:
-    """Sample store: status, verify, migrate and prune.
+    """Sample store: intake, status, verify, migrate and prune.
 
     The store is content-addressed by sha256 and encrypted at rest (AES-256-GCM,
-    versioned envelope). `status` reports counts and retention, `verify`
-    decrypts and hash-checks every entry, `migrate` encrypts a legacy plaintext
-    store idempotently, and `prune` deletes expired, unreferenced samples —
-    dry-run unless --apply.
+    versioned envelope). `put` takes a sample and returns its address — from a
+    file, or from a pipe with `--stdin`, which is how the HTTP boundary accepts
+    an upload without writing the bytes down (D42). `status` reports counts and
+    retention, `verify` decrypts and hash-checks every entry, `migrate` encrypts
+    a legacy plaintext store idempotently, and `prune` deletes expired,
+    unreferenced samples — dry-run unless --apply.
 
     Every subcommand accepts --json (one object on stdout; diagnostics on
     stderr). Exit codes: 0 success, 1 operational error, 2 verification or
     retention failure (including a refused prune). No command prints a key.
     """
+
+
+@store.command("put")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=False)
+@click.option("--stdin", "read_stdin", is_flag=True, help="Read the sample bytes from a pipe instead of a FILE")
+@click.option("--name", "sample_name", default=None, help="Display name to record for a sample read from --stdin")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout")
+@click.option("--store", "store_root", type=click.Path(path_type=Path), default=None,
+              help="Sample store root (default: HATCHERY_SAMPLE_STORE or <checkout>/samples)")
+@internal_error_backstop
+def store_put(
+    file: Optional[Path],
+    read_stdin: bool,
+    sample_name: Optional[str],
+    as_json: bool,
+    store_root: Optional[Path],
+) -> None:
+    """Store a sample and print its content address.
+
+    One job: take the bytes, encrypt them, return the address. It is deliberately
+    separate from `submit --enqueue`, which queues an address it is given (D42).
+    The HTTP boundary needs that split: it can only know a form's `timeout` and
+    `noSandbox` once the whole body has been read, and a body cannot be read and
+    *not* written down at the same time unless it is read as it arrives. So the
+    stream is consumed here, at once, and the job is queued afterwards by
+    `hatchery submit --from-store SHA --enqueue`.
+
+    With ``--stdin`` the sample is read from a pipe under the store's own limit
+    (256 MiB) and encrypted from memory: **no plaintext file exists at any
+    instant**, at the size limit or any other. A pipe has no ``lstat``, so the
+    limit is applied while reading rather than before it (D40's rule cannot run
+    in front of a socket), and a refusal stores nothing.
+    """
+    from engine.store import SampleStoreError
+    from engine.store.limits import SampleSourceError, read_sample_stream
+
+    if read_stdin and file is not None:
+        raise click.UsageError("--stdin cannot be combined with a FILE")
+    if not read_stdin and file is None:
+        raise click.UsageError("store put needs a FILE or --stdin")
+    if read_stdin and sys.stdin.isatty():
+        raise click.UsageError(
+            "--stdin reads the sample from a pipe, and no stream is attached to "
+            "this terminal; use `cat sample | hatchery store put --stdin`"
+        )
+
+    try:
+        sample_store = _open_store(store_root)
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+    try:
+        if read_stdin:
+            try:
+                data = read_sample_stream(
+                    sys.stdin.buffer, limit=sample_store.max_bytes
+                )
+            except SampleSourceError as exc:
+                _store_command_failed(exc, as_json)
+            record = sample_store.put_bytes(
+                data, source=f"stdin:{sample_name or 'sample'}"
+            )
+        else:
+            assert file is not None
+            record = sample_store.put_file(file)
+    except SampleStoreError as exc:
+        _store_command_failed(exc, as_json)
+    finally:
+        sample_store.close()
+
+    notice = sample_store.generated_key_notice
+    if notice:
+        click.echo(f"WARNING: {notice}", err=True)
+    payload = {
+        "ok": True,
+        "sha256": record.sha256,
+        "size": record.size,
+        "blob": record.blob,
+        "encrypted": record.encrypted,
+    }
+    if as_json:
+        print(json.dumps(payload))
+    else:
+        click.echo(f"{record.sha256}  {_human_size(record.size)}  {record.blob}")
 
 
 @store.command("status")

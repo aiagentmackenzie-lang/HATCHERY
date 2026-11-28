@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error_message TEXT,
-    queue_job_id TEXT          -- the durable job this task was queued as (D27)
+    queue_job_id TEXT,         -- the durable job this task was queued as (D27)
+    sample_store_ref TEXT      -- the store address of a stream-supplied sample (D42);
+                               -- a path-supplied task keeps NULL and a real file_path
 );
 
 CREATE TABLE IF NOT EXISTS static_results (

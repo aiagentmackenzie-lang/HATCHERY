@@ -140,7 +140,15 @@ cli()
     output = result.stdout + result.stderr
     assert result.returncode == 1, output[-3000:]
     assert "store-busy" in output, output[-3000:]
-    assert "Cannot store the sample" in output, output[-3000:]
+    # D42: a queued submission refuses in the one machine-readable shape a caller
+    # can parse ("ok": false + the store's own reason code), not a coloured line
+    # a server would have to pattern-match. A direct run still prints the human
+    # sentence, because a person is reading it.
+    if enqueue:
+        assert '"ok": false' in output, output[-3000:]
+        assert '"reason": "store-busy"' in output, output[-3000:]
+    else:
+        assert "Cannot store the sample" in output, output[-3000:]
     assert "Traceback" not in output, output[-3000:]
     assert "OperationalError" not in output, output[-3000:]
     # No run directory was half-created around the failed store construction.

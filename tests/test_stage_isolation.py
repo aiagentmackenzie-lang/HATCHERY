@@ -39,6 +39,7 @@ SUBMIT_DEFAULTS: dict = {
     "queue_db": None,
     "job_id": None,
     "requeue": False,
+    "sample_name": None,
 }
 
 

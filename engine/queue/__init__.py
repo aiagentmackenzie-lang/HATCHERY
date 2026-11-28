@@ -18,11 +18,14 @@ from engine.queue.store import (
     JOB_STATUSES,
     QUEUED,
     RUNNING,
+    STORE_PREFIX,
     TERMINAL_STATUSES,
     Job,
     JobError,
     JobStore,
+    is_store_marker,
     resolve_queue_db,
+    store_marker,
 )
 from engine.queue.worker import (
     JobOutcome,
@@ -43,10 +46,13 @@ __all__ = [
     "JobStore",
     "QUEUED",
     "RUNNING",
+    "STORE_PREFIX",
     "TERMINAL_STATUSES",
     "Worker",
     "WorkerConfig",
     "build_job_command",
     "engine_root",
+    "is_store_marker",
     "resolve_queue_db",
+    "store_marker",
 ]

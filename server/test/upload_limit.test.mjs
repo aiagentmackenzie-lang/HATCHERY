@@ -1,25 +1,37 @@
 /**
- * The API refuses an oversized sample at the boundary (D41).
+ * The API's sample boundary: one limit, one intake path, nothing written down (D41/D42).
  *
  * D40 bounded intake in the engine and recorded one gap: the API's multipart
  * route. It turned out the route *did* have a limit (50 MiB, set on the plugin)
- * but nothing tied it to the engine's 256 MiB, so a 100 MiB sample was refused
- * by the API and accepted by the engine; the JSON `filePath` branch had no
- * limit at all; and a refused upload left the partial file and its directory on
- * disk. This file pins the three things that make the limit real: one number,
- * applied on both branches, with nothing left behind.
+ * but nothing tied it to the engine's 256 MiB, so a 100 MiB sample was refused by
+ * the API and accepted by the engine; the JSON `filePath` branch had no limit at
+ * all; and a refused upload left the partial file and its directory on disk. D41
+ * made the limit one number, applied on both branches, with nothing left behind.
  *
- * Run with `npm test` (after `npm run build`); no engine and no database are
- * needed for the refusal paths, so this runs in server-gate.
+ * D42 removed the file: the route used to stage up to 256 MiB of live malware as
+ * PLAINTEXT under `uploads/<taskId>/`. It now streams the body into the encrypted
+ * store and queues the address. That also fixed a defect D41 could not see from a
+ * small fixture — the old route collected the file part and consumed it after the
+ * loop, so busboy's backpressure deadlocked every upload above ~128 KiB (96 KiB
+ * answered, 128 KiB never did).
+ *
+ * The engine is replaced by `fixtures/fake-engine.mjs` here: this job runs in
+ * CI's `server-gate`, which has no Python and no engine. The real path — a real
+ * store, a real encryption envelope, a real worker — is exercised by
+ * `scripts/verify_setup.sh` and by the engine's own suite.
+ *
+ * Run with `npm test` (after `npm run build`).
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import Database from 'better-sqlite3';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 
@@ -36,6 +48,10 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 process.env.HATCHERY_UPLOADS_DIR = uploadsDir;
 process.env.HATCHERY_DB_PATH = path.join(workDir, 'hatchery.db');
 process.env.HATCHERY_QUEUE_DB = path.join(workDir, 'queue.db');
+// D42: a stand-in engine, so this suite needs no Python (see the file header).
+// It lives outside `test/` because `node --test` runs every file under that
+// directory, and a fixture is not a test.
+process.env.HATCHERY_ENGINE_PYTHON = path.join(serverRoot, 'fixtures', 'fake-engine.mjs');
 
 const { MAX_FILENAME_BYTES, MAX_UPLOAD_BYTES, safeFilename, submitRoutes } =
   await import('../dist/routes/submit.js');
@@ -45,14 +61,26 @@ const BOUNDARY = 'HATCHERYBOUNDARY';
 function multipartBody(parts) {
   const chunks = [];
   for (const part of parts) {
-    chunks.push(
-      Buffer.from(
-        `--${BOUNDARY}\r\n` +
-          `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"\r\n` +
-          'Content-Type: application/octet-stream\r\n\r\n',
-      ),
-    );
-    chunks.push(part.data);
+    if (part.value !== undefined) {
+      // A plain field: no filename and no Content-Type, or busboy treats it as
+      // a file — which is how a test can accidentally prove the wrong thing.
+      chunks.push(
+        Buffer.from(
+          `--${BOUNDARY}\r\n` +
+            `Content-Disposition: form-data; name="${part.name}"\r\n\r\n`,
+        ),
+      );
+      chunks.push(Buffer.from(part.value));
+    } else {
+      chunks.push(
+        Buffer.from(
+          `--${BOUNDARY}\r\n` +
+            `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"\r\n` +
+            'Content-Type: application/octet-stream\r\n\r\n',
+        ),
+      );
+      chunks.push(part.data);
+    }
     chunks.push(Buffer.from('\r\n'));
   }
   chunks.push(Buffer.from(`--${BOUNDARY}--\r\n`));
@@ -93,6 +121,18 @@ function residues() {
   return fs.readdirSync(uploadsDir).sort();
 }
 
+function taskRows() {
+  // A refusal can happen before the route ever opens the database (the plugin
+  // rejects the body first), so a missing file means "no tasks", not a failure.
+  if (!fs.existsSync(process.env.HATCHERY_DB_PATH)) return [];
+  const db = new Database(process.env.HATCHERY_DB_PATH, { readonly: true, fileMustExist: true });
+  try {
+    return db.prepare('SELECT task_id, file_name, file_path, sample_store_ref FROM tasks').all();
+  } finally {
+    db.close();
+  }
+}
+
 test('the API limit is the engine limit, not a second opinion', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'engine', 'store', 'store.py'),
@@ -111,9 +151,10 @@ test('the API limit is the engine limit, not a second opinion', () => {
   );
 });
 
-test('an oversized multipart upload is 413 and leaves nothing on disk', { timeout: 30000 }, async () => {
+test('an oversized multipart upload is 413 and queues nothing', { timeout: 30000 }, async () => {
   const app = await appWith({ fileSize: 1024, files: 1, parts: 8 });
   const before = residues();
+  const tasksBefore = taskRows().length;
 
   const response = await postMultipart(
     app,
@@ -128,6 +169,52 @@ test('an oversized multipart upload is 413 and leaves nothing on disk', { timeou
     residues(),
     before,
     'a refused upload left a partial file or task directory behind',
+  );
+  assert.equal(
+    taskRows().length,
+    tasksBefore,
+    'a truncated upload must not become a task — and therefore must not become a job',
+  );
+});
+
+test('a multipart upload is stored through the engine, not written to a file', { timeout: 30000 }, async () => {
+  const app = await appWith({ fileSize: MAX_UPLOAD_BYTES, files: 1, parts: 8 });
+  const sample = Buffer.from('MZ\u0090\u0000hatchery-d42-streamed-upload');
+  const expected = createHash('sha256').update(sample).digest('hex');
+  const before = residues();
+
+  const response = await postMultipart(
+    app,
+    multipartBody([
+      { name: 'sample', filename: 'payload.docm', data: sample },
+      // A field after the file: the route applies options only once the body is
+      // fully read, which is why storing and queueing are two calls (D42).
+      { name: 'noSandbox', value: Buffer.from('true') },
+    ]),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(
+    body.sample_store_ref,
+    expected,
+    'the response must name the address the engine stored, not a path',
+  );
+  assert.equal(body.file_name, 'payload.docm');
+  assert.equal(body.no_sandbox, true, 'a field sent after the file must still apply');
+  assert.deepEqual(
+    residues(),
+    before,
+    'the sample must never be written under the uploads root',
+  );
+
+  const rows = taskRows().filter((row) => row.task_id === body.task_id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].sample_store_ref, expected);
+  assert.equal(
+    rows[0].file_path,
+    `store:${expected}`,
+    'a path that does not exist must not be recorded as one',
   );
 });
 

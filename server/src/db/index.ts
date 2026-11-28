@@ -171,6 +171,12 @@ function migrate(database: Database.Database): void {
   if (!taskColumns.some((c) => c.name === 'queue_job_id')) {
     database.exec('ALTER TABLE tasks ADD COLUMN queue_job_id TEXT');
   }
+  // D42: the content address a task's sample is stored at, for a sample that
+  // arrived on the wire and therefore has no path. Additive and nullable: a
+  // pre-D42 row keeps NULL and its `file_path` still names a real file.
+  if (!taskColumns.some((c) => c.name === 'sample_store_ref')) {
+    database.exec('ALTER TABLE tasks ADD COLUMN sample_store_ref TEXT');
+  }
   // The index must be created after the column exists, otherwise a database
   // from before the queue fails at schema load with "no such column".
   database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(queue_job_id)');
@@ -208,6 +214,8 @@ export interface TaskRow {
   file_name: string;
   file_path: string;
   file_size: number;
+  /** D42: the store address of a stream-supplied sample (null for a path one). */
+  sample_store_ref: string | null;
   md5: string | null;
   sha1: string | null;
   sha256: string | null;

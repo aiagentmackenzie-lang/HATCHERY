@@ -33,13 +33,31 @@ from typing import Any, Iterator, Optional
 DEFAULT_QUEUE_DB = Path("data") / "queue.db"
 
 # D27 created the queue at user_version 0 (SQLite's default). D28 adds the
-# sample-store reference as an additive column and stamps version 2. The
-# migration only ever ADDs columns: job ids, states and timestamps written by a
-# pre-D28 build must survive untouched.
-QUEUE_SCHEMA_VERSION = 2
+# sample-store reference as an additive column and stamps version 2. D42 adds
+# the sample's display name, because a job whose sample arrived on a stream has
+# no path to take a name from. The migration only ever ADDs columns: job ids,
+# states and timestamps written by an older build must survive untouched.
+QUEUE_SCHEMA_VERSION = 3
 ADDITIVE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("sample_store_ref", "TEXT"),
+    ("sample_name", "TEXT"),
 )
+
+#: A job whose sample exists only in the encrypted store records this prefix
+#: instead of a path (D42). It is deliberately not a filesystem path: the column
+#: is NOT NULL, and inventing a plausible-looking path that does not exist is
+#: the kind of quiet lie this project forbids. Anything that opens it must
+#: resolve it to the store first, and the worker does exactly that.
+STORE_PREFIX = "store:"
+
+
+def is_store_marker(value: object) -> bool:
+    """True when ``value`` names a store address rather than a path."""
+    return isinstance(value, str) and value.startswith(STORE_PREFIX)
+
+
+def store_marker(sha256: str) -> str:
+    return f"{STORE_PREFIX}{sha256}"
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -56,6 +74,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     sample_path     TEXT NOT NULL,
     sample_sha256   TEXT,
     sample_store_ref TEXT,
+    sample_name     TEXT,
     output_dir      TEXT NOT NULL,
     args_json       TEXT NOT NULL DEFAULT '{}',
     attempts        INTEGER NOT NULL DEFAULT 0,
@@ -110,6 +129,7 @@ class Job:
     output_dir: str
     sample_sha256: Optional[str] = None
     sample_store_ref: Optional[str] = None
+    sample_name: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
     attempts: int = 0
     max_attempts: int = 3
@@ -131,6 +151,7 @@ class Job:
             "sample_path": self.sample_path,
             "sample_sha256": self.sample_sha256,
             "sample_store_ref": self.sample_store_ref,
+            "sample_name": self.sample_name,
             "output_dir": self.output_dir,
             "args": self.args,
             "attempts": self.attempts,
@@ -162,6 +183,7 @@ class Job:
             output_dir=row["output_dir"],
             sample_sha256=row["sample_sha256"],
             sample_store_ref=row["sample_store_ref"] if "sample_store_ref" in row.keys() else None,
+            sample_name=row["sample_name"] if "sample_name" in row.keys() else None,
             args=args,
             attempts=int(row["attempts"] or 0),
             max_attempts=int(row["max_attempts"] or 3),
@@ -260,12 +282,13 @@ class JobStore:
 
     def enqueue(
         self,
-        sample_path: Path | str,
+        sample_path: Optional[Path | str] = None,
         *,
         output_dir: Optional[Path | str] = None,
         args: Optional[dict[str, Any]] = None,
         sample_sha256: Optional[str] = None,
         sample_store_ref: Optional[str] = None,
+        sample_name: Optional[str] = None,
         max_attempts: int = 3,
         job_id: Optional[str] = None,
         requeue: bool = False,
@@ -276,15 +299,25 @@ class JobStore:
         The sample path and the output directory are resolved to absolute paths
         at enqueue time: a worker may run in a different working directory, and a
         job whose relative paths depend on where it was queued would be a trap.
+
+        D42: ``sample_path`` may be omitted when ``sample_store_ref`` is given —
+        a sample that arrived on a stream has no path, and the job records a
+        ``store:`` marker instead of a path that does not exist. Exactly one of
+        the two is required; neither is a job that can run.
         """
         if max_attempts < 1:
             raise JobError("max_attempts must be at least 1")
+        if sample_path is None and not sample_store_ref:
+            raise JobError("a job needs a sample path or a sample-store reference")
         moment = now if now is not None else time.time()
         job_id = job_id or uuid.uuid4().hex[:12]
         if not job_id.strip():
             raise JobError("job_id must not be empty")
-        sample = Path(str(sample_path)).expanduser()
-        sample_abs = str(sample.resolve())
+        if sample_path is None:
+            sample_abs = store_marker(str(sample_store_ref))
+        else:
+            sample = Path(str(sample_path)).expanduser()
+            sample_abs = str(sample.resolve())
         out = Path(str(output_dir)).expanduser() if output_dir else (Path("results") / job_id)
         out_abs = str(out.resolve())
         payload = json.dumps(args or {})
@@ -315,28 +348,74 @@ class JobStore:
                         exit_code = NULL, error = NULL, run_dir = NULL, task_id = NULL,
                         sample_path = ?, output_dir = ?, args_json = ?,
                         sample_sha256 = COALESCE(?, sample_sha256),
-                        sample_store_ref = COALESCE(?, sample_store_ref), updated_at = ?
+                        sample_store_ref = COALESCE(?, sample_store_ref),
+                        sample_name = COALESCE(?, sample_name), updated_at = ?
                     WHERE job_id = ?
                     """,
                     (QUEUED, sample_abs, out_abs, payload, sample_sha256,
-                     sample_store_ref, _iso(moment), job_id),
+                     sample_store_ref, sample_name, _iso(moment), job_id),
                 )
             else:
                 self._conn.execute(
                     """
                     INSERT INTO jobs (
                         job_id, status, sample_path, sample_sha256, sample_store_ref,
-                        output_dir, args_json, attempts, max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                        sample_name, output_dir, args_json, attempts, max_attempts,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
                     (
                         job_id, QUEUED, sample_abs, sample_sha256, sample_store_ref,
-                        out_abs, payload, max_attempts, _iso(moment), _iso(moment),
+                        sample_name, out_abs, payload, max_attempts, _iso(moment),
+                        _iso(moment),
                     ),
                 )
         job = self.get(job_id)
         if job is None:  # pragma: no cover - the row was just written
             raise JobError(f"job {job_id} disappeared immediately after enqueue")
+        return job
+
+    def requeue(self, job_id: str, *, now: Optional[float] = None) -> Job:
+        """Re-queue a terminal job, keeping the sample it already names.
+
+        D42: the API's retry used to re-enqueue from ``task.file_path``. A job
+        whose sample arrived on a stream has no path — and an operator may have
+        deleted the original of any job — so re-queueing must run from what the
+        job already knows: its store reference, its display name, its output
+        directory and its arguments.
+
+        This also stops a retry from quietly changing what the job *is*: the old
+        route passed a fresh ``timeout: 120, noSandbox: false``, so retrying an
+        emulated or static-only submission silently ran a different job.
+        """
+        moment = now if now is not None else time.time()
+        with self._lock, self._write_txn():
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise JobError(f"no job {job_id} in {self.path}")
+            if row["status"] == RUNNING and (
+                row["lease_expires_at"] is None
+                or float(row["lease_expires_at"]) >= moment
+            ):
+                raise JobError(
+                    f"job {job_id} is running under a live lease; refusing to re-queue it"
+                )
+            self._conn.execute(
+                """
+                UPDATE jobs SET
+                    status = ?, attempts = 0, worker_id = NULL,
+                    lease_expires_at = NULL, started_at = NULL, finished_at = NULL,
+                    exit_code = NULL, error = NULL, run_dir = NULL, task_id = NULL,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (QUEUED, _iso(moment), job_id),
+            )
+        job = self.get(job_id)
+        if job is None:  # pragma: no cover - the row was just re-queued
+            raise JobError(f"job {job_id} disappeared immediately after re-queue")
         return job
 
     def claim(
