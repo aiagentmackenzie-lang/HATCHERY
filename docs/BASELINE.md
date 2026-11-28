@@ -52,6 +52,27 @@ scripts/verify_setup.sh               42 PASS, 0 FAIL
 fixture scorecard                     16 passed, 0 failed, 0 known defects (unchanged)
 ```
 
+**And proven by CI, not by a local run.** D42 and D43 were pushed together as
+`bc4fa59..b0fb6b2`; `HATCHERY CI` run **`46090131006`** is **9/9 green** on that head
+(`python-gate` 3.12/3.13/3.14, `server-gate`, `queue-gate`, `hostile-inputs`,
+`emulation-gate`, `detonation-gate`, `dashboard-gate`). The new gates ran rather than
+being skipped: `server-gate` reports **111 tests / 111 pass / 0 fail** and names the
+D42 and D43 cases (`ok 107 - an oversized multipart upload is 413 and queues nothing`,
+`ok 108 - a multipart upload is stored through the engine, not written to a file`), and
+its smoke test prints the live banner line
+`Admission: 60 requests per 600s, 2147483648 bytes per 600s, 8 queued+running jobs`.
+`queue-gate` runs the cross-language test that the owner column did not break the queue,
+and `hostile-inputs` installs hypothesis and reports **63 passed** (the dependency step
+fails the job if it is missing, so that is a real run).
+
+CI's Python counts differ from this checkout in the honest direction: **966 passed, 21
+skipped** on the runner against **970 / 17** here. Three of those four extra skips are
+the tshark-gated acceptance rows — verified by re-running with `/opt/homebrew/bin`
+removed from `PATH`, which adds exactly `test_acceptance_fixtures.py:139/149/157:
+tshark not installed`. The fourth was unnamed, because `pytest -q` does not print skip
+reasons; the workflow now runs `pytest -q -rs` so the next transcript can name it
+instead of counting it.
+
 ## What is verified (D38 clean copy, `b389c94`)
 
 - A clean copy with no `.venv`, `node_modules`, `data/`, `results/`, `uploads/`

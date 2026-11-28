@@ -38,8 +38,12 @@ jobs:
       - name: Lint the YARA rules
         run: hatchery rules lint
 
+      # `-rs` names every skip and its reason. A skip that cannot be seen is halfway
+      # to a green skip: the macOS checkout reports 17 and this runner reports more,
+      # and without the reasons nobody can say which rows are host-dependent and
+      # which are quietly not testing anything.
       - name: Test with pytest
-        run: pytest -q
+        run: pytest -q -rs
 
       # Deterministic acceptance inputs: the manifest must regenerate
       # byte-identically, and recorded outcomes must match (known defects are
