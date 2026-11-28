@@ -17,6 +17,7 @@ import { countTokens } from './security/tokens.js';
 import { auditKeyring } from './security/audit.js';
 import { databasePath } from './db/index.js';
 import { growthReport } from './security/auditGrowth.js';
+import { describeLimits, readLimits, settle } from './security/admission.js';
 
 const PORT = parseInt(process.env.HATCHERY_PORT ?? '3002', 10);
 // Bind to loopback by default. This API stores live malware samples and serves
@@ -214,8 +215,34 @@ app.addHook('onResponse', async (request: any, reply: any) => {
     method: request.method,
     path, // query string is deliberately dropped: it can carry identifiers
     statusCode: reply.statusCode,
-    action: reply.statusCode >= 500 ? 'request.failed' : 'request.allowed',
+    // D43: a throttled request is a refusal. Recording it as "allowed" because it is
+    // below 500 would make the audit trail claim the API served something it refused.
+    action:
+      reply.statusCode === 429
+        ? 'request.throttled'
+        : reply.statusCode >= 500
+          ? 'request.failed'
+          : 'request.allowed',
+    ...(reply.statusCode === 429
+      ? { detail: String(reply.getHeader('x-hatchery-admission') ?? 'admission refused') }
+      : {}),
   });
+});
+
+// D43: settle an admission reservation once the response is decided, whatever the
+// outcome. The route records what it actually stored in `hatcheryAdmittedBytes`; a
+// refusal or a disconnect settles to 0, so an intent that never became a sample is
+// not charged to the caller for the rest of the window.
+app.addHook('onResponse', async (request: any) => {
+  const reservation = request.hatcheryAdmission as Parameters<typeof settle>[1] | undefined;
+  if (!reservation) return;
+  try {
+    settle(db, reservation, Number(request.hatcheryAdmittedBytes ?? 0));
+  } catch (error) {
+    console.warn(
+      `[hatchery] admission settle failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 });
 
 // Multipart file uploads (e.g. PhishHawk attachment detonation)
@@ -297,6 +324,7 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   console.log(`🔥 HATCHERY API running on http://${HOST}:${PORT}`);
   console.log(`   WebSocket:    ws://${HOST}:${PORT}/ws`);
   console.log(`   Dashboard:    http://localhost:5173 (run: cd dashboard && npm run dev)`);
+  console.log(`   Admission:    ${describeLimits(readLimits())} (per caller; 0 disables)`);
   if (isOpen(TOKENS, db)) {
     console.warn(
       '⚠  No API token is set: this API is unauthenticated. ' +

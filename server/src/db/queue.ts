@@ -46,6 +46,8 @@ export interface QueueJob {
   sample_store_ref: string | null;
   /** D42: the sample's display name (a stream-supplied sample has no path). */
   sample_name: string | null;
+  /** D43: the actor that submitted the job. */
+  owner: string | null;
   output_dir: string;
   attempts: number;
   max_attempts: number;
@@ -68,6 +70,8 @@ export interface EnqueueRequest {
   timeout: number;
   noSandbox: boolean;
   requeue?: boolean;
+  /** D43: the actor that submitted the job, recorded in the queue. */
+  owner?: string;
 }
 
 /** Queue an address that is already in the encrypted store (D42). */
@@ -78,6 +82,8 @@ export interface EnqueueStoredRequest {
   outputDir: string;
   timeout: number;
   noSandbox: boolean;
+  /** D43: the actor that submitted the job, recorded in the queue. */
+  owner?: string;
 }
 
 export interface EnqueueResult {
@@ -172,6 +178,7 @@ export function enqueueJob(request: EnqueueRequest): EnqueueResult {
   ];
   if (request.noSandbox) args.push('--no-sandbox');
   if (request.requeue) args.push('--requeue');
+  if (request.owner) args.push(`--owner=${request.owner}`);
 
   const completed = spawnSync(enginePython(), args, {
     cwd: ENGINE_ROOT,
@@ -313,6 +320,7 @@ export function enqueueStored(request: EnqueueStoredRequest): EnqueueResult {
     '-o', request.outputDir,
   ];
   if (request.noSandbox) args.push('--no-sandbox');
+  if (request.owner) args.push(`--owner=${request.owner}`);
 
   const completed = spawnSync(enginePython(), args, {
     cwd: ENGINE_ROOT,
@@ -335,6 +343,35 @@ export function enqueueStored(request: EnqueueStoredRequest): EnqueueResult {
     engineJson(completed.stdout ?? '', completed.stderr ?? ''),
     'unparseable enqueue output',
   );
+}
+
+/**
+ * How many queued or running jobs this owner has (D43).
+ *
+ * A reader, not a counter: job state belongs to the engine (D27), so the per-caller
+ * job cap is enforced by counting what the queue already says rather than by
+ * keeping a second tally that could drift. Returns `null` when the queue cannot be
+ * read — a missing queue file on a fresh install is "no jobs", not "a full queue",
+ * and refusing every submission because a file does not exist is the kind of
+ * control an operator switches off.
+ */
+export function countActiveJobs(owner: string): number | null {
+  if (!fs.existsSync(QUEUE_DB)) return 0;
+  let queue: Database.Database | null = null;
+  try {
+    queue = new Database(QUEUE_DB, { readonly: true, fileMustExist: true });
+    queue.pragma('busy_timeout = 5000');
+    const row = queue
+      .prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE owner = ? AND status IN ('queued', 'running')`,
+      )
+      .get(owner) as { n: number } | undefined;
+    return row ? Number(row.n) : 0;
+  } catch {
+    return null;
+  } finally {
+    if (queue) queue.close();
+  }
 }
 
 /**
@@ -382,7 +419,7 @@ export function readQueueJob(jobId: string): QueueJob | null {
     const row = queue
       .prepare(
         `SELECT job_id, status, sample_path, sample_sha256, sample_store_ref, sample_name,
-                output_dir, attempts, max_attempts,
+                owner, output_dir, attempts, max_attempts,
                 worker_id, lease_expires_at, created_at, started_at, finished_at,
                 updated_at, exit_code, error, run_dir, task_id
          FROM jobs WHERE job_id = ?`,

@@ -60,6 +60,9 @@ export type AuditAction =
   | 'request.forbidden'
   | 'request.allowed'
   | 'request.failed'
+  // D43: a throttled request was refused, not served. Recording it as `allowed`
+  // because 429 is below 500 would make the trail disagree with the response.
+  | 'request.throttled'
   | 'token.created'
   | 'token.retired'
   | 'token.expired'

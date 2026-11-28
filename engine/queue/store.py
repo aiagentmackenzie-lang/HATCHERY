@@ -35,12 +35,15 @@ DEFAULT_QUEUE_DB = Path("data") / "queue.db"
 # D27 created the queue at user_version 0 (SQLite's default). D28 adds the
 # sample-store reference as an additive column and stamps version 2. D42 adds
 # the sample's display name, because a job whose sample arrived on a stream has
-# no path to take a name from. The migration only ever ADDs columns: job ids,
-# states and timestamps written by an older build must survive untouched.
-QUEUE_SCHEMA_VERSION = 3
+# no path to take a name from. D43 adds the **owner** — the actor that submitted
+# the job — because a per-caller cap on queued/running jobs has to know whose
+# they are. The migration only ever ADDs columns: job ids, states and timestamps
+# written by an older build must survive untouched.
+QUEUE_SCHEMA_VERSION = 4
 ADDITIVE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("sample_store_ref", "TEXT"),
     ("sample_name", "TEXT"),
+    ("owner", "TEXT"),
 )
 
 #: A job whose sample exists only in the encrypted store records this prefix
@@ -75,6 +78,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     sample_sha256   TEXT,
     sample_store_ref TEXT,
     sample_name     TEXT,
+    owner           TEXT,
     output_dir      TEXT NOT NULL,
     args_json       TEXT NOT NULL DEFAULT '{}',
     attempts        INTEGER NOT NULL DEFAULT 0,
@@ -130,6 +134,10 @@ class Job:
     sample_sha256: Optional[str] = None
     sample_store_ref: Optional[str] = None
     sample_name: Optional[str] = None
+    #: D43: the actor that submitted the job (`token:<id>`, `admin`, `anonymous`).
+    #: Not a secret — the token *id* is already in the audit chain; the secret half
+    #: never appears anywhere.
+    owner: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
     attempts: int = 0
     max_attempts: int = 3
@@ -152,6 +160,7 @@ class Job:
             "sample_sha256": self.sample_sha256,
             "sample_store_ref": self.sample_store_ref,
             "sample_name": self.sample_name,
+            "owner": self.owner,
             "output_dir": self.output_dir,
             "args": self.args,
             "attempts": self.attempts,
@@ -184,6 +193,7 @@ class Job:
             sample_sha256=row["sample_sha256"],
             sample_store_ref=row["sample_store_ref"] if "sample_store_ref" in row.keys() else None,
             sample_name=row["sample_name"] if "sample_name" in row.keys() else None,
+            owner=row["owner"] if "owner" in row.keys() else None,
             args=args,
             attempts=int(row["attempts"] or 0),
             max_attempts=int(row["max_attempts"] or 3),
@@ -289,6 +299,7 @@ class JobStore:
         sample_sha256: Optional[str] = None,
         sample_store_ref: Optional[str] = None,
         sample_name: Optional[str] = None,
+        owner: Optional[str] = None,
         max_attempts: int = 3,
         job_id: Optional[str] = None,
         requeue: bool = False,
@@ -349,25 +360,26 @@ class JobStore:
                         sample_path = ?, output_dir = ?, args_json = ?,
                         sample_sha256 = COALESCE(?, sample_sha256),
                         sample_store_ref = COALESCE(?, sample_store_ref),
-                        sample_name = COALESCE(?, sample_name), updated_at = ?
+                        sample_name = COALESCE(?, sample_name),
+                        owner = COALESCE(?, owner), updated_at = ?
                     WHERE job_id = ?
                     """,
                     (QUEUED, sample_abs, out_abs, payload, sample_sha256,
-                     sample_store_ref, sample_name, _iso(moment), job_id),
+                     sample_store_ref, sample_name, owner, _iso(moment), job_id),
                 )
             else:
                 self._conn.execute(
                     """
                     INSERT INTO jobs (
                         job_id, status, sample_path, sample_sha256, sample_store_ref,
-                        sample_name, output_dir, args_json, attempts, max_attempts,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                        sample_name, owner, output_dir, args_json, attempts,
+                        max_attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
                     (
                         job_id, QUEUED, sample_abs, sample_sha256, sample_store_ref,
-                        sample_name, out_abs, payload, max_attempts, _iso(moment),
-                        _iso(moment),
+                        sample_name, owner, out_abs, payload, max_attempts,
+                        _iso(moment), _iso(moment),
                     ),
                 )
         job = self.get(job_id)

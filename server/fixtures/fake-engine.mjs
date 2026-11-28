@@ -42,6 +42,15 @@ function argValue(flag, fallback = '') {
 
 const command = process.argv.slice(2).join(' ');
 
+// D43's admission tests prove a refusal happens *before the body is read* by
+// asserting this log did not grow: no log entry means the engine was never asked
+// to store anything, which is the only honest way to show the byte quota ran
+// ahead of the read rather than after it.
+if (process.env.HATCHERY_TEST_ENGINE_LOG) {
+  const { appendFileSync } = await import('node:fs');
+  appendFileSync(process.env.HATCHERY_TEST_ENGINE_LOG, `${command}\n`);
+}
+
 if (command.includes('store put')) {
   const bytes = await readStdin();
   if (bytes.length === 0) {

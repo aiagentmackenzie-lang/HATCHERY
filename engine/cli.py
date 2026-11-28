@@ -426,6 +426,7 @@ def cli(verbose: bool) -> None:
 @click.option("--job-id", default=None, help="Job id to enqueue under (default: a fresh id)")
 @click.option("--requeue", is_flag=True, help="Re-queue an existing terminal job instead of refusing")
 @click.option("--name", "sample_name", default=None, help="Filename to record for a sample that has no path (a stored sample)")
+@click.option("--owner", "owner", default=None, help="Owner recorded on a queued job: the actor that submitted it (D43)")
 @internal_error_backstop
 def submit(
     file: Optional[Path],
@@ -447,6 +448,7 @@ def submit(
     job_id: Optional[str],
     requeue: bool,
     sample_name: Optional[str],
+    owner: Optional[str],
 ) -> None:
     """Submit a sample for full analysis.
 
@@ -565,6 +567,7 @@ def submit(
                 sample_sha256=sample_sha256,
                 sample_store_ref=sample_sha256,
                 sample_name=recorded_name,
+                owner=owner,
                 job_id=job_id,
                 requeue=requeue,
             )

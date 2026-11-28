@@ -12,7 +12,7 @@
 # databases, results and uploads before and after; it fails if they changed.
 #
 # Requirements: the Python package installed (`pip install -e ".[dev]"`),
-# Node >= 20 on PATH, ports 3002 and 5173 free.
+# Node >= 20 on PATH, ports 3002, 3003 and 5173 free.
 #
 #   scripts/verify_setup.sh
 #
@@ -24,6 +24,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${PYTHON:-python3}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/hatchery-verify.XXXXXX")"
 API_PID=""
+ADMIT_PID=""
 DASH_PID=""
 FAILURES=0
 
@@ -32,11 +33,12 @@ FAILURES=0
 export HATCHERY_SAMPLE_STORE="$WORK/samples"
 
 cleanup() {
-  for port in 3002 5173; do
+  for port in 3002 3003 5173; do
     pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
     [ -n "$pids" ] && kill $pids 2>/dev/null
   done
   [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null
+  [ -n "$ADMIT_PID" ] && kill "$ADMIT_PID" 2>/dev/null
   [ -n "$DASH_PID" ] && kill "$DASH_PID" 2>/dev/null
   wait 2>/dev/null
   rm -rf "$WORK"
@@ -83,13 +85,13 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-for port in 3002 5173; do
+for port in 3002 3003 5173; do
   if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     fail "port/$port-free" "something is already listening on $port; stop it first"
     exit 1
   fi
 done
-pass "ports/free" "API (3002) and dashboard (5173) are available"
+pass "ports/free" "API (3002), admission probe (3003) and dashboard (5173) are available"
 
 # ---------------------------------------------------------------------------
 # 1. Fixtures
@@ -723,6 +725,84 @@ if [ "$STDIN_REASON" = '"reason": "too-large"' ] && [ "$SAMPLES_AFTER" = "$SAMPL
   pass "intake/stdin-limit" "300 MiB on a pipe refused while reading; nothing stored"
 else
   fail "intake/stdin-limit" "expected a too-large refusal and no new blob (${SAMPLES_BEFORE} -> ${SAMPLES_AFTER}): ${STDIN_RESPONSE:0:200}"
+fi
+
+# D43: admission control. A credential is not an unlimited budget. A second API on
+# 3003 runs with limits tight enough to refuse, against its own database and queue but
+# the same store, so the refusal (and the audit row naming it) is observed on the real
+# server with the real engine — not on a harness that stubs the hooks away.
+mkdir -p "$WORK/admit/results" "$WORK/admit/uploads"
+(
+  cd "$ROOT/server"
+  exec env HATCHERY_HOST=127.0.0.1 HATCHERY_PORT=3003 \
+    HATCHERY_DB_PATH="$WORK/admit/hatchery.db" \
+    HATCHERY_QUEUE_DB="$WORK/admit/queue.db" \
+    HATCHERY_RESULTS_ROOT="$WORK/admit/results" \
+    HATCHERY_UPLOADS_DIR="$WORK/admit/uploads" \
+    HATCHERY_ENGINE_PYTHON="$PY" \
+    HATCHERY_ADMIT_RATE=1 HATCHERY_ADMIT_BYTES=0 HATCHERY_ADMIT_JOBS=0 \
+    HATCHERY_ADMIT_WINDOW=600 \
+    node dist/index.js
+) >>"$WORK/admit.log" 2>&1 &
+ADMIT_PID=$!
+ADMIT_UP=0
+for _ in $(seq 1 60); do
+  if curl -s -m 2 http://127.0.0.1:3003/api/health | grep -q '"status":"ok"'; then ADMIT_UP=1; break; fi
+  sleep 0.25
+done
+if [ "$ADMIT_UP" = "1" ]; then
+  printf 'MZ\220\000hatchery-admission-probe' > "$WORK/admit/probe.bin"
+  ADMIT_FIRST="$(curl -s -o /dev/null -w '%{http_code}' -m 20 -X POST http://127.0.0.1:3003/api/submit \
+    -F "sample=@$WORK/admit/probe.bin" -F "noSandbox=true")"
+  ADMIT_HEADERS="$WORK/admit/refused.headers"
+  ADMIT_SECOND="$(curl -s -o "$WORK/admit/refused.json" -D "$ADMIT_HEADERS" -w '%{http_code}' -m 20 \
+    -X POST http://127.0.0.1:3003/api/submit -F "sample=@$WORK/admit/probe.bin")"
+  if [ "$ADMIT_FIRST" = "200" ] && [ "$ADMIT_SECOND" = "429" ] \
+     && grep -qi '^retry-after: [0-9]' "$ADMIT_HEADERS" \
+     && grep -Eq '"reason": *"admission-rate"' "$WORK/admit/refused.json"; then
+    pass "api/admission-rate" "second submission in the window is 429 with Retry-After"
+  else
+    fail "api/admission-rate" "expected 200 then 429 with Retry-After: ${ADMIT_FIRST}/${ADMIT_SECOND} $(head -c 160 "$WORK/admit/refused.json" 2>/dev/null)"
+  fi
+  # The audit row is appended from the response hook, so give the chain a moment.
+  ADMIT_AUDIT=""
+  for _ in $(seq 1 40); do
+    ADMIT_AUDIT="$("$PY" - "$WORK/admit/hatchery.db" <<'AUDITROW' 2>/dev/null
+import sqlite3, sys
+conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+row = conn.execute(
+    "SELECT status_code, action, detail FROM audit_log ORDER BY id DESC LIMIT 1"
+).fetchone()
+print("|".join("" if value is None else str(value) for value in (row or ())))
+AUDITROW
+)"
+    case "$ADMIT_AUDIT" in 429\|request.throttled*) break ;; esac
+    sleep 0.1
+  done
+  if printf '%s' "$ADMIT_AUDIT" | grep -q '^429|request.throttled|rate 1/1'; then
+    pass "api/admission-audited" "the refusal is in the chain as request.throttled, naming the limit"
+  else
+    fail "api/admission-audited" "no throttled row in the audit chain: '${ADMIT_AUDIT}'"
+  fi
+  # The job cap counts by owner, so the queue has to actually record one — a
+  # cross-language contract between the API, the engine CLI and the jobs table.
+  ADMIT_OWNER="$("$PY" - "$WORK/admit/queue.db" <<'JOBOWNER' 2>/dev/null
+import sqlite3, sys
+conn = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+row = conn.execute("SELECT owner FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+print("" if row is None or row[0] is None else row[0])
+JOBOWNER
+)"
+  if [ -n "$ADMIT_OWNER" ]; then
+    pass "api/admission-owner" "the queued job records its owner (${ADMIT_OWNER})"
+  else
+    fail "api/admission-owner" "the queued job has no owner, so the per-caller job cap cannot count it"
+  fi
+  kill "$ADMIT_PID" 2>/dev/null
+  wait "$ADMIT_PID" 2>/dev/null
+  ADMIT_PID=""
+else
+  fail "api/admission-rate" "the admission probe API on 3003 did not start: $(tail -3 "$WORK/admit.log" 2>/dev/null | head -c 300)"
 fi
 rm -f "$WORK/api/uploads/oversized.bin"
 

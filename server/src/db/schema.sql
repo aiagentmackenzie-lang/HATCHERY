@@ -144,3 +144,15 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_role ON api_tokens(role);
+
+-- D43: per-caller admission counters. Fixed-window totals in the same database as
+-- the token store and the audit chain, so a restart does not forget a budget the
+-- caller already spent. `window_start` is epoch seconds floored to the configured
+-- window; rows older than the previous window are swept on the next reservation.
+CREATE TABLE IF NOT EXISTS admission_counters (
+    owner        TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    requests     INTEGER NOT NULL DEFAULT 0,
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, window_start)
+);

@@ -182,7 +182,8 @@ def test_a_job_can_be_queued_from_an_address_with_no_path(tmp_path: Path) -> Non
         [
             "submit", "--from-store", sha, "--enqueue",
             "--name", "invoice.docm", "--no-sandbox", "--timeout", "240",
-            "--job-id", "stream-job", "--queue", str(tmp_path / "queue.db"),
+            "--owner", "token:abc123", "--job-id", "stream-job",
+            "--queue", str(tmp_path / "queue.db"),
         ],
         tmp_path,
     )
@@ -202,6 +203,9 @@ def test_a_job_can_be_queued_from_an_address_with_no_path(tmp_path: Path) -> Non
         assert job.sample_store_ref == sha
         assert job.sample_name == "invoice.docm"
         assert job.args["timeout"] == 240
+        # D43: the queue records who submitted the job, because the API's per-caller
+        # cap counts queued+running jobs by owner rather than keeping a second tally.
+        assert job.owner == "token:abc123"
     finally:
         store.close()
 

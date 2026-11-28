@@ -1,7 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { getDb } from '../db/index.js';
 import { enqueueJob, enqueueStored, requeueJob, RESULTS_ROOT } from '../db/queue.js';
-import { storeSampleFromStream, type EnqueueResult } from '../db/queue.js';
+import { countActiveJobs, storeSampleFromStream, type EnqueueResult } from '../db/queue.js';
+import {
+  readLimits,
+  refusalBody,
+  reserve,
+  type Reservation,
+} from '../security/admission.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -127,9 +133,48 @@ export function safeFilename(name: string): string {
   return `${stem || 'sample'}${extension}`;
 }
 
+/**
+ * The admission pre-handler (D43).
+ *
+ * It runs **before the body is read**, which is the point: a byte quota that is
+ * checked after the bytes have been written protects nothing — the same defect D40
+ * fixed one layer down. A multipart submission therefore reserves the largest
+ * sample it could store and the route settles to the real size when it is known
+ * (`request.hatcheryAdmittedBytes`, read by the `onResponse` hook).
+ *
+ * The caller is the authenticated actor (`token:<id>`, `admin`, or `anonymous` in
+ * open mode). Authentication answers *may this caller act*; this answers *how much*.
+ */
+function admitSubmission(reservedBytes: number) {
+  return async (request: any, reply: any) => {
+    const limits = readLimits();
+    if (limits.requests === 0 && limits.bytes === 0 && limits.jobs === 0) return;
+
+    const actor = request.hatcheryActor ?? {
+      name: 'anonymous', role: 'anonymous', authenticated: false,
+    };
+    const decision = reserve(getDb(), actor.name, reservedBytes, limits, {
+      count: countActiveJobs,
+    });
+    if (!decision.ok) {
+      const body = refusalBody(decision, limits);
+      reply.header('Retry-After', String(decision.retryAfter));
+      // Named in the audit row via the `onResponse` hook: a throttle is a recorded
+      // fact, not a mystery the caller has to guess at.
+      reply.header(
+        'x-hatchery-admission',
+        `${decision.code} ${decision.used}/${decision.limit}`,
+      );
+      return reply.code(429).send(body);
+    }
+    request.hatcheryAdmission = decision.reservation as Reservation;
+    request.hatcheryAdmittedBytes = 0;
+  };
+}
+
 export async function submitRoutes(app: FastifyInstance) {
   // Submit a sample for analysis (JSON filePath or multipart file upload)
-  app.post('/api/submit', async (request: any, reply: any) => {
+  app.post('/api/submit', { preHandler: admitSubmission(MAX_UPLOAD_BYTES) }, async (request: any, reply: any) => {
     let filePath: string | undefined;
     let fileName: string | undefined;
     let fileSize: number | undefined;
@@ -197,6 +242,9 @@ export async function submitRoutes(app: FastifyInstance) {
           storedSha = stored.sha256!;
           fileName = safeName;
           fileSize = stored.size!;
+          // Settle the reservation to what was actually stored, whatever the rest of
+          // this request does. `onResponse` reads it (D43).
+          request.hatcheryAdmittedBytes = stored.size!;
           truncated = Boolean(part.file.truncated);
         } else if (part.value !== undefined) {
           fields[part.fieldname] = String(part.value);
@@ -265,6 +313,9 @@ export async function submitRoutes(app: FastifyInstance) {
       }
       fileName = path.basename(filePath);
       fileSize = stats.size;
+      // A stored path submission copies the sample into the store, so it counts
+      // against the same byte budget (D43).
+      request.hatcheryAdmittedBytes = stats.size;
     }
 
     if (!fileName || fileSize === undefined || (!filePath && !storedSha)) {
@@ -294,6 +345,7 @@ export async function submitRoutes(app: FastifyInstance) {
           outputDir,
           timeout,
           noSandbox,
+          owner: request.hatcheryActor?.name,
         })
       : enqueueJob({
           jobId: taskId,
@@ -301,6 +353,7 @@ export async function submitRoutes(app: FastifyInstance) {
           outputDir,
           timeout,
           noSandbox,
+          owner: request.hatcheryActor?.name,
         });
     if (!enqueued.ok) {
       // Fail loudly: a task that was not queued is not "running".
@@ -328,8 +381,10 @@ export async function submitRoutes(app: FastifyInstance) {
     });
   });
 
-  // Re-submit / re-analyze an existing task
-  app.post('/api/submit/:taskId/retry', async (request: any, reply: any) => {
+  // Re-submit / re-analyze an existing task. No new bytes are stored (the sample is
+  // already in the store), so it reserves nothing — but it still spends a request and
+  // must not be a way around the job cap (D43).
+  app.post('/api/submit/:taskId/retry', { preHandler: admitSubmission(0) }, async (request: any, reply: any) => {
     const { taskId } = request.params as { taskId: string };
     const db = getDb();
     const task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as any;
